@@ -217,15 +217,19 @@ class IterativeSolverBase[S: SolverState](ABC):
         self,
         rhs_norm: float,
     ) -> tuple[
-        tuple[float, ...] | None, tuple[float, ...] | None, torch.Tensor | None, torch.Tensor | None
+        tuple[float, ...] | None,
+        tuple[float, ...] | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
     ]:
         """Extract result histories from the configured iteration history."""
         if self.iteration_history is None:
-            return None, None, None, None
+            return None, None, None, None, None
 
         residual_history_abs = tuple(self.iteration_history.residual_norms.to_list())
         if not residual_history_abs:
-            return None, None, None, None
+            return None, None, None, None, None
 
         if rhs_norm > 0:
             residual_history_rel = tuple(value / rhs_norm for value in residual_history_abs)
@@ -240,4 +244,14 @@ class IterativeSolverBase[S: SolverState](ABC):
         if self.iteration_history.solutions is not None:
             solution_vectors = self.iteration_history.solutions.to_tensor()
 
-        return residual_history_abs, residual_history_rel, residual_vectors, solution_vectors
+        direction_vectors = None
+        if self.iteration_history.directions is not None:
+            direction_vectors = self.iteration_history.directions.to_tensor()
+
+        return (
+            residual_history_abs,
+            residual_history_rel,
+            residual_vectors,
+            solution_vectors,
+            direction_vectors,
+        )

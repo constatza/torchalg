@@ -85,6 +85,8 @@ class SolverResult:
             vectors (shape: iterations x n).
         solution_vectors (torch.Tensor | None): Optional full solution
             vectors (shape: iterations x n).
+        direction_vectors (torch.Tensor | None): Optional full search-direction
+            vectors (shape: iterations x n).
 
     Example:
         >>> result = SolverResult(
@@ -146,6 +148,9 @@ class SolverResult:
 
     solution_vectors: torch.Tensor | None = None
     """Optional full solution vectors (shape: iterations x n). Heavy, use sparingly."""
+
+    direction_vectors: torch.Tensor | None = None
+    """Optional full search-direction vectors (shape: iterations x n). Heavy, use sparingly."""
 
 
 @dataclass(frozen=True, slots=True)

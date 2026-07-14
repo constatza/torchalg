@@ -110,8 +110,10 @@ def test_factory_full_trace_records_vectors(
 
     assert result.residual_vectors is not None
     assert result.solution_vectors is not None
+    assert result.direction_vectors is not None
     assert result.residual_vectors.shape[1:] == rhs.shape
     assert result.solution_vectors.shape[1:] == rhs.shape
+    assert result.direction_vectors.shape[1:] == rhs.shape
 
 
 def test_factory_disabled_trace_omits_histories(
@@ -129,6 +131,7 @@ def test_factory_disabled_trace_omits_histories(
     assert result.residual_history_rel is None
     assert result.residual_vectors is None
     assert result.solution_vectors is None
+    assert result.direction_vectors is None
 
 
 def test_factory_binds_extra_inputs_before_solve(

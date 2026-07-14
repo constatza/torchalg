@@ -162,7 +162,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             state,
             self.convergence_criterion,
         )
-        residual_abs_hist, residual_rel_hist, residual_vectors, solution_vectors = (
+        residual_abs_hist, residual_rel_hist, residual_vectors, solution_vectors, direction_vectors = (
             self._extract_histories_from_iteration_history(state.rhs_norm)
         )
         if residual_abs_hist is None and self.iteration_history is not None:
@@ -190,6 +190,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             stopping_criterion=stopping_criterion,
             residual_vectors=residual_vectors,
             solution_vectors=solution_vectors,
+            direction_vectors=direction_vectors,
         )
 
     def _resolve_history_size(self, *, maxiter: int | None, dimension: int) -> int:
