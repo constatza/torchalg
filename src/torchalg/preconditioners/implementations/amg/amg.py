@@ -68,7 +68,8 @@ class AMGPreconditioner(Preconditioner, nn.Module):
         coarsening (CoarseningStrategy): Strategy that builds each coarse
             level.
         cycle (MultigridCycle): Multigrid cycle to apply as preconditioner.
-        n_levels (int): Total number of levels (2 = one coarse grid).
+        n_levels (int): Total number of levels; must be at least 2
+            (2 = one coarse grid).
         linear (bool): Whether the preconditioner is linear (False for
             neural AMG). Controls ``requires_flexible_cg``.
     """
@@ -89,11 +90,14 @@ class AMGPreconditioner(Preconditioner, nn.Module):
                 coarse level.
             cycle (MultigridCycle): Multigrid cycle to apply as
                 preconditioner.
-            n_levels (int): Total number of levels (2 = one coarse grid).
+            n_levels (int): Total number of levels; must be at least 2
+                (2 = one coarse grid).
             linear (bool): Whether the preconditioner is linear (False for
                 neural AMG). Controls ``requires_flexible_cg``.
         """
         nn.Module.__init__(self)
+        if n_levels < 2:
+            raise ValueError("n_levels must be at least 2 for AMG coarsening.")
         self._matrix: torch.Tensor
         self.register_buffer("_matrix", matrix)
         self._coarsening = coarsening

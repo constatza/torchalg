@@ -218,6 +218,18 @@ class TestPOD2GPreconditioner:
         precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
         assert precond.requires_flexible_cg is False
 
+    def test_rejects_single_level_hierarchy(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """POD-2G must keep its two-grid contract explicit."""
+        with pytest.raises(ValueError, match="n_levels"):
+            POD2GPreconditioner(
+                poisson_1d,
+                snapshots=poisson_snapshots,
+                rank=10,
+                n_levels=1,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Integration: POD-2G inside FCG solver

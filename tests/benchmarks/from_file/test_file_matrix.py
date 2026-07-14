@@ -119,7 +119,9 @@ def test_ic0_quality_vs_reference(system, convergence_tolerances) -> None:
     ref_error = float(torch.linalg.norm(a - a_ref_reconstructed) / torch.linalg.norm(a))
     ic0_error = float(torch.linalg.norm(a - a_ic0_reconstructed) / torch.linalg.norm(a))
 
-    assert ic0_error < 0.5, f"IC0 reconstruction error too large: {ic0_error:.6e} (expected < 0.5 for IC0)"
+    assert ic0_error < 0.5, (
+        f"IC0 reconstruction error too large: {ic0_error:.6e} (expected < 0.5 for IC0)"
+    )
 
     print(f"\nSparsity: A_lower={a_lower_nnz}, IC0={l_computed_nnz}, Ref={l_ref_nnz}")
     print(f"Reconstruction error: IC0={ic0_error:.4f}, Ref={ref_error:.4f}")
@@ -139,8 +141,12 @@ def test_ic0_solver_performance_vs_reference(system, convergence_tolerances) -> 
     ic0_precond = IC0Preconditioner(a, threshold=IC0_THRESHOLD)
     ref_precond = ICholeskyPreconditioner(l_reference)
 
-    x_ic0, result_ic0 = flexible_cg(a, b, preconditioner=ic0_precond, rtol=rtol, atol=atol, maxiter=1000)
-    x_ref, result_ref = flexible_cg(a, b, preconditioner=ref_precond, rtol=rtol, atol=atol, maxiter=1000)
+    x_ic0, result_ic0 = flexible_cg(
+        a, b, preconditioner=ic0_precond, rtol=rtol, atol=atol, maxiter=1000
+    )
+    x_ref, result_ref = flexible_cg(
+        a, b, preconditioner=ref_precond, rtol=rtol, atol=atol, maxiter=1000
+    )
 
     assert result_ic0.converged, (
         f"IC0 preconditioner failed to converge. "

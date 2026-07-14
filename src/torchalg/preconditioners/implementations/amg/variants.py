@@ -45,8 +45,8 @@ class VCycleAMG(AMGPreconditioner):
 
     Args:
         matrix (torch.Tensor): System matrix A (n x n), SPD.
-        n_levels (int): Number of hierarchy levels. 3 is the robust default
-            for medium-sized problems (n ~ 100-10 000).
+        n_levels (int): Number of hierarchy levels; must be at least 2.
+            3 is the robust default for medium-sized problems (n ~ 100-10 000).
         omega (float): Jacobi damping factor omega used for both the
             smoother and the prolongation smoother. Default 0.67 ~=
             4/(3*rho(D^{-1}A)) for isotropic SPD with rho ~= 2 (Vanek et al.
@@ -75,12 +75,15 @@ class VCycleAMG(AMGPreconditioner):
 
         Args:
             matrix (torch.Tensor): System matrix A (n x n), SPD.
-            n_levels (int): Number of hierarchy levels.
+            n_levels (int): Number of hierarchy levels; must be at least 2.
             omega (float): Jacobi damping factor omega.
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
             theta (float): Strength-of-connection threshold theta in (0, 1).
         """
+        # TODO: Split this into smoother_omega and prolongation_omega. They
+        # control different Jacobi operations but currently share one preset
+        # parameter for API compatibility with the reference implementation.
         super().__init__(
             matrix=matrix,
             coarsening=AggregationCoarsening(theta=theta, omega=omega),
@@ -101,7 +104,7 @@ class WCycleAMG(AMGPreconditioner):
 
     Args:
         matrix (torch.Tensor): System matrix A (n x n), SPD.
-        n_levels (int): Number of hierarchy levels.
+        n_levels (int): Number of hierarchy levels; must be at least 2.
         omega (float): Jacobi damping factor omega (same role as in
             ``VCycleAMG``).
         n_pre (int): Pre-smoothing steps.
@@ -129,12 +132,15 @@ class WCycleAMG(AMGPreconditioner):
 
         Args:
             matrix (torch.Tensor): System matrix A (n x n), SPD.
-            n_levels (int): Number of hierarchy levels.
+            n_levels (int): Number of hierarchy levels; must be at least 2.
             omega (float): Jacobi damping factor omega.
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
             theta (float): Strength-of-connection threshold theta in (0, 1).
         """
+        # TODO: Split this into smoother_omega and prolongation_omega. They
+        # control different Jacobi operations but currently share one preset
+        # parameter for API compatibility with the reference implementation.
         super().__init__(
             matrix=matrix,
             coarsening=AggregationCoarsening(theta=theta, omega=omega),

@@ -36,7 +36,9 @@ CONVERGENCE_ATOL = 1e-14  # Absolute tolerance for convergence
 # IC0 comparison tolerances
 IC0_MATRIX_RTOL = 1e-12  # Relative tolerance for L matrix comparison
 IC0_MATRIX_ATOL = 1e-14  # Absolute tolerance for L matrix comparison
-IC0_SPARSITY_COUNT_TOLERANCE = 5  # Allow up to 5 non-zero count difference due to numerical precision
+IC0_SPARSITY_COUNT_TOLERANCE = (
+    5  # Allow up to 5 non-zero count difference due to numerical precision
+)
 IC0_SOLUTION_RTOL = 1e-10  # Relative tolerance for solution comparison
 IC0_SOLUTION_ATOL = 1e-12  # Absolute tolerance for solution comparison
 IC0_THRESHOLD = 0.0  # Use no thresholding to match reference

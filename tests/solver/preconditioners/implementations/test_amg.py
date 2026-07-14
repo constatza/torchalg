@@ -315,6 +315,16 @@ class TestAMGPreconditioner:
         assert precond._hierarchy is not None
         assert len(precond._hierarchy.levels) == 2
 
+    def test_rejects_single_level_hierarchy(self, poisson_1d: torch.Tensor) -> None:
+        """AMG must have at least one coarse level; n_levels=1 is a direct solve."""
+        with pytest.raises(ValueError, match="n_levels"):
+            AMGPreconditioner(
+                poisson_1d,
+                coarsening=AggregationCoarsening(),
+                cycle=VCycle(smoother=JacobiSmoother()),
+                n_levels=1,
+            )
+
     def test_coarsest_level_has_no_transfer(self, poisson_1d: torch.Tensor) -> None:
         """The coarsest level must have transfer=None."""
         precond = AMGPreconditioner(
@@ -523,6 +533,13 @@ class TestAMGPresets:
         """Both presets are linear preconditioners and must not request FCG."""
         precond = amg_preset_class(poisson_1d, n_levels=2)
         assert precond.requires_flexible_cg is False
+
+    def test_rejects_single_level_hierarchy(
+        self, amg_preset_class: type[VCycleAMG] | type[WCycleAMG], poisson_1d: torch.Tensor
+    ) -> None:
+        """Preset AMG variants must reject n_levels=1 for two-grid clarity."""
+        with pytest.raises(ValueError, match="n_levels"):
+            amg_preset_class(poisson_1d, n_levels=1)
 
     def test_wcycle_iters_not_worse_than_vcycle(
         self, poisson_1d: torch.Tensor, poisson_rhs: torch.Tensor

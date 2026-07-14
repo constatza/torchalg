@@ -37,8 +37,8 @@ class POD2GPreconditioner(AMGPreconditioner):
             (n_samples, n_dofs).
         rank (int | float): Fixed mode count (int) or minimum cumulative
             captured energy (float in (0, 1]) - see ``compute_pod_basis``.
-        n_levels (int): Total number of grid levels. 2 (the paper's POD-2G)
-            is the default; higher values are accepted for a future
+        n_levels (int): Total number of grid levels; must be at least 2.
+            2 (the paper's POD-2G) is the default; higher values are accepted for a future
             hierarchical-POD coarsening strategy but are not meaningful with
             the single-basis ``PODCoarseningStrategy`` used here.
         omega (float): Weighted-Jacobi damping factor for pre/post
@@ -70,7 +70,7 @@ class POD2GPreconditioner(AMGPreconditioner):
                 (n_samples, n_dofs).
             rank (int | float): Fixed mode count (int) or minimum cumulative
                 captured energy (float in (0, 1]).
-            n_levels (int): Total number of grid levels.
+            n_levels (int): Total number of grid levels; must be at least 2.
             omega (float): Weighted-Jacobi damping factor for pre/post
                 relaxation.
             n_pre (int): Pre-smoothing steps.
