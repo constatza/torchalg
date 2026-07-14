@@ -1,0 +1,43 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+docs/
+
+# Testing / coverage
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type checking / linting
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Agent instruction files (kept local, not versioned)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/

@@ -1,0 +1,104 @@
+source_roots = ["src"]
+
+# Dependency DAG for torchalg (see docs/plan.md's "Dependency
+# architecture (tach)" section for the full end-state graph and rationale).
+# Extended stage by stage, before each stage's implementation lands, so a
+# boundary violation is caught the moment it's written.
+
+# Stage 1: the dependency floor — pure tensor math, zero internal deps.
+[[modules]]
+path = "torchalg.utils"
+depends_on = []
+
+# Stage 1: declared now (also a zero-dependency leaf), ahead of the
+# `torchalg.monitoring` package itself, which landed in Stage 8.
+# `tach check` only warns ("Module containing '...' not found in project")
+# for a path with no matching source yet — it does not fail — so declaring
+# the entry ahead of the implementation was safe.
+[[modules]]
+path = "torchalg.monitoring"
+depends_on = []
+
+# Stage 2: data models (state/history/result/config/diagnostics/protocols) -
+# depends only on the utils floor.
+[[modules]]
+path = "torchalg.models"
+depends_on = ["torchalg.utils"]
+
+# Stage 2: framework-agnostic strategies (norms, convergence). Solver-specific
+# strategies (direction, orthogonalization) land in Stage 9, not here.
+[[modules]]
+path = "torchalg.strategies"
+depends_on = ["torchalg.models", "torchalg.utils"]
+
+# Stage 3: preconditioner interface layer — deliberately depends on `utils`
+# ONLY, never `models`/`strategies`. This is a load-bearing DIP/orthogonality
+# boundary (see docs/plan.md's "Dependency architecture (tach)" section):
+# preconditioners must never import solver state/strategy types.
+[[modules]]
+path = "torchalg.preconditioners.base"
+depends_on = ["torchalg.utils"]
+
+# Stage 3: declared now (same pattern Stage 1 used for `monitoring`) even
+# though `preconditioners/ports.py` itself isn't populated until Stage 7.
+[[modules]]
+path = "torchalg.preconditioners.ports"
+depends_on = ["torchalg.utils"]
+
+# Stage 3: concrete preconditioners (Identity, Jacobi, Callable,
+# LinearOperator, Scheduled here; ILU/IC0/ICholesky/AMG/POD/Neural land in
+# Stages 4-7). Depends on `.base`/`.ports` and `utils` only — never on
+# `models`/`strategies`, matching the interface layer above.
+[[modules]]
+path = "torchalg.preconditioners.implementations"
+depends_on = [
+    "torchalg.preconditioners.base",
+    "torchalg.preconditioners.ports",
+    "torchalg.utils",
+]
+
+# Stage 9: solver template-method base. Depends on abstractions only.
+[[modules]]
+path = "torchalg.base"
+depends_on = [
+    "torchalg.models",
+    "torchalg.monitoring",
+    "torchalg.preconditioners.base",
+    "torchalg.strategies",
+    "torchalg.utils",
+]
+
+# Stage 9: CG algorithm family. Still depends only on the preconditioner
+# interface, never concrete implementations.
+[[modules]]
+path = "torchalg.conjugate_gradient"
+depends_on = [
+    "torchalg.base",
+    "torchalg.models",
+    "torchalg.monitoring",
+    "torchalg.preconditioners.base",
+    "torchalg.strategies",
+    "torchalg.utils",
+]
+
+# Stage 9: composition root for public solver factories. This is the one
+# solver module allowed to instantiate concrete preconditioners.
+[[modules]]
+path = "torchalg.factories"
+depends_on = [
+    "torchalg.base",
+    "torchalg.conjugate_gradient",
+    "torchalg.models",
+    "torchalg.monitoring",
+    "torchalg.preconditioners.base",
+    "torchalg.preconditioners.implementations",
+    "torchalg.strategies",
+]
+
+# Stage 10: comparison runner is an orchestration layer above factories.
+[[modules]]
+path = "torchalg.comparison"
+depends_on = [
+    "torchalg.factories",
+    "torchalg.preconditioners.base",
+]
