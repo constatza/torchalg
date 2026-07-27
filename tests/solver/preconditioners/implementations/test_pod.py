@@ -125,14 +125,18 @@ class TestPODCoarseningStrategy:
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
         """Coarse matrix must have fewer dofs than the fine matrix."""
-        a_c, _ = PODCoarseningStrategy(poisson_snapshots, rank=10).build_transfer(poisson_1d)
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots)
+        a_c, _ = strategy.build_transfer(poisson_1d)
         assert a_c.shape == (10, 10)
 
     def test_coarse_matrix_spd(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
         """Galerkin coarse matrix (Phi_r^T A Phi_r) must be SPD for SPD fine matrix."""
-        a_c, _ = PODCoarseningStrategy(poisson_snapshots, rank=10).build_transfer(poisson_1d)
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots)
+        a_c, _ = strategy.build_transfer(poisson_1d)
         eigenvalues = torch.linalg.eigvalsh(a_c)
         assert torch.all(eigenvalues > 0)
 
@@ -140,7 +144,9 @@ class TestPODCoarseningStrategy:
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
         """Prolongate/restrict sizes must match the coarse and fine matrix shapes."""
-        a_c, transfer = PODCoarseningStrategy(poisson_snapshots, rank=10).build_transfer(poisson_1d)
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots)
+        a_c, transfer = strategy.build_transfer(poisson_1d)
         n_fine = poisson_1d.shape[0]
         n_coarse = a_c.shape[0]
         assert transfer.prolongate(torch.ones(n_coarse, dtype=poisson_1d.dtype)).shape == (n_fine,)
@@ -157,7 +163,8 @@ class TestPODCoarseningStrategy:
         would silently leave the basis at its original dtype, causing a dtype
         mismatch on the next ``apply()``.
         """
-        strategy = PODCoarseningStrategy(poisson_snapshots.double(), rank=10)
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots.double())
         assert strategy._basis.dtype == torch.float64  # noqa: SLF001
 
         strategy.to(dtype=torch.float32)
@@ -182,6 +189,95 @@ class TestPODCoarseningStrategy:
         coarsening = precond._coarsening  # noqa: SLF001
         assert isinstance(coarsening, PODCoarseningStrategy)
         assert coarsening._basis.dtype == torch.float32  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# PODCoarseningStrategy construct/fit lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestPODCoarseningStrategyLifecycle:
+    def test_is_fitted_false_before_fit(self) -> None:
+        """A freshly constructed, unfit strategy reports ``is_fitted() is False``."""
+        strategy = PODCoarseningStrategy(rank=10)
+        assert strategy.is_fitted() is False
+
+    def test_is_fitted_true_after_fit(self, poisson_snapshots: torch.Tensor) -> None:
+        """Calling ``fit()`` registers the basis buffer and flips ``is_fitted()``."""
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots)
+        assert strategy.is_fitted() is True
+
+    def test_build_transfer_before_fit_raises(self, poisson_1d: torch.Tensor) -> None:
+        """``build_transfer`` on an unfit strategy must raise, not crash obscurely."""
+        strategy = PODCoarseningStrategy(rank=10)
+        with pytest.raises(RuntimeError, match="fit"):
+            strategy.build_transfer(poisson_1d)
+
+    def test_rank_before_fit_raises(self) -> None:
+        """The ``rank`` property is only meaningful once a basis has been fit."""
+        strategy = PODCoarseningStrategy(rank=10)
+        with pytest.raises(RuntimeError, match="fit"):
+            _ = strategy.rank
+
+    def test_rank_after_fixed_count_fit_matches_requested_rank(
+        self, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """A fixed-count fit resolves ``rank`` to exactly the requested count."""
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots)
+        assert strategy.rank == 10
+
+    def test_rank_after_energy_threshold_fit_reflects_actual_mode_count(
+        self, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """An energy-threshold fit resolves ``rank`` to the actual (smaller) mode count."""
+        strategy = PODCoarseningStrategy(rank=0.999)
+        strategy.fit(poisson_snapshots)
+        assert 0 < strategy.rank < poisson_snapshots.shape[0]
+
+    def test_out_of_range_float_rank_raises_at_construction(self) -> None:
+        """An invalid energy threshold is a self-contained error - fail at construction, not fit()."""
+        with pytest.raises(ValueError, match="energy threshold"):
+            PODCoarseningStrategy(rank=1.5)
+
+    def test_rank_exceeding_samples_raises_only_at_fit(
+        self, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """An int rank too large for the data can only be caught once data exists, at ``fit()``."""
+        strategy = PODCoarseningStrategy(rank=poisson_snapshots.shape[0] + 1)
+        with pytest.raises(ValueError, match="rank"):
+            strategy.fit(poisson_snapshots)
+
+    def test_reconstruction_from_state_dict_without_refit(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """A fitted strategy's state must be reloadable into a fresh instance without recomputing the SVD.
+
+        This is the exact reconstruction path the construct/fit split exists
+        for: a caller who knows the resolved ``rank`` and ``n_dofs`` (both
+        recoverable without the original snapshots) can rebuild the basis
+        buffer at its exact final shape and ``load_state_dict(strict=True)``
+        directly - never touching the ``None``/wrong-shape buffer edge cases
+        that motivated this design.
+        """
+        original = PODCoarseningStrategy(rank=10)
+        original.fit(poisson_snapshots)
+        state = original.state_dict()
+        resolved_rank = original.rank
+        n_dofs = poisson_snapshots.shape[1]
+
+        reconstructed = PODCoarseningStrategy(rank=resolved_rank)
+        reconstructed.register_buffer(
+            "_basis", torch.zeros(n_dofs, resolved_rank, dtype=poisson_snapshots.dtype)
+        )
+        reconstructed.load_state_dict(state)
+
+        assert reconstructed.is_fitted() is True
+        torch.testing.assert_close(reconstructed._basis, original._basis)  # noqa: SLF001
+
+        a_c, _ = reconstructed.build_transfer(poisson_1d)
+        assert a_c.shape == (resolved_rank, resolved_rank)
 
 
 # ---------------------------------------------------------------------------

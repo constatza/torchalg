@@ -76,9 +76,11 @@ class POD2GPreconditioner(AMGPreconditioner):
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
         """
+        coarsening = PODCoarseningStrategy(rank=rank)
+        coarsening.fit(snapshots)
         super().__init__(
             matrix=matrix,
-            coarsening=PODCoarseningStrategy(snapshots=snapshots, rank=rank),
+            coarsening=coarsening,
             cycle=VCycle(JacobiSmoother(omega=omega), n_pre=n_pre, n_post=n_post),
             n_levels=n_levels,
             linear=True,
