@@ -32,6 +32,12 @@ convention = "google"
 include = ["src/torchalg", "tests"]
 respect-ignore-files = true
 
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+no-matching-overload = "warn"
+
 [tool.ty.environment]
 root = ["src", "."]
 python-version = "3.14"
