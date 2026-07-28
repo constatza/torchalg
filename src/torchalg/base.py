@@ -14,6 +14,7 @@ from torchalg.models.state import SolverState
 from torchalg.monitoring import IterationHistory, TraceMode
 from torchalg.preconditioners.base import Preconditioner, PreconditionerContext
 from torchalg.strategies.convergence import IConvergenceCriterion
+from torchalg.utils.device import resolve_device
 from torchalg.utils.validation import validate_matrix, validate_rhs_vector
 
 DEFAULT_RTOL = 1e-6
@@ -47,8 +48,19 @@ class IterativeSolverBase[S: SolverState](ABC):
         maxiter: int | None = None,
         breakdown_tol: float | None = None,
     ) -> tuple[torch.Tensor, SolverResult]:
-        """Solve ``A x = b`` using the concrete iterative method."""
+        """Solve ``A x = b`` using the concrete iterative method.
+
+        ``A``/``b``/``x0`` (and any ``nn.Module``-based preconditioner) are
+        moved to CUDA automatically when available (see
+        :func:`torchalg.utils.device.resolve_device`); the returned solution
+        and ``SolverResult`` stay on that same device rather than being
+        forced back to CPU — callers needing NumPy interop already convert
+        explicitly (``.detach().cpu().numpy()``), and forcing a transfer
+        here would be a wasted round-trip for callers chaining further GPU
+        work.
+        """
         self._validate_system(A, b, x0)
+        A, b, x0 = self._place_on_device(A, b, x0)
 
         rtol_eff = DEFAULT_RTOL if rtol is None else rtol
         atol_eff = DEFAULT_ATOL if atol is None else atol
@@ -119,6 +131,44 @@ class IterativeSolverBase[S: SolverState](ABC):
             validate_rhs_vector(x0)
             if x0.shape != b.shape:
                 raise ValueError(f"x0 shape {tuple(x0.shape)} != b shape {tuple(b.shape)}")
+
+    def _place_on_device(
+        self,
+        A: LinearSystemOperator,
+        b: torch.Tensor,
+        x0: torch.Tensor | None,
+    ) -> tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
+        """Move the system and preconditioner onto the autodetected device.
+
+        Mirrors Lightning-style automatic GPU placement: callers never
+        choose a device explicitly, this always picks CUDA when available.
+        ``A``/``b``/``x0`` are moved first since a failed ``.to()`` on a
+        local variable leaves nothing mutated; ``self.preconditioner`` is
+        moved last since ``nn.Module.to()`` mutates its buffers in place and
+        could otherwise be left half-moved by a failure moving the (usually
+        larger) system tensors. A matvec callable for ``A`` is left
+        untouched — its device is the caller's responsibility, since
+        torchalg cannot reach inside an opaque closure.
+
+        Args:
+            A (LinearSystemOperator): System matrix or matvec callable.
+            b (torch.Tensor): RHS vector.
+            x0 (torch.Tensor | None): Optional initial guess.
+
+        Returns:
+            tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
+                ``A``, ``b``, ``x0`` moved onto the resolved device.
+        """
+        device = resolve_device()
+        if isinstance(A, torch.Tensor):
+            A = A.to(device)
+        b = b.to(device)
+        if x0 is not None:
+            x0 = x0.to(device)
+        preconditioner = getattr(self, "preconditioner", None)
+        if isinstance(preconditioner, torch.nn.Module):
+            preconditioner.to(device)
+        return A, b, x0
 
     def _prepare_operator(self, A: LinearSystemOperator) -> Callable[[torch.Tensor], torch.Tensor]:
         """Wrap dense tensors and callables behind a matvec callable."""
