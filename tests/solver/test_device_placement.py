@@ -80,10 +80,10 @@ def test_place_on_device_failure_leaves_preconditioner_untouched(
 
     real_to = torch.Tensor.to
 
-    def _failing_to(self: torch.Tensor, *args: object, **kwargs: object) -> torch.Tensor:
+    def _failing_to(self: torch.Tensor, device: torch.device) -> torch.Tensor:
         if self is rhs:
             raise RuntimeError("simulated device-move failure")
-        return real_to(self, *args, **kwargs)
+        return real_to(self, device)
 
     monkeypatch.setattr(torch.Tensor, "to", _failing_to)
 
