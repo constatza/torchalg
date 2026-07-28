@@ -15,7 +15,7 @@ consumers (``tests/solver/preconditioners/implementations/test_amg.py`` and
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import pytest
@@ -25,6 +25,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from numpy.typing import NDArray
+
+
+class ToTorch(Protocol):
+    """Callable shape of the ``to_torch`` fixture: array (+ optional dtype override) -> tensor."""
+
+    def __call__(self, array: NDArray, dtype: torch.dtype | None = None) -> torch.Tensor: ...
+
 
 TEST_SEED = 42
 """Fixed random seed for reproducible fixture data (reference convention)."""
@@ -53,7 +60,7 @@ def torch_dtype() -> torch.dtype:
 
 
 @pytest.fixture
-def to_torch(torch_dtype: torch.dtype) -> Callable[[NDArray], torch.Tensor]:
+def to_torch(torch_dtype: torch.dtype) -> ToTorch:
     """Adapter converting a numpy fixture array into an independent torch tensor.
 
     The base SPD matrix / RHS / system fixtures (``tests/solver/conftest.py``)

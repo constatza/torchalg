@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 import torch
 
@@ -9,6 +11,17 @@ from torchalg.conjugate_gradient import PCGSolver
 from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
 from torchalg.strategies.convergence import CombinedToleranceCriterion
 from torchalg.utils.device import resolve_device
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from tests.conftest import ToTorch
+
+# (rtol, atol) sized to each dtype's headroom - loose for float32, tight for float64.
+_PRECISION_TOLERANCES: dict[torch.dtype, tuple[float, float]] = {
+    torch.float32: (1e-4, 1e-6),
+    torch.float64: (1e-10, 1e-14),
+}
 
 
 def test_resolve_device_returns_cpu_when_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,6 +126,46 @@ def test_solve_leaves_matvec_callable_device_untouched(
 
     assert result.converged is True
     assert torch.allclose(solution, x_exact.to(solution.device), rtol=1e-8, atol=1e-10)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64], ids=["float32", "float64"])
+def test_solve_preserves_input_dtype(
+    tridiagonal_spd_small: NDArray,
+    rhs_ones_small: NDArray,
+    to_torch: ToTorch,
+    dtype: torch.dtype,
+) -> None:
+    """Device placement in solve() never coerces dtype - float32 stays float32, float64 stays float64."""
+    matrix = to_torch(tridiagonal_spd_small, dtype=dtype)
+    rhs = to_torch(rhs_ones_small, dtype=dtype)
+    rtol, atol = _PRECISION_TOLERANCES[dtype]
+    solver = PCGSolver(convergence_criterion=CombinedToleranceCriterion(rtol=rtol, atol=atol))
+
+    solution, _ = solver.solve(matrix, rhs, maxiter=200)
+
+    assert solution.dtype == dtype
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64], ids=["float32", "float64"])
+def test_solve_preserves_preconditioner_buffer_dtype(
+    tridiagonal_spd_small: NDArray,
+    rhs_ones_small: NDArray,
+    to_torch: ToTorch,
+    dtype: torch.dtype,
+) -> None:
+    """Moving an nn.Module preconditioner during placement never coerces its buffer dtype."""
+    matrix = to_torch(tridiagonal_spd_small, dtype=dtype)
+    rhs = to_torch(rhs_ones_small, dtype=dtype)
+    preconditioner = JacobiPreconditioner(matrix)
+    rtol, atol = _PRECISION_TOLERANCES[dtype]
+    solver = PCGSolver(
+        preconditioner=preconditioner,
+        convergence_criterion=CombinedToleranceCriterion(rtol=rtol, atol=atol),
+    )
+
+    solver.solve(matrix, rhs, maxiter=200)
+
+    assert preconditioner.inv_diag.dtype == dtype
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA device")
