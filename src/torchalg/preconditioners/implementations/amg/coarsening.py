@@ -105,14 +105,26 @@ class TargetDimensionCoarsening:
     already has.
 
     **Why exhaustive grid search, not bisection or a black-box optimizer**:
-    bisection assumes monotonicity, which the step-function response
-    violates — it can converge to the wrong plateau. A sampler built for
+    verified directly against real stiffness matrices that
+    `AggregationCoarsening`'s realized dimension is not monotonic in
+    `theta` — greedy aggregation is a first-come-first-served, order-
+    dependent heuristic (standard SA-AMG, not a bug: see Vanek, Mandel &
+    Brezina 1996), so a stricter `theta` can still occasionally *reduce*
+    the aggregate count by changing which node claims which neighbor
+    first, even though the underlying strength-of-connection graph only
+    ever shrinks as `theta` grows. Bisection assumes monotonicity and can
+    converge to the wrong plateau as a result. A sampler built for
     expensive, high-dimensional, exploitably-smooth objectives (Optuna,
     Bayesian optimization) earns nothing here either: `theta` is a single
     bounded scalar, each trial is one cheap `build_transfer` call, and
     there is no smooth trend to model. A plain `step`-spaced exhaustive
     scan is simpler and strictly more reliable: correct up to `step`
     resolution, guaranteed, with no risk of settling on the wrong plateau.
+
+    The search itself is isolated in `_search` precisely so it can be
+    swapped later (e.g. for bisection) without touching `build_transfer`
+    or any caller, should a future coarsening strategy make the
+    `theta -> realized dimension` relationship monotonic.
 
     Args:
         target_coarse_dim (int): Desired realized coarse dimension.
@@ -171,18 +183,35 @@ class TargetDimensionCoarsening:
                 realized coarse dimension is closest to
                 ``target_coarse_dim``.
         """
+        theta, a_coarse, transfer = self._search(A)
+        self._theta = theta
+        self._realized_coarse_dim = int(a_coarse.shape[0])
+        return a_coarse, transfer
+
+    def _search(self, A: torch.Tensor) -> tuple[float, torch.Tensor, DenseTransferOperator]:
+        """Exhaustively scan the `theta` grid, keeping the closest match to `target_coarse_dim`.
+
+        The sole extension point for swapping the search algorithm (e.g.
+        for bisection, if a future coarsening strategy makes
+        ``theta -> realized dimension`` monotonic) — everything else on
+        this class (`build_transfer`'s caching, the constructor) is
+        independent of how the search itself is performed.
+
+        Args:
+            A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
+
+        Returns:
+            tuple[float, torch.Tensor, DenseTransferOperator]: ``(theta,
+                A_coarse, transfer)`` for the candidate whose realized
+                coarse dimension is closest to ``target_coarse_dim``.
+        """
         n_steps = round((self._theta_max - self._theta_min) / self._step) + 1
         candidates = [self._theta_min + i * self._step for i in range(n_steps)]
         results = [
             (theta, *AggregationCoarsening(theta=theta, omega=self._omega).build_transfer(A))
             for theta in candidates
         ]
-        theta, a_coarse, transfer = min(
-            results, key=lambda result: abs(result[1].shape[0] - self._target_coarse_dim)
-        )
-        self._theta = theta
-        self._realized_coarse_dim = int(a_coarse.shape[0])
-        return a_coarse, transfer
+        return min(results, key=lambda result: abs(result[1].shape[0] - self._target_coarse_dim))
 
 
 class NeuralCoarseningStrategy:
