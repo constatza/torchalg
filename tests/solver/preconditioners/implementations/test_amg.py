@@ -43,6 +43,7 @@ from torchalg.preconditioners.implementations.amg import (
     NeuralCoarseningStrategy,
     NeuralTransferOperator,
     SmootherBase,
+    TargetDimensionCoarsening,
     VCycle,
     VCycleAMG,
     WCycle,
@@ -187,6 +188,61 @@ class TestAggregationCoarsening:
     def test_transfer_shapes_consistent(self, poisson_1d: torch.Tensor) -> None:
         """Prolongate output (fine) and restrict output (coarse) sizes must match."""
         a_c, transfer = AggregationCoarsening().build_transfer(poisson_1d)
+        n_fine = poisson_1d.shape[0]
+        n_coarse = a_c.shape[0]
+        assert transfer.prolongate(torch.ones(n_coarse, dtype=poisson_1d.dtype)).shape == (n_fine,)
+        assert transfer.restrict(torch.ones(n_fine, dtype=poisson_1d.dtype)).shape == (n_coarse,)
+
+
+# ---------------------------------------------------------------------------
+# TargetDimensionCoarsening
+# ---------------------------------------------------------------------------
+
+
+class TestTargetDimensionCoarsening:
+    """`poisson_1d` (20x20, uniform 1D stencil) has two theta plateaus:
+    c=10 for theta in roughly [0.01, 0.5], c=20 (fully degenerate, no
+    coarsening) for theta >= 0.6 — used directly as the two targets below.
+    """
+
+    def test_returns_closest_achievable_coarse_dimension(self, poisson_1d: torch.Tensor) -> None:
+        """Target within the low plateau resolves to that plateau's realized dimension."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=10, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
+        )
+        a_c, _ = coarsening.build_transfer(poisson_1d)
+        assert a_c.shape[0] == 10
+
+    def test_respects_theta_bounds_even_when_target_is_unreachable(
+        self, poisson_1d: torch.Tensor
+    ) -> None:
+        """A target only reachable outside [theta_min, theta_max] still stays in-bounds."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=20, theta_min=0.01, theta_max=0.5, step=0.01, omega=0.67
+        )
+        a_c, _ = coarsening.build_transfer(poisson_1d)
+        assert a_c.shape[0] == 10
+        assert coarsening._theta is not None
+        assert 0.01 <= coarsening._theta <= 0.5
+
+    def test_caches_realized_theta_and_dimension_after_build(
+        self, poisson_1d: torch.Tensor
+    ) -> None:
+        """Winning theta/dimension are readable afterward without rebuilding."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=20, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
+        )
+        assert coarsening._theta is None
+        assert coarsening._realized_coarse_dim is None
+        a_c, _ = coarsening.build_transfer(poisson_1d)
+        assert coarsening._realized_coarse_dim == a_c.shape[0] == 20
+
+    def test_transfer_shapes_consistent(self, poisson_1d: torch.Tensor) -> None:
+        """Prolongate output (fine) and restrict output (coarse) sizes must match."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=10, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
+        )
+        a_c, transfer = coarsening.build_transfer(poisson_1d)
         n_fine = poisson_1d.shape[0]
         n_coarse = a_c.shape[0]
         assert transfer.prolongate(torch.ones(n_coarse, dtype=poisson_1d.dtype)).shape == (n_fine,)

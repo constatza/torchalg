@@ -91,6 +91,100 @@ class AggregationCoarsening:
         return coarse_matrix, DenseTransferOperator(prolongation)
 
 
+class TargetDimensionCoarsening:
+    """Reaches a target coarse dimension by searching `AggregationCoarsening`'s theta.
+
+    `theta` is a strength-of-connection threshold — the coarse dimension it
+    produces is emergent, not chosen, and empirically a *step function* of
+    `theta` rather than a smooth or even monotonic one (a small change in
+    `theta` can jump the realized dimension by a large amount, or not move
+    it at all). This wraps `AggregationCoarsening` from the outside — it
+    only calls its existing public ``build_transfer`` and never modifies it
+    — to give aggregation coarsening the same "set the coarse dimension
+    directly" ergonomics a fixed-rank strategy like `PODCoarseningStrategy`
+    already has.
+
+    **Why exhaustive grid search, not bisection or a black-box optimizer**:
+    bisection assumes monotonicity, which the step-function response
+    violates — it can converge to the wrong plateau. A sampler built for
+    expensive, high-dimensional, exploitably-smooth objectives (Optuna,
+    Bayesian optimization) earns nothing here either: `theta` is a single
+    bounded scalar, each trial is one cheap `build_transfer` call, and
+    there is no smooth trend to model. A plain `step`-spaced exhaustive
+    scan is simpler and strictly more reliable: correct up to `step`
+    resolution, guaranteed, with no risk of settling on the wrong plateau.
+
+    Args:
+        target_coarse_dim (int): Desired realized coarse dimension.
+        theta_min (float): Lower bound of the `theta` search grid.
+        theta_max (float): Upper bound of the `theta` search grid.
+        step (float): Grid spacing; smaller values give finer resolution at
+            proportionally higher cost (one `build_transfer` call per step).
+        omega (float): Prolongation Jacobi-smoothing damping, forwarded to
+            each candidate `AggregationCoarsening`.
+    """
+
+    def __init__(
+        self,
+        target_coarse_dim: int,
+        *,
+        theta_min: float,
+        theta_max: float,
+        step: float,
+        omega: float,
+    ) -> None:
+        """Store the target dimension and search parameters; unbuilt until `build_transfer`.
+
+        Args:
+            target_coarse_dim (int): Desired realized coarse dimension.
+            theta_min (float): Lower bound of the `theta` search grid.
+            theta_max (float): Upper bound of the `theta` search grid.
+            step (float): Grid spacing for the exhaustive search.
+            omega (float): Prolongation Jacobi-smoothing damping.
+        """
+        self._target_coarse_dim = target_coarse_dim
+        self._theta_min = theta_min
+        self._theta_max = theta_max
+        self._step = step
+        self._omega = omega
+        self._theta: float | None = None
+        self._realized_coarse_dim: int | None = None
+
+    def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
+        """Search `theta`, then build the coarse level at the closest-matching value.
+
+        The winning `theta` and its realized coarse dimension are cached as
+        ``self._theta``/``self._realized_coarse_dim`` afterward (mirroring
+        `AggregationCoarsening`'s own private-attribute convention), so
+        callers that already have this object can read the result directly
+        instead of triggering a second full search.
+
+        Args:
+            A (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``. Named
+                to match the ``CoarseningStrategy`` protocol's parameter
+                name exactly (structural typing checks parameter names for
+                positional-or-keyword parameters).
+
+        Returns:
+            tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse,
+                transfer)`` from the `AggregationCoarsening` candidate whose
+                realized coarse dimension is closest to
+                ``target_coarse_dim``.
+        """
+        n_steps = round((self._theta_max - self._theta_min) / self._step) + 1
+        candidates = [self._theta_min + i * self._step for i in range(n_steps)]
+        results = [
+            (theta, *AggregationCoarsening(theta=theta, omega=self._omega).build_transfer(A))
+            for theta in candidates
+        ]
+        theta, a_coarse, transfer = min(
+            results, key=lambda result: abs(result[1].shape[0] - self._target_coarse_dim)
+        )
+        self._theta = theta
+        self._realized_coarse_dim = int(a_coarse.shape[0])
+        return a_coarse, transfer
+
+
 class NeuralCoarseningStrategy:
     """Coarsening with neural prolongation/restriction operators.
 

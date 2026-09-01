@@ -32,6 +32,8 @@ Public API:
 
     Coarsening:
         - AggregationCoarsening: Smoothed aggregation (SA-AMG).
+        - TargetDimensionCoarsening: Aggregation coarsening driven by a
+          target coarse dimension instead of theta, via exhaustive search.
         - NeuralCoarseningStrategy: Neural coarsening strategy (stub).
 
     Transfer operators:
@@ -43,7 +45,7 @@ Public API:
 """
 
 from .amg import AMGPreconditioner
-from .coarsening import AggregationCoarsening, NeuralCoarseningStrategy
+from .coarsening import AggregationCoarsening, NeuralCoarseningStrategy, TargetDimensionCoarsening
 from .cycle import VCycle, WCycle
 from .hierarchy import MultigridHierarchy, MultigridLevel
 from .protocols import CoarseningStrategy, MultigridCycle, MultigridSmoother, TransferOperator
@@ -70,6 +72,7 @@ __all__ = [
     "WCycle",
     # Coarsening
     "AggregationCoarsening",
+    "TargetDimensionCoarsening",
     "NeuralCoarseningStrategy",
     # Transfer operators
     "DenseTransferOperator",

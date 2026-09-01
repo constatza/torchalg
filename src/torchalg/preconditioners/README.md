@@ -31,3 +31,16 @@ AMG hierarchy depth is counted as total levels, including the finest matrix.
 `n_levels=2` is the minimum valid multigrid hierarchy and means one fine level
 plus one coarse level; `n_levels=1` is rejected because it would bypass
 coarsening and reduce to a direct dense solve on the original system.
+
+`TargetDimensionCoarsening` wraps `AggregationCoarsening` from the outside to
+give it the same "set the coarse dimension directly" ergonomics
+`PODCoarseningStrategy`'s `rank` already has: realized coarse dimension vs.
+`theta` is an emergent, empirically step-function (not smooth, not
+monotonic) response, so it exhaustively scans a `theta_min`/`theta_max`/`step`
+grid and keeps the candidate whose realized dimension is closest to the
+requested target, caching the winning `theta`/dimension as `_theta`/
+`_realized_coarse_dim` afterward. Deliberately a plain grid scan, not
+bisection (assumes monotonicity, which doesn't hold) or a black-box
+optimizer like Optuna (built for expensive, smooth, higher-dimensional
+objectives — none of which describes a single cheap bounded scalar with a
+step-function response).
