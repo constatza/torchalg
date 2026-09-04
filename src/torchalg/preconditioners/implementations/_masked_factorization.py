@@ -64,12 +64,19 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     ``matrix`` (entries with ``|value| <= threshold`` are treated as zero
     and never filled in).
 
-    Direct torch port of the reference's numba-JIT IC(0) kernel: at each
-    step ``k``, the diagonal is scaled by its square root, column ``k`` is
-    scaled by the new diagonal, and the rank-1 update
-    ``L[i, j] -= L[i, k] * L[j, k]`` is applied only where ``(i, j)``,
-    ``(i, k)`` and ``(j, k)`` are all within the original sparsity pattern
-    - no fill-in beyond it.
+    Vectorized right-looking Cholesky-Crout: at each step ``k``, column
+    ``k`` is scaled by its (square-rooted) pivot in one slice op, then the
+    rank-1 update ``L[i, j] -= L[i, k] * L[j, k]`` is applied to the whole
+    trailing block as a single masked outer product, rather than as scalar
+    Python-level updates over ``i``/``j``. Entries outside the original
+    sparsity pattern are exactly zero from the initial mask, and stay zero
+    permanently (they are only ever combined with, or overwritten by, other
+    exact zeros) - so ``factor[i, k]`` and ``factor[j, k]`` being outside the
+    column-``k`` pattern falls out of the outer product for free, and the
+    remaining ``(i, j)``-in-pattern condition is applied by masking the
+    trailing block before subtracting. Same elimination order as a scalar
+    IKJ loop, so results are bit-identical; only the inner two loops become
+    one vectorized op each, per ``k``.
 
     Args:
         matrix (torch.Tensor): Symmetric positive-definite system matrix
@@ -92,17 +99,14 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
 
     for k in range(n):
         factor[k, k] = torch.sqrt(factor[k, k])
+        if k + 1 >= n:
+            break
 
-        for i in range(k + 1, n):
-            if sparsity_mask[i, k]:
-                factor[i, k] = factor[i, k] / factor[k, k]
+        column = factor[k + 1 :, k] / factor[k, k]
+        factor[k + 1 :, k] = column
 
-        for i in range(k + 1, n):
-            if not sparsity_mask[i, k]:
-                continue
-            pivot_column_value = factor[i, k].clone()
-            for j in range(k + 1, i + 1):
-                if sparsity_mask[j, k] and sparsity_mask[i, j]:
-                    factor[i, j] = factor[i, j] - pivot_column_value * factor[j, k]
+        trailing_mask = sparsity_mask[k + 1 :, k + 1 :]
+        update = torch.outer(column, column)
+        factor[k + 1 :, k + 1 :] -= torch.where(trailing_mask, update, torch.zeros_like(update))
 
     return factor
