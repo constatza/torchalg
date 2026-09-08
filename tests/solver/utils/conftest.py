@@ -222,3 +222,34 @@ def singular_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
             undefined (infinite).
     """
     return torch.diag(torch.tensor([0.0, 1.0, 2.0], dtype=torch_dtype))
+
+
+@pytest.fixture
+def jacobi_preconditioned_spd_system(
+    torch_dtype: torch.dtype, test_seed: int
+) -> tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]:
+    """A non-diagonal SPD matrix with a diagonal (Jacobi) preconditioner apply.
+
+    Built with a deliberately unbalanced diagonal (large spread, so Jacobi
+    preconditioning actually changes the effective conditioning), plus
+    random symmetric off-diagonal coupling scaled small enough to keep the
+    whole matrix SPD (strictly diagonally dominant).
+
+    Returns:
+        tuple[torch.Tensor, Callable[[torch.Tensor], torch.Tensor]]:
+            ``(matrix, apply_jacobi)`` where ``apply_jacobi(v) = v /
+            diag(matrix)`` elementwise - the callable contract
+            ``preconditioned_condition_number`` expects.
+    """
+    generator = torch.Generator().manual_seed(test_seed)
+    n = 6
+    diag_values = torch.tensor([1.0, 10.0, 100.0, 2.0, 50.0, 5.0], dtype=torch_dtype)
+    off_diagonal = torch.randn(n, n, generator=generator, dtype=torch_dtype)
+    off_diagonal = 0.01 * (off_diagonal + off_diagonal.T)
+    off_diagonal.fill_diagonal_(0.0)
+    matrix = torch.diag(diag_values) + off_diagonal
+
+    def apply_jacobi(vector: torch.Tensor) -> torch.Tensor:
+        return vector / diag_values
+
+    return matrix, apply_jacobi

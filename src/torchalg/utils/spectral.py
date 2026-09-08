@@ -49,8 +49,12 @@ References:
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def condition_number(matrix: torch.Tensor) -> float:
@@ -83,6 +87,64 @@ def condition_number(matrix: torch.Tensor) -> float:
         raise ValueError(f"matrix must be square, got shape {tuple(matrix.shape)}")
 
     eigenvalues = torch.linalg.eigvalsh(matrix).abs()
+    lambda_min = float(eigenvalues.min())
+    lambda_max = float(eigenvalues.max())
+    if lambda_min == 0.0:
+        return math.inf
+    return lambda_max / lambda_min
+
+
+def preconditioned_condition_number(
+    matrix: torch.Tensor,
+    preconditioner: Callable[[torch.Tensor], torch.Tensor],
+) -> float:
+    """Compute the exact 2-norm condition number of a preconditioned SPD operator.
+
+    For SPD ``matrix`` (``A``) and an SPD preconditioner applied as
+    ``M^-1``, the preconditioned operator ``M^-1 A`` is generally
+    non-symmetric as a stored matrix but has a real, positive spectrum: it
+    is similar to the symmetric matrix ``M^-1/2 A M^-1/2``
+    (``M^-1/2 (M^-1 A) M^1/2 = M^-1/2 M^-1 A M^1/2``, a similarity
+    transform preserves eigenvalues), so its condition number
+    ``kappa(M^-1 A) := kappa(M^-1/2 A M^-1/2)`` is exactly what governs
+    PCG's convergence rate (Saad, "Iterative Methods for Sparse Linear
+    Systems", 2nd ed., Ch. 9). This computes it without ever forming
+    ``M^-1/2`` explicitly: ``M^-1 A`` is materialized densely (``matrix``
+    is dense-only throughout ``torchalg`` already, so this costs no more
+    than the existing ``smoothed_prolongation``-style dense operators) by
+    applying ``preconditioner`` to each column of ``matrix``, then its
+    eigenvalues are read directly via the general (non-symmetric)
+    eigensolver ``torch.linalg.eigvals`` - exact, up to the same
+    floating-point-noise-level imaginary parts any backward-stable
+    eigensolver leaves on a matrix that is only "symmetric up to a
+    similarity transform" rather than symmetric as stored.
+
+    Replaces ``neuralls.domain.analysis.spectra.compute_condition_numbers``,
+    which estimated this same quantity via (shifted) power iteration - see
+    ``condition_number``'s module docstring for why that approach fails on
+    ill-conditioned matrices. This function has the same "no iteration
+    count, no shift, no tunable threshold" property.
+
+    Args:
+        matrix (torch.Tensor): SPD system matrix ``A``, shape ``(n, n)``.
+        preconditioner (Callable[[torch.Tensor], torch.Tensor]): Applies
+            ``M^-1`` to a length-``n`` vector, for an SPD ``M``.
+
+    Returns:
+        float: ``max(|eig|) / min(|eig|)`` of ``M^-1 A``. ``math.inf`` if
+            ``M^-1 A`` has an exact zero eigenvalue (singular).
+
+    Example:
+        >>> import torch
+        >>> matrix = torch.diag(torch.tensor([1.0, 4.0], dtype=torch.float64))
+        >>> preconditioned_condition_number(matrix, lambda v: v)
+        4.0
+    """
+    n = matrix.shape[0]
+    columns = [preconditioner(matrix[:, i].contiguous()) for i in range(n)]
+    operator = torch.stack(columns, dim=1)
+
+    eigenvalues = torch.linalg.eigvals(operator).real.abs()
     lambda_min = float(eigenvalues.min())
     lambda_max = float(eigenvalues.max())
     if lambda_min == 0.0:
