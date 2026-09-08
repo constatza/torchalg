@@ -182,6 +182,14 @@ class CGState(KrylovState):
         rw_prev (float): Previous inner product (r_{k-1}, w_{k-1}) (for
             two-term recurrence). Used by ``TwoTermRecurrenceStrategy`` to
             compute the beta coefficient.
+        ortho_breakdown_at (int | None): Iteration at which FCG's
+            orthogonalization first reported breakdown (near-zero result,
+            loss of A-conjugacy), or ``None`` if it never occurred so far.
+            Purely diagnostic - carried through to
+            ``TerminationDiagnostics.ortho_breakdown_at`` and never gates
+            ``_check_stopping`` (Notay 2000 treats truncated-orthogonalization
+            quality loss as a convergence-rate signal, not a hard breakdown
+            requiring termination).
 
     Theory (Notay 2000):
         FCG maintains a window of previous search directions to
@@ -235,6 +243,9 @@ class CGState(KrylovState):
 
     rw_prev: float
     """Previous inner product (r_{k-1}, w_{k-1}) (for two-term recurrence)."""
+
+    ortho_breakdown_at: int | None = None
+    """Iteration of first-detected orthogonalization breakdown, or None."""
 
     @classmethod
     def create_initial(
@@ -302,4 +313,5 @@ class CGState(KrylovState):
             w_prev=None,
             r_prev=None,
             rw_prev=0.0,
+            ortho_breakdown_at=None,
         )

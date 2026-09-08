@@ -59,7 +59,6 @@ def run_cg_comparison(
     atol: float = 1e-14,
     maxiter: int = 100,
     m_max: int = 20,
-    breakdown_tol: float | None = None,
 ) -> dict[str, CGComparisonResult]:
     """Run Flexible CG with multiple preconditioners for comparison."""
     x0_base = torch.zeros_like(b) if x0 is None else x0.clone()
@@ -79,7 +78,6 @@ def run_cg_comparison(
             atol=atol,
             maxiter=maxiter,
             m_max=m_max,
-            breakdown_tol=breakdown_tol,
         )
 
     return results
@@ -151,7 +149,6 @@ def _run_one_comparison(
     atol: float,
     maxiter: int,
     m_max: int,
-    breakdown_tol: float | None,
 ) -> CGComparisonResult:
     """Run one preconditioner comparison and capture failures as data."""
     try:
@@ -164,7 +161,6 @@ def _run_one_comparison(
             maxiter=maxiter,
             preconditioner=preconditioner,
             m_max=m_max,
-            breakdown_tol=breakdown_tol,
         )
     except (ValueError, RuntimeError, torch.linalg.LinAlgError) as solver_exc:
         return _failed_result(preconditioner_name, x0, b, solver_exc)

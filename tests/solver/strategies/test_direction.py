@@ -30,13 +30,14 @@ def test_two_term_recurrence_first_iteration_returns_preconditioned_residual(
         rhs_norm=1.0,
     )
 
-    direction = TwoTermRecurrenceStrategy().compute_direction(
+    direction, ortho_breakdown = TwoTermRecurrenceStrategy().compute_direction(
         two_term_preconditioned_residual,
         state,
     )
 
     assert torch.equal(direction, two_term_preconditioned_residual)
     assert direction is not two_term_preconditioned_residual
+    assert ortho_breakdown is False
 
 
 def test_two_term_recurrence_uses_fletcher_reeves_beta(
@@ -56,13 +57,14 @@ def test_two_term_recurrence_uses_fletcher_reeves_beta(
     )
     state = replace(base_state, iteration=1, rw_prev=2.0)
 
-    direction = TwoTermRecurrenceStrategy().compute_direction(
+    direction, ortho_breakdown = TwoTermRecurrenceStrategy().compute_direction(
         two_term_preconditioned_residual,
         state,
     )
 
     expected = two_term_preconditioned_residual + 0.5 * two_term_previous_direction
     assert torch.allclose(direction, expected)
+    assert ortho_breakdown is False
 
 
 def test_orthogonalization_direction_strategy_uses_direction_history(
@@ -94,8 +96,9 @@ def test_orthogonalization_direction_strategy_uses_direction_history(
         rw_prev=0.0,
     )
 
-    direction = OrthogonalizationDirectionStrategy(
+    direction, ortho_breakdown = OrthogonalizationDirectionStrategy(
         TruncatedGramSchmidt(window_size=2),
     ).compute_direction(orthogonalization_probe, state)
 
     assert torch.allclose(direction, torch.tensor([0.0, 1.0], dtype=direction.dtype))
+    assert ortho_breakdown is False

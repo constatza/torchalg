@@ -1,4 +1,23 @@
-"""Conjugate Gradient solver family."""
+"""Conjugate Gradient solver family.
+
+``ConjugateGradientSolver`` is a single template-method CG loop
+(``IterativeSolverBase``, see ``base.py``) parameterized by a
+``DirectionStrategy``: ``PCGSolver`` plugs in the standard two-term
+recurrence, ``FCGSolver`` plugs in explicit A-conjugacy orthogonalization.
+Both share the same per-iteration update (``_iterate_step``) -
+``w = M^{-1}r``, ``d = strategy(w)``, ``q = A d``,
+``alpha = (r, w) / (d, q)``, then the standard CG state update - only the
+direction computation differs. See ``factories.py``'s ``pcg()``/
+``flexible_cg()`` for the public entry points and full algorithm writeups.
+
+References:
+    - Hestenes, M.R. & Stiefel, E. (1952). Methods of Conjugate Gradients
+      for Solving Linear Systems. J. Res. Natl. Bur. Stand. 49(6), 409-436.
+    - Saad, Y. (2003). Iterative Methods for Sparse Linear Systems, 2nd ed.
+      SIAM. Ch. 6, Ch. 9.
+    - Notay, Y. (2000). Flexible Conjugate Gradients. SIAM J. Sci. Comput.
+      22(4), 1444-1460.
+"""
 
 from __future__ import annotations
 
@@ -99,12 +118,11 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         self,
         linear_op: Callable[[torch.Tensor], torch.Tensor],
         state: CGState,
-        breakdown_tol: float | None = None,
     ) -> CGState:
         """Execute one unified CG iteration."""
         w = self._apply_preconditioner(self.preconditioner, state.r, state)
         rw_curr = stable_dot_product(state.r, w)
-        d = self.direction_strategy.compute_direction(w, state)
+        d, ortho_breakdown = self.direction_strategy.compute_direction(w, state)
         q = linear_op(d)
         curvature = stable_dot_product(d, q)
         alpha = rw_curr / curvature
@@ -116,10 +134,14 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             norm_rel=self._compute_relative_residual(residual_norm_new, state.rhs_norm),
         )
         direction_history = self._updated_direction_history(state, d, q)
+        new_iteration = state.iteration + 1
+        ortho_breakdown_at = state.ortho_breakdown_at
+        if ortho_breakdown_at is None and ortho_breakdown:
+            ortho_breakdown_at = new_iteration
 
         return replace(
             state,
-            iteration=state.iteration + 1,
+            iteration=new_iteration,
             residual_norm=residual_norm_new,
             u=u_new,
             r=r_new,
@@ -131,6 +153,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             w_prev=w.clone(),
             r_prev=state.r.clone(),
             rw_prev=rw_curr,
+            ortho_breakdown_at=ortho_breakdown_at,
         )
 
     def _check_stopping(
@@ -139,7 +162,6 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         rtol: float,
         atol: float,
         maxiter: int,
-        breakdown_tol: float | None = None,
     ) -> bool:
         """Stop on convergence, breakdown, divergence, or iteration limit."""
         if state.converged or state.breakdown or state.divergence:
@@ -153,7 +175,6 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         state: CGState,
         rtol: float,
         atol: float,
-        breakdown_tol: float | None = None,
         maxiter: int | None = None,
     ) -> SolverResult:
         """Build immutable solver result from final state and telemetry."""
@@ -234,6 +255,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             converged_at=state.iteration if converged else None,
             breakdown_at=state.iteration if breakdown else None,
             breakdown_reason=reason,
+            ortho_breakdown_at=state.ortho_breakdown_at,
         )
 
     def _stopping_criterion(
@@ -270,7 +292,16 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
 
 
 class PCGSolver(ConjugateGradientSolver):
-    """Preconditioned Conjugate Gradient with optional reorthogonalization."""
+    """Preconditioned Conjugate Gradient with optional reorthogonalization.
+
+    Standard preconditioned Hestenes & Stiefel (1952)/Saad (2003, Algorithm
+    9.1) two-term recurrence: ``beta_k = (r_k, w_k) / (r_{k-1}, w_{k-1})``,
+    ``d_k = w_k + beta_k d_{k-1}``. Valid for a single, fixed SPD
+    preconditioner ``M`` (see ``factories.pcg()`` for the full writeup and
+    parameter docs). ``reorthogonalization`` optionally layers Notay
+    (2000)'s periodic-restart reorthogonalization on top, to counter loss of
+    A-conjugacy from accumulated rounding error.
+    """
 
     def __init__(
         self,
@@ -299,7 +330,17 @@ class PCGSolver(ConjugateGradientSolver):
 
 
 class FCGSolver(ConjugateGradientSolver):
-    """Flexible Conjugate Gradient with explicit orthogonalization."""
+    """Flexible Conjugate Gradient with explicit orthogonalization.
+
+    Notay (2000) FCG: each new search direction is built by explicitly
+    A-conjugating the preconditioned residual against stored ``(d_j, q_j)``
+    pairs (``OrthogonalizationDirectionStrategy`` / ``orthogonalization``
+    strategy), rather than relying on PCG's short two-term recurrence -
+    necessary whenever the preconditioner varies between iterations or is
+    not exactly SPD, since the two-term recurrence's optimality proof
+    assumes a fixed SPD ``M``. See ``factories.flexible_cg()`` for the full
+    writeup and parameter docs.
+    """
 
     def __init__(
         self,

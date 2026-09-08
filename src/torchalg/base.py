@@ -19,7 +19,6 @@ from torchalg.utils.validation import validate_matrix, validate_rhs_vector
 
 DEFAULT_RTOL = 1e-6
 DEFAULT_ATOL = 1e-14
-DEFAULT_BREAKDOWN_TOL = 1e-14
 
 type LinearSystemOperator = Callable[[torch.Tensor], torch.Tensor] | torch.Tensor
 
@@ -46,7 +45,6 @@ class IterativeSolverBase[S: SolverState](ABC):
         rtol: float | None = None,
         atol: float | None = None,
         maxiter: int | None = None,
-        breakdown_tol: float | None = None,
     ) -> tuple[torch.Tensor, SolverResult]:
         """Solve ``A x = b`` using the concrete iterative method.
 
@@ -64,33 +62,20 @@ class IterativeSolverBase[S: SolverState](ABC):
 
         rtol_eff = DEFAULT_RTOL if rtol is None else rtol
         atol_eff = DEFAULT_ATOL if atol is None else atol
-        breakdown_tol_eff = DEFAULT_BREAKDOWN_TOL if breakdown_tol is None else breakdown_tol
         maxiter_eff = 10 * b.numel() if maxiter is None else maxiter
         linear_op = self._prepare_operator(A)
 
         state = self._initialize_state(linear_op, b, x0, maxiter=maxiter_eff)
         self._log_state(state)
 
-        while not self._check_stopping(
-            state,
-            rtol_eff,
-            atol_eff,
-            maxiter_eff,
-            breakdown_tol=breakdown_tol_eff,
-        ):
-            state = self._iterate_step(linear_op, state, breakdown_tol=breakdown_tol_eff)
+        while not self._check_stopping(state, rtol_eff, atol_eff, maxiter_eff):
+            state = self._iterate_step(linear_op, state)
             self._log_state(state)
 
         if not isinstance(state, HasVectors):
             raise RuntimeError("Final solution not found in state")
 
-        return state.u, self._build_result(
-            state,
-            rtol_eff,
-            atol_eff,
-            breakdown_tol=breakdown_tol_eff,
-            maxiter=maxiter_eff,
-        )
+        return state.u, self._build_result(state, rtol_eff, atol_eff, maxiter=maxiter_eff)
 
     def check_convergence(
         self,
@@ -197,7 +182,6 @@ class IterativeSolverBase[S: SolverState](ABC):
         self,
         linear_op: Callable[[torch.Tensor], torch.Tensor],
         state: S,
-        breakdown_tol: float | None = None,
     ) -> S:
         """Execute one solver iteration."""
 
@@ -208,7 +192,6 @@ class IterativeSolverBase[S: SolverState](ABC):
         rtol: float,
         atol: float,
         maxiter: int,
-        breakdown_tol: float | None = None,
     ) -> bool:
         """Return whether the solver should stop."""
 
@@ -218,7 +201,6 @@ class IterativeSolverBase[S: SolverState](ABC):
         state: S,
         rtol: float,
         atol: float,
-        breakdown_tol: float | None = None,
         maxiter: int | None = None,
     ) -> SolverResult:
         """Build the final solver result."""

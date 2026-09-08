@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 # =============================================================================
-# stable_dot_product / compute_curvature fixtures
+# stable_dot_product fixtures
 # =============================================================================
 
 
@@ -55,45 +55,6 @@ def overflow_cancelling_vectors() -> tuple[torch.Tensor, torch.Tensor]:
     a = torch.tensor([1e200, 1e200], dtype=torch.float64)
     b = torch.tensor([1e200, -1e200], dtype=torch.float64)
     return a, b
-
-
-@pytest.fixture
-def positive_curvature_pair(torch_dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
-    """Search direction / matvec pair with well-conditioned positive curvature.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: ``(p, q)`` with ``q = 2 * p``, so
-            ``p . q = 2 * ||p||^2 > 0``.
-    """
-    p = torch.tensor([1.0, 2.0, 3.0], dtype=torch_dtype)
-    q = 2.0 * p
-    return p, q
-
-
-@pytest.fixture
-def negative_curvature_pair(torch_dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
-    """Search direction / matvec pair with negative curvature (non-SPD signal).
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: ``(p, q)`` with ``q = -p``, so
-            ``p . q = -||p||^2 < 0``.
-    """
-    p = torch.tensor([1.0, 2.0, 3.0], dtype=torch_dtype)
-    q = -p
-    return p, q
-
-
-@pytest.fixture
-def nonfinite_curvature_pair(torch_dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
-    """Search direction / matvec pair whose dot product is non-finite.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: ``(p, q)`` with a ``nan`` in
-            ``q``, so ``p . q`` is ``nan``.
-    """
-    p = torch.tensor([1.0, 2.0, 3.0], dtype=torch_dtype)
-    q = torch.tensor([1.0, float("nan"), 3.0], dtype=torch_dtype)
-    return p, q
 
 
 # =============================================================================
@@ -188,3 +149,76 @@ def nan_and_inf_solution_vector(torch_dtype: torch.dtype) -> torch.Tensor:
             entry.
     """
     return torch.tensor([1.0, float("nan"), float("inf"), 3.0], dtype=torch_dtype)
+
+
+# =============================================================================
+# condition_number fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def well_conditioned_spd_matrix(torch_dtype: torch.dtype, test_seed: int) -> torch.Tensor:
+    """Dense SPD matrix with a modest, hand-verifiable condition number.
+
+    Built as ``Q @ diag([1, 2, 3, 4]) @ Q.T`` for a random orthonormal
+    ``Q``, so its exact 2-norm condition number is ``4 / 1 == 4.0``
+    regardless of ``Q``, since an orthogonal similarity transform preserves
+    eigenvalues.
+
+    Returns:
+        torch.Tensor: Symmetric ``(4, 4)`` matrix with condition number
+            exactly ``4.0``.
+    """
+    generator = torch.Generator().manual_seed(test_seed)
+    orthonormal_basis, _ = torch.linalg.qr(
+        torch.randn(4, 4, generator=generator, dtype=torch_dtype)
+    )
+    eigenvalues = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch_dtype)
+    matrix = orthonormal_basis @ torch.diag(eigenvalues) @ orthonormal_basis.T
+    return 0.5 * (matrix + matrix.T)
+
+
+@pytest.fixture
+def heterogeneous_stiffness_matrix(
+    torch_dtype: torch.dtype, test_seed: int
+) -> tuple[torch.Tensor, float]:
+    """Dense SPD matrix mimicking a stiff cube with a 1000x-softer inclusion.
+
+    Half the eigenvalues sit at ``O(1)`` (the stiff bulk material) and half
+    at ``O(1e-6)`` (a much softer embedded region, e.g. a soft sphere ~1e3x
+    less stiff than the surrounding cube, further compounded by the usual
+    mesh-size-driven spread of an FEM stiffness spectrum) — the exact regime
+    where naive power-iteration-based condition-number estimators are known
+    to fail (see ``torchalg.utils.spectral``). Built via an orthogonal
+    similarity transform of a diagonal matrix, so the true condition number
+    is known exactly: it is invariant under conjugation by an orthogonal
+    matrix.
+
+    Returns:
+        tuple[torch.Tensor, float]: ``(matrix, true_condition_number)``.
+    """
+    n = 64
+    generator = torch.Generator().manual_seed(test_seed)
+    orthonormal_basis, _ = torch.linalg.qr(
+        torch.randn(n, n, generator=generator, dtype=torch_dtype)
+    )
+    eigenvalues = torch.empty(n, dtype=torch_dtype)
+    eigenvalues[: n // 2] = 1.0 + torch.rand(n // 2, generator=generator, dtype=torch_dtype)
+    eigenvalues[n // 2 :] = 1e-6 * (
+        1.0 + torch.rand(n - n // 2, generator=generator, dtype=torch_dtype)
+    )
+    matrix = orthonormal_basis @ torch.diag(eigenvalues) @ orthonormal_basis.T
+    matrix = 0.5 * (matrix + matrix.T)
+    true_condition_number = float(eigenvalues.max() / eigenvalues.min())
+    return matrix, true_condition_number
+
+
+@pytest.fixture
+def singular_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
+    """A symmetric matrix with an exact zero eigenvalue (singular, not SPD).
+
+    Returns:
+        torch.Tensor: ``diag([0.0, 1.0, 2.0])`` - condition number is
+            undefined (infinite).
+    """
+    return torch.diag(torch.tensor([0.0, 1.0, 2.0], dtype=torch_dtype))
