@@ -5,6 +5,14 @@ factorization: a natural-ordering, no-pivoting ILU(0) (Saad Algorithm 10.4)
 computed on a dense ``torch.Tensor`` clone of ``A``, restricted to ``A``'s
 original non-zero pattern - see ``_masked_factorization.py`` and
 ``docs/plan.md``'s dense-only directive.
+
+Capability reduction from the reference, disclosed explicitly: the
+reference's `scipy.sparse.linalg.spilu` accepted `drop_tol`/`fill_factor`,
+allowing configurable fill-in beyond `A`'s original sparsity pattern (a
+general incomplete LU, not strictly ILU(0)). This port is strict ILU(0)
+only - no fill-in beyond the original pattern, and no `drop_tol`/
+`fill_factor` parameters at all. `ILUPreconditioner.__init__` takes only
+`matrix`.
 """
 
 from __future__ import annotations

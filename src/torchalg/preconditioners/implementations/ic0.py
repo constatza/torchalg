@@ -43,6 +43,15 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         ``torch.cholesky_solve`` (equivalent to the two triangular solves:
         forward ``L y = r``, backward ``L.T z = y``).
 
+    Breakdown:
+        IC(0) is not guaranteed to exist for every SPD matrix (it can
+        require a negative square root on the diagonal). This
+        implementation does not detect that case: a non-existent
+        factorization currently surfaces as ``nan``/``inf`` propagating
+        through ``apply()`` rather than a raised exception - check
+        ``torch.isfinite`` on the result if that matters for a given
+        matrix.
+
     Attributes:
         _operator (torch.Tensor): Lower triangular factor ``L``.
 

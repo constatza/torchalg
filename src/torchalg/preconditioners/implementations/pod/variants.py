@@ -22,6 +22,31 @@ class POD2GPreconditioner(AMGPreconditioner):
     suffices; for custom coarsening/cycle combinations, use
     ``AMGPreconditioner`` directly with a ``PODCoarseningStrategy``.
 
+    Two deliberate deviations from Nikolopoulos et al. (2022) worth
+    disclosing explicitly, since the class-level citation otherwise implies
+    a straight implementation of their §3.3-3.4 two-grid algorithm:
+
+    - **Relaxation**: the paper's Algorithm 2 uses undamped Gauss-Seidel
+      pre/post smoothing (``K = L + V``, ``u_{m+1} = L^{-1} r_m``), which
+      has no damping parameter. This class uses weighted Jacobi instead
+      (``omega`` below), reusing the same smoother as this codebase's
+      algebraic ``VCycleAMG``/``WCycleAMG`` for a uniform, more easily
+      parallelized ``SmootherBase`` across all AMG-family presets. The
+      ``omega ~= 2/3`` default is Vanek, Mandel & Brezina (1996)'s
+      prolongation-smoothing optimum (see ``JacobiSmoother``'s docstring);
+      it is not derived from - or needed by - the Nikolopoulos et al. paper.
+      Swap in a Gauss-Seidel smoother via ``AMGPreconditioner`` directly if
+      matching the paper's exact relaxer matters for a given comparison.
+    - **Snapshot source**: the paper collects snapshots as fully converged
+      FEM solutions for sampled parameter values (§3.2). The ``snapshots``
+      passed in here may instead be CG solve trajectories (intermediate
+      iterates) - an intentional variant, not an error; see the caller that
+      builds ``snapshots`` for details. Everything downstream of
+      ``snapshots`` (the POD-via-SVD basis construction in
+      ``compute_pod_basis``, the Galerkin coarse operator, the two-grid
+      correction formula) is unchanged from the paper regardless of which
+      snapshot source is used.
+
     Note (DIP):
         This is a preset/factory leaf class - it wires concrete domain
         objects in ``__init__``, the same pattern as ``VCycleAMG``/
