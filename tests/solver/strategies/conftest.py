@@ -118,6 +118,27 @@ def previous_matrix_product(torch_dtype: torch.dtype) -> torch.Tensor:
 
 
 @pytest.fixture
+def periodic_restart_history(
+    torch_dtype: torch.dtype,
+) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+    """Five standard-basis (d, q) pairs for probing FCG(m) window sizing.
+
+    ``d_j == q_j == e_j``, so every A-conjugacy denominator ``d_j . q_j``
+    is exactly ``1`` (never degenerate) and held fixed across calls: the
+    only thing that changes call-to-call is how many trailing pairs
+    ``PeriodicRestartOrthogonalization`` selects, which is exactly what
+    ``test_periodic_restart_window_follows_notay_sawtooth`` probes via
+    ``len(report.coefficients)``.
+
+    Returns:
+        tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+            ``(d_vectors, q_vectors)``, each 5 standard-basis vectors.
+    """
+    basis = tuple(torch.eye(5, dtype=torch_dtype)[i] for i in range(5))
+    return basis, basis
+
+
+@pytest.fixture
 def two_term_current_residual(torch_dtype: torch.dtype) -> torch.Tensor:
     """Current residual for Fletcher-Reeves direction tests."""
     return torch.tensor([1.0, 1.0], dtype=torch_dtype)

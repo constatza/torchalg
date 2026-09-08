@@ -59,3 +59,29 @@ def test_create_fcg_orthogonalization_rejects_zero_window() -> None:
     """A zero orthogonalization window is invalid."""
     with pytest.raises(ValueError, match="m_max cannot be 0"):
         create_fcg_orthogonalization(m_max=0)
+
+
+def test_periodic_restart_window_follows_notay_sawtooth(
+    periodic_restart_history: tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]],
+    torch_dtype: torch.dtype,
+) -> None:
+    """FCG(m) window sizes cycle ``1, 2, ..., m_max, 1, 2, ...`` (period ``m_max``).
+
+    This is Notay (2000)'s periodic-restart truncation as documented by
+    PETSc's ``KSPFCG``/``KSPPIPEFCG``/``KSPPIPEGCR`` ``notay`` truncation
+    type (``src/ksp/ksp/impls/fcg/fcg.c``: ``mi = ((i - 1) % mmax) + 1``,
+    i.e. a clean sawtooth of period ``mmax``) — see the module docstring
+    for ``torchalg.strategies.orthogonalization``. History is held fixed at
+    5 stored directions throughout (>= ``m_max``) so only the cycling
+    formula is under test, not the separate ``min(m_i, n_history)`` ramp-up
+    while history is still being filled.
+    """
+    d_vectors, q_vectors = periodic_restart_history
+    strategy = PeriodicRestartOrthogonalization(m_max=3.0)
+    probe = torch.ones(5, dtype=torch_dtype)
+
+    window_sizes = [
+        len(strategy.orthogonalize(probe, d_vectors, q_vectors)[1].coefficients) for _ in range(8)
+    ]
+
+    assert window_sizes == [1, 2, 3, 1, 2, 3, 1, 2]

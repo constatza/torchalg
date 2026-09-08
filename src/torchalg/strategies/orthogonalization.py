@@ -50,6 +50,15 @@ class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
     Implements Algorithm 2.1 of Notay, Y. (2000), "Flexible Conjugate
     Gradients", SIAM J. Sci. Comput. 22(4), 1444-1460: a plain classical
     Gram-Schmidt summation over the truncated window, with no term-skipping.
+
+    The window size cycles as ``m_i = (i mod m_max) + 1`` for (0-indexed)
+    call count ``i`` — a clean sawtooth of period ``m_max``:
+    ``1, 2, ..., m_max, 1, 2, ...``. This is the same periodic-restart
+    truncation PETSc documents and implements for ``KSPFCG``/
+    ``KSPPIPEFCG``/``KSPPIPEGCR`` (``truncation_type=notay``; see
+    ``src/ksp/ksp/impls/fcg/fcg.c``, ``mi = ((i - 1) % mmax) + 1`` for
+    1-indexed ``i``), which was used to verify this formula since the
+    primary source was not directly available while auditing this module.
     """
 
     def __init__(self, m_max: float) -> None:
@@ -84,7 +93,7 @@ class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
         if math.isinf(self.m_max):
             m_i = n_history
         else:
-            m_i = max(1, self._iteration_count % (int(self.m_max) + 1))
+            m_i = (self._iteration_count % int(self.m_max)) + 1
             m_i = min(m_i, n_history)
 
         start_idx = n_history - m_i
