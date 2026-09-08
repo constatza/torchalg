@@ -442,6 +442,61 @@ def small_spd_amg(torch_dtype: torch.dtype) -> torch.Tensor:
 
 
 @pytest.fixture
+def soft_inclusion_2d_stiffness(torch_dtype: torch.dtype) -> torch.Tensor:
+    """25-node 2D 5-point-stencil stiffness matrix with a soft circular inclusion.
+
+    Assembles a 5x5 grid Laplacian-style stiffness matrix (row-sum-zero
+    off-diagonals, positive diagonal), then scales every stencil edge
+    touching a central disk-shaped patch (Euclidean radius 2 around the
+    grid center, 13 of the 25 nodes) down by a factor of 1000x - a
+    "soft sphere inside a stiffer medium" heterogeneity, the realistic
+    case `TargetDimensionCoarsening` targets rather than a flat/uniform
+    stencil.
+
+    Empirically (see
+    `TestTargetDimensionCoarsening.test_realized_dimension_is_not_monotonic_in_theta`),
+    this matrix's `standard_aggregation` coarse dimension jumps from 6 to 8
+    as `theta` increases from 0.01 to 0.02 - the non-monotonicity
+    `TargetDimensionCoarsening`'s exhaustive grid search exists to guard
+    against.
+
+    Args:
+        torch_dtype: Default dtype for the returned matrix.
+
+    Returns:
+        torch.Tensor: Dense 25x25 SPD stiffness matrix.
+    """
+    grid_size = 5
+    inclusion_radius = 2
+    softness = 1000.0
+    center = grid_size // 2
+
+    def node_index(row: int, col: int) -> int:
+        return row * grid_size + col
+
+    def is_soft(row: int, col: int) -> bool:
+        return (row - center) ** 2 + (col - center) ** 2 <= inclusion_radius**2
+
+    matrix = torch.zeros(grid_size**2, grid_size**2, dtype=torch_dtype)
+    for row in range(grid_size):
+        for col in range(grid_size):
+            neighbors = [
+                (row + delta_row, col + delta_col)
+                for delta_row, delta_col in ((-1, 0), (1, 0), (0, -1), (0, 1))
+                if 0 <= row + delta_row < grid_size and 0 <= col + delta_col < grid_size
+            ]
+            for neighbor_row, neighbor_col in neighbors:
+                weight = (
+                    1.0 / softness
+                    if is_soft(row, col) or is_soft(neighbor_row, neighbor_col)
+                    else 1.0
+                )
+                matrix[node_index(row, col), node_index(neighbor_row, neighbor_col)] = -weight
+    matrix.diagonal().copy_(-matrix.sum(dim=1))
+    return matrix
+
+
+@pytest.fixture
 def zero_iteration_context() -> PreconditionerContext:
     """Dummy ``PreconditionerContext`` at iteration 0.
 

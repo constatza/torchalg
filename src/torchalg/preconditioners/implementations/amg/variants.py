@@ -46,7 +46,10 @@ class VCycleAMG(AMGPreconditioner):
     Args:
         matrix (torch.Tensor): System matrix A (n x n), SPD.
         n_levels (int): Number of hierarchy levels; must be at least 2.
-            3 is the robust default for medium-sized problems (n ~ 100-10 000).
+            3 is an unsourced-but-reasonable default for medium-sized
+            problems (n ~ 100-10 000); not derived from a specific paper -
+            tune per problem, or use ``TargetDimensionCoarsening``
+            (``coarsening.py``) to target a coarse dimension directly.
         omega (float): Jacobi damping factor omega used for both the
             smoother and the prolongation smoother. Default 0.67 ~=
             4/(3*rho(D^{-1}A)) for isotropic SPD with rho ~= 2 (Vanek et al.
@@ -54,7 +57,10 @@ class VCycleAMG(AMGPreconditioner):
         n_pre (int): Pre-smoothing steps (symmetric pre/post preserves SPD).
         n_post (int): Post-smoothing steps.
         theta (float): Strength-of-connection threshold theta in (0, 1).
-            Default 0.25 follows Stuben (2001) Section 2.1.
+            Default 0.25 is a literature/practice-standard default (e.g.
+            hypre BoomerAMG's ``strong_threshold``, PyAMG's
+            ``smoothed_aggregation_solver``), not from Stuben (2001) - see
+            ``strength_of_connection``'s docstring in ``_aggregation.py``.
 
     References:
         - Vanek, Mandel & Brezina (1996), Sections 3-4 (SA-AMG, V-cycle
@@ -116,7 +122,13 @@ class WCycleAMG(AMGPreconditioner):
           gamma-cycle).
         - Trottenberg, Oosterlee & Schuller (2001), Section 2.2.2, Algorithm
           2.2 (mu = 2).
-        - Stuben (2001), Section 4.2 (AMG cycle complexity).
+        - Stuben (2001), "A review of algebraic multigrid", J. Comput. Appl.
+          Math. 128(1-2), discusses AMG cycle complexity generally; unlike
+          the strength-of-connection formula elsewhere in this codebase
+          (which was verified against this same paper and found to be
+          misattributed - see ``_aggregation.py``), the specific section
+          number for this citation was not independently verified against
+          the paper text (paywalled) - cited for the general topic only.
     """
 
     def __init__(

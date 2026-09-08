@@ -35,6 +35,11 @@ import torch
 from torchalg.preconditioners.base import PreconditionerContext
 from torchalg.preconditioners.implementations import AMGPreconditioner, Identity
 from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
+from torchalg.preconditioners.implementations.amg._aggregation import (
+    piecewise_constant_prolongation,
+    standard_aggregation,
+    strength_of_connection,
+)
 from torchalg.preconditioners.implementations.amg import (
     AggregationCoarsening,
     DenseTransferOperator,
@@ -169,6 +174,68 @@ class TestDenseTransferOperator:
 
 
 # ---------------------------------------------------------------------------
+# standard_aggregation (VMB96 three-pass)
+# ---------------------------------------------------------------------------
+
+
+class TestStandardAggregation:
+    """Cross-validated against the compiled PyAMG library's ``standard_aggregation``
+    (``amg_core::standard_aggregation``, transliterated verbatim in
+    ``_aggregation.py``): 500 random symmetric strength graphs (n=3..40, varying
+    density) matched exactly during development - see ``.claude/plan.md``.
+    """
+
+    def test_matches_pyamg_reference_grouping_on_poisson_1d(self, poisson_1d: torch.Tensor) -> None:
+        """20-node 1D Poisson chain, theta=0.25: boundary pair + six interior triples.
+
+        Hand-verified against ``pyamg.aggregation.aggregate.standard_aggregation``
+        on the identical strength graph: aggregates are
+        ``{0,1},{2,3,4},{5,6,7},{8,9,10},{11,12,13},{14,15,16},{17,18,19}``
+        (boundary nodes have degree 1 so their seed only sweeps one neighbor;
+        interior seeds sweep two, forming triples).
+        """
+        strength = strength_of_connection(poisson_1d, theta=0.25)
+        aggregate = standard_aggregation(strength)
+
+        expected_groups = [
+            {0, 1},
+            {2, 3, 4},
+            {5, 6, 7},
+            {8, 9, 10},
+            {11, 12, 13},
+            {14, 15, 16},
+            {17, 18, 19},
+        ]
+        assert aggregate.min() >= 0, "no isolated nodes expected on a connected chain"
+        assert int(aggregate.max()) + 1 == len(expected_groups)
+        for expected_group in expected_groups:
+            aggregate_ids = {int(aggregate[node]) for node in expected_group}
+            assert len(aggregate_ids) == 1, f"{expected_group} split across aggregates"
+        # every expected group maps to a distinct aggregate id
+        assert len({int(aggregate[next(iter(g))]) for g in expected_groups}) == len(expected_groups)
+
+    def test_isolated_node_excluded_not_wrapped_to_last_column(
+        self, torch_dtype: torch.dtype
+    ) -> None:
+        """A node with zero strong connections gets -1 (PyAMG convention), not 0."""
+        strength = torch.zeros((3, 3), dtype=torch.bool)
+        strength[1, 2] = strength[2, 1] = True  # nodes 1-2 connected, node 0 isolated
+
+        aggregate = standard_aggregation(strength)
+
+        assert int(aggregate[0]) == -1
+        assert int(aggregate[1]) == int(aggregate[2])
+        assert int(aggregate[1]) >= 0
+
+        prolongation = piecewise_constant_prolongation(aggregate, dtype=torch_dtype)
+        assert prolongation.shape == (3, 1)
+        torch.testing.assert_close(
+            prolongation[0], torch.zeros(1, dtype=torch_dtype)
+        )  # isolated node: all-zero row, not a wrapped -1 index into the last column
+        torch.testing.assert_close(prolongation[1], prolongation[2])
+
+
+# ---------------------------------------------------------------------------
 # AggregationCoarsening
 # ---------------------------------------------------------------------------
 
@@ -200,18 +267,24 @@ class TestAggregationCoarsening:
 
 
 class TestTargetDimensionCoarsening:
-    """`poisson_1d` (20x20, uniform 1D stencil) has two theta plateaus:
-    c=10 for theta in roughly [0.01, 0.5], c=20 (fully degenerate, no
-    coarsening) for theta >= 0.6 — used directly as the two targets below.
+    """`poisson_1d` (20x20, uniform 1D stencil) has, under
+    `standard_aggregation`'s three-pass algorithm, exactly two theta
+    plateaus: c=7 (one boundary pair + six interior triples, see
+    `TestStandardAggregation`) for theta in [0.01, 0.50], and c=0 (fully
+    disconnected — every node isolated, no coarse level at all) for
+    theta >= 0.51, since the chain's off-diagonal strength ratio is exactly
+    0.5 everywhere. (Values were 10/20 under the old single-pass
+    `greedy_aggregation`; the field-standard algorithm's neighbor-freeness
+    safeguard changes the realized plateau — see `.claude/plan.md`.)
     """
 
     def test_returns_closest_achievable_coarse_dimension(self, poisson_1d: torch.Tensor) -> None:
-        """Target within the low plateau resolves to that plateau's realized dimension."""
+        """Target within the connected plateau resolves to that plateau's realized dimension."""
         coarsening = TargetDimensionCoarsening(
-            target_coarse_dim=10, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
+            target_coarse_dim=10, theta_min=0.01, theta_max=0.5, step=0.01, omega=0.67
         )
         a_c, _ = coarsening.build_transfer(poisson_1d)
-        assert a_c.shape[0] == 10
+        assert a_c.shape[0] == 7
 
     def test_respects_theta_bounds_even_when_target_is_unreachable(
         self, poisson_1d: torch.Tensor
@@ -221,32 +294,73 @@ class TestTargetDimensionCoarsening:
             target_coarse_dim=20, theta_min=0.01, theta_max=0.5, step=0.01, omega=0.67
         )
         a_c, _ = coarsening.build_transfer(poisson_1d)
-        assert a_c.shape[0] == 10
+        assert a_c.shape[0] == 7
         assert coarsening._theta is not None
         assert 0.01 <= coarsening._theta <= 0.5
 
     def test_caches_realized_theta_and_dimension_after_build(
         self, poisson_1d: torch.Tensor
     ) -> None:
-        """Winning theta/dimension are readable afterward without rebuilding."""
+        """Winning theta/dimension are readable afterward without rebuilding.
+
+        Target 7 is exactly achievable (the connected plateau), unlike
+        target 20: even scanning all the way to theta_max=0.99 (which
+        reaches the fully-disconnected c=0 plateau) never gets closer to
+        20 than c=7 does, so this target no longer doubles as an "exact
+        match via full disconnection" case the way it did pre-fix.
+        """
         coarsening = TargetDimensionCoarsening(
-            target_coarse_dim=20, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
+            target_coarse_dim=7, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
         )
         assert coarsening._theta is None
         assert coarsening._realized_coarse_dim is None
         a_c, _ = coarsening.build_transfer(poisson_1d)
-        assert coarsening._realized_coarse_dim == a_c.shape[0] == 20
+        assert coarsening._realized_coarse_dim == a_c.shape[0] == 7
 
     def test_transfer_shapes_consistent(self, poisson_1d: torch.Tensor) -> None:
         """Prolongate output (fine) and restrict output (coarse) sizes must match."""
         coarsening = TargetDimensionCoarsening(
-            target_coarse_dim=10, theta_min=0.01, theta_max=0.99, step=0.01, omega=0.67
+            target_coarse_dim=7, theta_min=0.01, theta_max=0.5, step=0.01, omega=0.67
         )
         a_c, transfer = coarsening.build_transfer(poisson_1d)
         n_fine = poisson_1d.shape[0]
         n_coarse = a_c.shape[0]
         assert transfer.prolongate(torch.ones(n_coarse, dtype=poisson_1d.dtype)).shape == (n_fine,)
         assert transfer.restrict(torch.ones(n_fine, dtype=poisson_1d.dtype)).shape == (n_coarse,)
+
+    def test_realized_dimension_is_not_monotonic_in_theta(
+        self, soft_inclusion_2d_stiffness: torch.Tensor
+    ) -> None:
+        """Realized coarse dimension can *increase* as theta increases (genuine counterexample).
+
+        This is the empirical justification for exhaustive grid search over
+        bisection: on `soft_inclusion_2d_stiffness` (a heterogeneous 2D
+        stiffness matrix with a soft circular inclusion - the class of
+        matrix `TargetDimensionCoarsening` exists to serve), the realized
+        dimension under `standard_aggregation` jumps from 6 (theta=0.01) to
+        8 (theta=0.02) - non-monotonic, since stricter theta only ever
+        shrinks the strength graph yet the aggregate count went up, not
+        down or unchanged. `poisson_1d`'s flat stencil never exhibits this
+        (see the class docstring's two-plateau structure); heterogeneity is
+        what triggers the order-dependent seeding competition responsible.
+        """
+        dim_at_theta_001 = int(
+            standard_aggregation(strength_of_connection(soft_inclusion_2d_stiffness, 0.01))
+            .max()
+            .item()
+            + 1
+        )
+        dim_at_theta_002 = int(
+            standard_aggregation(strength_of_connection(soft_inclusion_2d_stiffness, 0.02))
+            .max()
+            .item()
+            + 1
+        )
+        assert dim_at_theta_001 == 6
+        assert dim_at_theta_002 == 8
+        assert dim_at_theta_002 > dim_at_theta_001, (
+            "expected a non-monotonic increase in realized dimension as theta grows"
+        )
 
 
 # ---------------------------------------------------------------------------

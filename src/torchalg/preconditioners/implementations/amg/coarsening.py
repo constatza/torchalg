@@ -14,9 +14,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ._aggregation import (
-    greedy_aggregation,
     piecewise_constant_prolongation,
     smoothed_prolongation,
+    standard_aggregation,
     strength_of_connection,
 )
 from .transfer import DenseTransferOperator, NeuralTransferOperator
@@ -34,9 +34,14 @@ class AggregationCoarsening:
     (1996):
 
     1. Strength-of-connection: mark strong off-diagonal entries via
-       ``|a_ij| / sqrt(|a_ii| * |a_jj|) >= theta`` (Stuben 2001, Section 2.1).
-    2. Greedy aggregation: partition nodes into non-overlapping aggregates
-       using the strong-connection graph.
+       ``|a_ij| / sqrt(|a_ii| * |a_jj|) >= theta`` (Vanek, Mandel & Brezina
+       1996's Cauchy-Schwarz strength measure, not Stuben's classical/RS
+       measure - see ``strength_of_connection``'s docstring).
+    2. Aggregation: partition nodes into non-overlapping aggregates using
+       the strong-connection graph via ``standard_aggregation``'s
+       field-standard three-pass algorithm (PyAMG's
+       ``amg_core::standard_aggregation`` - see that function's docstring
+       for the full three-pass description).
     3. Tentative prolongation P0: piecewise-constant indicator matrix
        (aggregate membership).
     4. Smoothed prolongation: ``P = (I - omega D^{-1} A) P0``, omega ~= 2/3
@@ -45,7 +50,9 @@ class AggregationCoarsening:
 
     Args:
         theta (float): Strength-of-connection threshold theta in (0, 1).
-            Default 0.25 follows Stuben (2001) Section 2.1.
+            Default 0.25 is a literature/practice-standard default (e.g.
+            hypre BoomerAMG's ``strong_threshold``, PyAMG's
+            ``smoothed_aggregation_solver``), not from Stuben (2001).
         omega (float): Jacobi-smoothing damping omega in (0, 1) for the
             prolongation smoother. Default 0.67 ~= 2/3 assumes
             ``rho(D^{-1}A) ~= 2`` (isotropic SPD).
@@ -54,8 +61,8 @@ class AggregationCoarsening:
         - Vanek, P., Mandel, J., & Brezina, M. (1996). Algebraic multigrid by
           smoothed aggregation for second and fourth order elliptic problems.
           Computing, 56(3), 179-196.
-        - Stuben, K. (2001). A review of algebraic multigrid.
-          J. Comput. Appl. Math., 128(1-2), 281-309.
+        - Xu, J., & Zikatanov, L. (2017). Algebraic multigrid methods. Acta
+          Numerica, 26, 591-721 (arXiv:1611.01917).
     """
 
     def __init__(self, theta: float = 0.25, omega: float = 0.67) -> None:
@@ -83,7 +90,7 @@ class AggregationCoarsening:
                 tensor.
         """
         strength = strength_of_connection(A, self._theta)
-        aggregate = greedy_aggregation(strength)
+        aggregate = standard_aggregation(strength)
         tentative = piecewise_constant_prolongation(aggregate, dtype=A.dtype)
         prolongation = smoothed_prolongation(A, tentative, self._omega)
 
@@ -105,21 +112,42 @@ class TargetDimensionCoarsening:
     already has.
 
     **Why exhaustive grid search, not bisection or a black-box optimizer**:
-    verified directly against real stiffness matrices that
-    `AggregationCoarsening`'s realized dimension is not monotonic in
-    `theta` — greedy aggregation is a first-come-first-served, order-
-    dependent heuristic (standard SA-AMG, not a bug: see Vanek, Mandel &
-    Brezina 1996), so a stricter `theta` can still occasionally *reduce*
-    the aggregate count by changing which node claims which neighbor
-    first, even though the underlying strength-of-connection graph only
-    ever shrinks as `theta` grows. Bisection assumes monotonicity and can
-    converge to the wrong plateau as a result. A sampler built for
-    expensive, high-dimensional, exploitably-smooth objectives (Optuna,
-    Bayesian optimization) earns nothing here either: `theta` is a single
-    bounded scalar, each trial is one cheap `build_transfer` call, and
-    there is no smooth trend to model. A plain `step`-spaced exhaustive
-    scan is simpler and strictly more reliable: correct up to `step`
-    resolution, guaranteed, with no risk of settling on the wrong plateau.
+    re-verified directly against `standard_aggregation` (the current
+    field-standard three-pass algorithm, not the single-pass
+    `greedy_aggregation` this class originally wrapped) that realized
+    dimension is genuinely, not just theoretically, non-monotonic in
+    `theta` on realistic heterogeneous stiffness matrices — a 5x5 2D
+    5-point-stencil grid (n=25) with a central disk-shaped "soft
+    inclusion" patch (radius 2, 13 of 25 nodes, stencil weights scaled
+    1000x softer — the "soft sphere in a stiffer medium" case this class
+    exists to serve) jumps from a realized dimension of 6 at theta=0.01 to
+    8 at theta=0.02, and a 20x20 analog with the same soft-inclusion
+    construction (49-node patch, both 10x and 1000x softness) shows further
+    non-monotone jumps deeper into its theta range (e.g. 70 -> 74
+    aggregates from theta=0.08 to 0.09). See
+    `tests/.../conftest.py::soft_inclusion_2d_stiffness` and
+    `TestTargetDimensionCoarsening.test_realized_dimension_is_not_monotonic_in_theta`
+    for the exact fixture and reproduction. The mechanism: `standard_aggregation`'s
+    Pass 1 is a left-to-right, order-dependent seeding process (which node
+    becomes unblocked first, and therefore seeds, depends on the exact
+    strength graph at each `theta`), so a stricter `theta` can change which
+    node claims a given neighbor and shift the aggregate count either way,
+    even though the underlying strength-of-connection graph only ever
+    shrinks as `theta` grows. On the flat, homogeneous `poisson_1d` fixture
+    this never surfaces (see
+    `tests/.../test_amg.py::TestTargetDimensionCoarsening`'s two-plateau
+    docstring) — uniform stencils don't create the local competition
+    between seeds that produces it — which is exactly why that fixture
+    alone was insufficient to settle the question; heterogeneous stiffness
+    is required to trigger it. Bisection assumes monotonicity and can
+    converge to the wrong plateau given a matrix like the one above. A
+    sampler built for expensive, high-dimensional, exploitably-smooth
+    objectives (Optuna, Bayesian optimization) earns nothing here either:
+    `theta` is a single bounded scalar, each trial is one cheap
+    `build_transfer` call, and there is no smooth trend to model. A plain
+    `step`-spaced exhaustive scan is simpler and strictly more reliable:
+    correct up to `step` resolution, guaranteed, with no risk of settling
+    on the wrong plateau.
 
     The search itself is isolated in `_search` precisely so it can be
     swapped later (e.g. for bisection) without touching `build_transfer`
