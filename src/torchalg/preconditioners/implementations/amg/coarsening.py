@@ -19,6 +19,7 @@ from ._aggregation import (
     standard_aggregation,
     strength_of_connection,
 )
+from ._theta_search import adaptive_theta_scan
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 
 if TYPE_CHECKING:
@@ -143,11 +144,25 @@ class TargetDimensionCoarsening:
     converge to the wrong plateau given a matrix like the one above. A
     sampler built for expensive, high-dimensional, exploitably-smooth
     objectives (Optuna, Bayesian optimization) earns nothing here either:
-    `theta` is a single bounded scalar, each trial is one cheap
-    `build_transfer` call, and there is no smooth trend to model. A plain
-    `step`-spaced exhaustive scan is simpler and strictly more reliable:
-    correct up to `step` resolution, guaranteed, with no risk of settling
-    on the wrong plateau.
+    `theta` is a single bounded scalar, each trial is one cheap dimension
+    probe, and there is no smooth trend to model. `_search` uses
+    `adaptive_theta_scan` (`_theta_search.py`): a `step`-spaced *coarse*
+    pass (log-spaced, not linear — see that module's docstring) followed
+    by bisection of every disagreeing interval down past `step`. A plain
+    fixed `step` grid, linear or log, is not enough on its own: on a
+    heterogeneous 25x25 soft-inclusion grid (see `.claude/plan.md`'s
+    investigation notes), the true `theta -> dim` staircase has plateaus
+    only ~0.003-0.006 wide sitting between much wider ones, so a `step`
+    anywhere near a typical default (0.01-0.1) can straddle and skip them
+    outright — silently handing back the same, coarser-than-intended
+    dimension for two genuinely different `target_coarse_dim` requests.
+    `adaptive_theta_scan` closes that: any plateau boundary the coarse
+    pass detects (i.e. two adjacent coarse samples disagree) gets bisected
+    down near machine precision, not just to `step`, so a plateau
+    narrower than `step` but sandwiched between two disagreeing coarse
+    points is still found. The one case no finite-budget grid can catch
+    is a plateau narrower than the coarse spacing whose neighbors happen
+    to agree on *both* sides.
 
     The search itself is isolated in `_search` precisely so it can be
     swapped later (e.g. for bisection) without touching `build_transfer`
@@ -217,13 +232,18 @@ class TargetDimensionCoarsening:
         return a_coarse, transfer
 
     def _search(self, A: torch.Tensor) -> tuple[float, torch.Tensor, DenseTransferOperator]:
-        """Exhaustively scan the `theta` grid, keeping the closest match to `target_coarse_dim`.
+        """Adaptively scan the `theta` grid, keeping the closest match to `target_coarse_dim`.
 
         The sole extension point for swapping the search algorithm (e.g.
         for bisection, if a future coarsening strategy makes
         ``theta -> realized dimension`` monotonic) — everything else on
         this class (`build_transfer`'s caching, the constructor) is
         independent of how the search itself is performed.
+
+        Sampling uses a cheap dimension-only probe (strength + aggregation,
+        skipping prolongation smoothing and the Galerkin product) for every
+        candidate `theta`; the full `AggregationCoarsening.build_transfer`
+        is called exactly once, at the winning `theta`.
 
         Args:
             A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
@@ -233,13 +253,17 @@ class TargetDimensionCoarsening:
                 A_coarse, transfer)`` for the candidate whose realized
                 coarse dimension is closest to ``target_coarse_dim``.
         """
-        n_steps = round((self._theta_max - self._theta_min) / self._step) + 1
-        candidates = [self._theta_min + i * self._step for i in range(n_steps)]
-        results = [
-            (theta, *AggregationCoarsening(theta=theta, omega=self._omega).build_transfer(A))
-            for theta in candidates
-        ]
-        return min(results, key=lambda result: abs(result[1].shape[0] - self._target_coarse_dim))
+
+        def realized_dimension(theta: float) -> int:
+            aggregate = standard_aggregation(strength_of_connection(A, theta))
+            return int(aggregate.max().item()) + 1 if aggregate.numel() else 0
+
+        samples = adaptive_theta_scan(
+            self._theta_min, self._theta_max, self._step, realized_dimension
+        )
+        theta = min(samples, key=lambda sample: abs(sample[1] - self._target_coarse_dim))[0]
+        a_coarse, transfer = AggregationCoarsening(theta=theta, omega=self._omega).build_transfer(A)
+        return theta, a_coarse, transfer
 
 
 class NeuralCoarseningStrategy:
