@@ -11,6 +11,7 @@ from CSR to dense. The step-by-step kernels live in ``_aggregation.py``.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from ._aggregation import (
@@ -26,6 +27,21 @@ if TYPE_CHECKING:
     import torch
 
     from ...ports import ExtraInputPredictorPort
+
+
+@lru_cache(maxsize=1024)
+def _cached_aggregation_build_transfer(
+    A: torch.Tensor, theta: float, omega: float
+) -> tuple[torch.Tensor, DenseTransferOperator]:
+    """Build (and cache) one `AggregationCoarsening` candidate for `(A, theta, omega)`.
+
+    `A` hashes and compares by object identity (the default for
+    `torch.Tensor`), so this only dedupes calls sharing the exact matrix
+    object already resident from one search - never a false hit across two
+    distinct, coincidentally-equal matrices. Backs
+    `TargetDimensionCoarsening`'s `cache_candidates=True` option.
+    """
+    return AggregationCoarsening(theta=theta, omega=omega).build_transfer(A)
 
 
 class AggregationCoarsening:
@@ -177,6 +193,16 @@ class TargetDimensionCoarsening:
             proportionally higher cost (one `build_transfer` call per step).
         omega (float): Prolongation Jacobi-smoothing damping, forwarded to
             each candidate `AggregationCoarsening`.
+        cache_candidates (bool): If ``True``, the winning candidate's full
+            `AggregationCoarsening.build_transfer` is memoized by
+            `(A, theta, omega)` (object identity on `A`) via a shared
+            `functools.lru_cache`, so a sibling instance searching the same
+            matrix and landing on the same `theta` reuses the build instead
+            of repeating it. Off by default - opt in only when multiple
+            instances against the same matrix are expected (e.g. several
+            `target_coarse_dim` values in one comparison sweep); the cache
+            keeps matrix tensors alive up to `maxsize` entries, an
+            unnecessary memory trade-off for a single one-shot instance.
     """
 
     def __init__(
@@ -187,6 +213,7 @@ class TargetDimensionCoarsening:
         theta_max: float,
         step: float,
         omega: float,
+        cache_candidates: bool = False,
     ) -> None:
         """Store the target dimension and search parameters; unbuilt until `build_transfer`.
 
@@ -196,12 +223,16 @@ class TargetDimensionCoarsening:
             theta_max (float): Upper bound of the `theta` search grid.
             step (float): Grid spacing for the exhaustive search.
             omega (float): Prolongation Jacobi-smoothing damping.
+            cache_candidates (bool): Share the winning candidate's full
+                build across instances against the same matrix - see the
+                class docstring.
         """
         self._target_coarse_dim = target_coarse_dim
         self._theta_min = theta_min
         self._theta_max = theta_max
         self._step = step
         self._omega = omega
+        self._cache_candidates = cache_candidates
         self._theta: float | None = None
         self._realized_coarse_dim: int | None = None
 
@@ -262,7 +293,12 @@ class TargetDimensionCoarsening:
             self._theta_min, self._theta_max, self._step, realized_dimension
         )
         theta = min(samples, key=lambda sample: abs(sample[1] - self._target_coarse_dim))[0]
-        a_coarse, transfer = AggregationCoarsening(theta=theta, omega=self._omega).build_transfer(A)
+        if self._cache_candidates:
+            a_coarse, transfer = _cached_aggregation_build_transfer(A, theta, self._omega)
+        else:
+            a_coarse, transfer = AggregationCoarsening(
+                theta=theta, omega=self._omega
+            ).build_transfer(A)
         return theta, a_coarse, transfer
 
 

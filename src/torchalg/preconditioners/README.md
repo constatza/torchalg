@@ -36,11 +36,20 @@ coarsening and reduce to a direct dense solve on the original system.
 give it the same "set the coarse dimension directly" ergonomics
 `PODCoarseningStrategy`'s `rank` already has: realized coarse dimension vs.
 `theta` is an emergent, empirically step-function (not smooth, not
-monotonic) response, so it exhaustively scans a `theta_min`/`theta_max`/`step`
-grid and keeps the candidate whose realized dimension is closest to the
-requested target, caching the winning `theta`/dimension as `_theta`/
-`_realized_coarse_dim` afterward. Deliberately a plain grid scan, not
-bisection (assumes monotonicity, which doesn't hold) or a black-box
-optimizer like Optuna (built for expensive, smooth, higher-dimensional
-objectives — none of which describes a single cheap bounded scalar with a
-step-function response).
+monotonic) response, so `_search` uses `adaptive_theta_scan`
+(`_theta_search.py`) - a cheap dimension-only probe (strength +
+aggregation, skipping prolongation smoothing and the Galerkin product) over
+a log-spaced coarse pass plus bisection of every disagreeing interval - and
+pays for a full `AggregationCoarsening.build_transfer` exactly once, at the
+winning `theta`, caching it as `_theta`/`_realized_coarse_dim` afterward.
+Deliberately adaptive sampling, not a plain fixed grid (a plateau narrower
+than the grid spacing can sit between two agreeing samples and get missed
+entirely), bisection alone (assumes monotonicity, which doesn't hold), or a
+black-box optimizer like Optuna (built for expensive, smooth,
+higher-dimensional objectives — none of which describes a single cheap
+bounded scalar with a step-function response). `cache_candidates=True`
+additionally shares that one full build across sibling instances searching
+the same matrix object (e.g. several `target_coarse_dim` values in one
+comparison sweep) via a module-level `functools.lru_cache`; off by default
+since it's only a win when multiple instances against the same matrix are
+expected.

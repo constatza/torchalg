@@ -447,6 +447,50 @@ class TestTargetDimensionCoarsening:
         a_c, _ = coarsening.build_transfer(poisson_1d)
         assert coarsening._realized_coarse_dim == a_c.shape[0] == 7
 
+    def test_cache_candidates_shares_full_builds_across_sibling_instances(
+        self, poisson_1d: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`cache_candidates=True` reuses a full build across instances sharing (matrix, theta, omega).
+
+        A caller commonly declares several `TargetDimensionCoarsening`
+        instances against the same matrix (e.g. one per `target_coarse_dim`
+        in a comparison sweep) - each instance's search may land on the
+        same winning theta as another's, in which case the expensive full
+        `AggregationCoarsening.build_transfer` (strength + aggregation +
+        prolongation smoothing + Galerkin product) shouldn't be paid twice.
+        """
+        call_count = 0
+        original_build_transfer = AggregationCoarsening.build_transfer
+
+        def counting_build_transfer(self: AggregationCoarsening, A: torch.Tensor) -> object:
+            nonlocal call_count
+            call_count += 1
+            return original_build_transfer(self, A)
+
+        monkeypatch.setattr(AggregationCoarsening, "build_transfer", counting_build_transfer)
+
+        first = TargetDimensionCoarsening(
+            target_coarse_dim=7,
+            theta_min=0.01,
+            theta_max=0.5,
+            step=0.01,
+            omega=0.67,
+            cache_candidates=True,
+        )
+        second = TargetDimensionCoarsening(
+            target_coarse_dim=7,
+            theta_min=0.01,
+            theta_max=0.5,
+            step=0.01,
+            omega=0.67,
+            cache_candidates=True,
+        )
+
+        first.build_transfer(poisson_1d)
+        assert call_count == 1
+        second.build_transfer(poisson_1d)
+        assert call_count == 1, "second instance should reuse the first's cached full build"
+
     def test_transfer_shapes_consistent(self, poisson_1d: torch.Tensor) -> None:
         """Prolongate output (fine) and restrict output (coarse) sizes must match."""
         coarsening = TargetDimensionCoarsening(
