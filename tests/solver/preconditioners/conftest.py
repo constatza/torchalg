@@ -544,3 +544,54 @@ def pod_basis(poisson_snapshots: torch.Tensor) -> torch.Tensor:
         torch.Tensor: Phi_r, shape (20, 10).
     """
     return compute_pod_basis(poisson_snapshots, rank=10)
+
+
+@pytest.fixture
+def snapshot_row_scales(poisson_snapshots: torch.Tensor) -> torch.Tensor:
+    """Distinct, strictly positive per-snapshot row scales for weighted-POD tests.
+
+    Args:
+        poisson_snapshots: Snapshot ensemble fixture.
+
+    Returns:
+        torch.Tensor: Shape (15,), values spread over [0.5, 2.0] so no two
+            snapshots carry the same weight.
+    """
+    return torch.linspace(0.5, 2.0, poisson_snapshots.shape[0], dtype=poisson_snapshots.dtype)
+
+
+@pytest.fixture
+def single_dominant_row_scales(poisson_snapshots: torch.Tensor) -> torch.Tensor:
+    """Row scales that leave only the first snapshot with meaningful weight.
+
+    Makes the weighted covariance effectively rank-1, so the leading POD mode
+    must align with the first snapshot's direction - the sharpest observable
+    consequence of row weighting reaching the SVD.
+
+    Args:
+        poisson_snapshots: Snapshot ensemble fixture.
+
+    Returns:
+        torch.Tensor: Shape (15,), ``[1.0, 1e-8, 1e-8, ...]``.
+    """
+    scales = torch.full((poisson_snapshots.shape[0],), 1e-8, dtype=poisson_snapshots.dtype)
+    scales[0] = 1.0
+    return scales
+
+
+@pytest.fixture
+def snapshots_with_zero_row(poisson_snapshots: torch.Tensor) -> torch.Tensor:
+    """``poisson_snapshots`` with its first row zeroed out.
+
+    A zero snapshot has no direction and an undefined normalization, so it
+    exercises the near-zero guards in the weighting helpers.
+
+    Args:
+        poisson_snapshots: Snapshot ensemble fixture.
+
+    Returns:
+        torch.Tensor: Shape (15, 20) with row 0 all zeros.
+    """
+    snapshots = poisson_snapshots.clone()
+    snapshots[0] = 0.0
+    return snapshots

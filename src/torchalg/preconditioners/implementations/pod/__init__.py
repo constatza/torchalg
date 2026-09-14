@@ -25,7 +25,20 @@ Public API:
         - PODCoarseningStrategy: Builds a POD-reduced coarse level from a
           snapshot ensemble; satisfies the ``CoarseningStrategy`` protocol.
         - compute_pod_basis: Pure function computing the truncated POD basis
-          (snapshot method) from a snapshot ensemble.
+          (snapshot method) from a snapshot ensemble, with an optional
+          per-snapshot ``row_scales`` for weighted POD.
+
+    Snapshot weighting (``.weighting``, for the ``row_scales`` argument
+    above):
+        - power_norm_scales: Row scale interpolating between raw and
+          L2/A-normalized snapshots.
+        - smoother_persistence_scales: Row scale by how well each snapshot
+          survives weighted-Jacobi damping.
+        - l2_row_norms / a_row_norms: The underlying per-row norms.
+        - apply_jacobi_damping: Batched weighted-Jacobi error damping,
+          reused by ``smoother_persistence_scales`` and available directly
+          for snapshot-generation strategies that want "algebraically
+          smooth" probe vectors.
 
     Reused from ``.amg`` (not redefined here):
         - DenseTransferOperator: P/R backed by a dense tensor; satisfies the
@@ -41,6 +54,13 @@ References:
 from .basis import compute_pod_basis
 from .coarsening import PODCoarseningStrategy
 from .variants import POD2GPreconditioner
+from .weighting import (
+    a_row_norms,
+    apply_jacobi_damping,
+    l2_row_norms,
+    power_norm_scales,
+    smoother_persistence_scales,
+)
 
 __all__ = [
     # Preset
@@ -48,4 +68,10 @@ __all__ = [
     # Core
     "PODCoarseningStrategy",
     "compute_pod_basis",
+    # Weighting
+    "a_row_norms",
+    "apply_jacobi_damping",
+    "l2_row_norms",
+    "power_norm_scales",
+    "smoother_persistence_scales",
 ]

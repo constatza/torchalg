@@ -22,6 +22,22 @@ and `rank` both raise `RuntimeError` if called before `fit()`.
 `POD2GPreconditioner` still takes `snapshots` in one call and fits internally,
 so its public signature is unchanged.
 
+`compute_pod_basis`/`PODCoarseningStrategy.fit` take an optional `row_scales`
+(shape `(n_samples,)`), multiplied into each snapshot row before the SVD.
+Because row scaling only touches the sample axis, `snapshots'^T snapshots' =
+sum_k row_scales_k^2 e_k e_k^T` - a weighted covariance - without ever
+changing the SVD's (Euclidean) inner product or requiring a
+back-transform of the returned basis. `pod.weighting` computes that vector
+for three schemes: `power_norm_scales` (row scale `||e_k||^(-beta)`, `beta=0`
+raw / `beta=1` fully normalized / in between interpolates, `metric="l2"` or
+`"a"`), `smoother_persistence_scales` (row scale by how much of a snapshot's
+norm survives `steps` weighted-Jacobi sweeps - directions the smoother
+already handles well contribute little), and the `apply_jacobi_damping`
+helper both build on top of (also usable directly by snapshot-generation
+code that wants "algebraically smooth" probe vectors, reusing
+`JacobiSmoother` rather than a second Jacobi-map implementation). `None`
+(default) is the original unweighted behavior, unchanged.
+
 AMG presets currently expose one `omega` value for both weighted-Jacobi cycle
 smoothing and smoothed-aggregation prolongation smoothing. These are distinct
 Jacobi operations; a future AMG API should split them into separate parameters

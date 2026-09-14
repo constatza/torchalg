@@ -94,12 +94,16 @@ class PODCoarseningStrategy(nn.Module):
         nn.Module.__init__(self)
         self._rank = rank
 
-    def fit(self, snapshots: torch.Tensor) -> None:
+    def fit(self, snapshots: torch.Tensor, row_scales: torch.Tensor | None = None) -> None:
         """Fit the POD basis from the snapshot ensemble (one-shot closed-form SVD).
 
         Args:
             snapshots (torch.Tensor): Solution snapshot ensemble, shape
                 (n_samples, n_dofs).
+            row_scales (torch.Tensor | None): Optional per-snapshot scale,
+                shape (n_samples,), forwarded to ``compute_pod_basis`` -
+                see its docstring. ``None`` (default) fits the unweighted
+                basis, unchanged from before this parameter existed.
 
         Raises:
             ValueError: If ``rank`` is an int exceeding
@@ -107,7 +111,9 @@ class PODCoarseningStrategy(nn.Module):
                 exist, unlike the float-range check in ``__init__``.
         """
         self._basis: torch.Tensor
-        self.register_buffer("_basis", compute_pod_basis(snapshots, self._rank))
+        self.register_buffer(
+            "_basis", compute_pod_basis(snapshots, self._rank, row_scales=row_scales)
+        )
 
     def is_fitted(self) -> bool:
         """Whether ``fit()`` has registered the basis buffer.

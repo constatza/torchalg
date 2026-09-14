@@ -88,6 +88,51 @@ class TestComputePodBasis:
         with pytest.raises(ValueError, match="energy threshold"):
             compute_pod_basis(poisson_snapshots, rank=1.5)
 
+    def test_row_scales_none_matches_unweighted_basis(
+        self, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """``row_scales=None`` must reproduce today's exact unweighted basis."""
+        weighted = compute_pod_basis(poisson_snapshots, rank=10, row_scales=None)
+        unweighted = compute_pod_basis(poisson_snapshots, rank=10)
+        torch.testing.assert_close(weighted, unweighted)
+
+    def test_uniform_row_scales_leave_basis_unchanged(
+        self, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """A constant row scale rescales the covariance uniformly - same basis, up to sign."""
+        uniform = torch.full((poisson_snapshots.shape[0],), 3.0, dtype=poisson_snapshots.dtype)
+        weighted = compute_pod_basis(poisson_snapshots, rank=10, row_scales=uniform)
+        unweighted = compute_pod_basis(poisson_snapshots, rank=10)
+        torch.testing.assert_close(weighted.abs(), unweighted.abs(), atol=1e-6, rtol=1e-6)
+
+    def test_row_scales_still_orthonormal(
+        self, poisson_snapshots: torch.Tensor, snapshot_row_scales: torch.Tensor
+    ) -> None:
+        """Weighted-covariance POD must still return an orthonormal basis."""
+        basis = compute_pod_basis(poisson_snapshots, rank=10, row_scales=snapshot_row_scales)
+        gram = basis.T @ basis
+        torch.testing.assert_close(gram, torch.eye(10, dtype=basis.dtype), atol=1e-6, rtol=0.0)
+
+    def test_row_scales_reweight_the_svd(
+        self, poisson_snapshots: torch.Tensor, single_dominant_row_scales: torch.Tensor
+    ) -> None:
+        """Concentrating weight on one snapshot must align the leading mode with it.
+
+        Directly exercises the write-up's central claim: row scaling changes
+        *which* directions the SVD favors (unlike normalizing a snapshot's own
+        magnitude, which does not preferentially amplify any component).
+        """
+        basis = compute_pod_basis(poisson_snapshots, rank=1, row_scales=single_dominant_row_scales)
+        dominant_direction = poisson_snapshots[0] / poisson_snapshots[0].norm()
+        cosine = (basis[:, 0] @ dominant_direction).abs()
+        assert cosine > 0.999
+
+    def test_row_scales_shape_mismatch_raises(self, poisson_snapshots: torch.Tensor) -> None:
+        """``row_scales`` with the wrong length must raise ValueError, not broadcast silently."""
+        wrong_length = torch.ones(poisson_snapshots.shape[0] + 1, dtype=poisson_snapshots.dtype)
+        with pytest.raises(ValueError, match="row_scales"):
+            compute_pod_basis(poisson_snapshots, rank=10, row_scales=wrong_length)
+
 
 # ---------------------------------------------------------------------------
 # DenseTransferOperator (reused from amg, backed by a POD basis)
@@ -278,6 +323,15 @@ class TestPODCoarseningStrategyLifecycle:
 
         a_c, _ = reconstructed.build_transfer(poisson_1d)
         assert a_c.shape == (resolved_rank, resolved_rank)
+
+    def test_fit_forwards_row_scales_to_compute_pod_basis(
+        self, poisson_snapshots: torch.Tensor, snapshot_row_scales: torch.Tensor
+    ) -> None:
+        """``fit(row_scales=...)`` must produce the same basis as calling ``compute_pod_basis`` directly."""
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots, row_scales=snapshot_row_scales)
+        expected = compute_pod_basis(poisson_snapshots, rank=10, row_scales=snapshot_row_scales)
+        torch.testing.assert_close(strategy._basis, expected)  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------

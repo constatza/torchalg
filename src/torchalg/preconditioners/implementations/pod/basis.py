@@ -41,6 +41,7 @@ def compute_pod_basis(
     snapshots: torch.Tensor,
     rank: int | float,
     dtype: torch.dtype | None = None,
+    row_scales: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Build a truncated POD basis from a snapshot ensemble (snapshot method).
 
@@ -86,14 +87,25 @@ def compute_pod_basis(
         dtype (torch.dtype | None): Target dtype for the SVD. Defaults to
             ``snapshots.dtype`` - the caller's own precision is preserved
             unless an explicit override is given.
+        row_scales (torch.Tensor | None): Optional per-snapshot scale,
+            shape (n_samples,). When given, each row is multiplied by its
+            scale before the SVD: ``snapshots' = row_scales[:, None] *
+            snapshots``, so ``snapshots'^T snapshots' = sum_k
+            row_scales_k^2 e_k e_k^T`` - a weighted covariance - without
+            changing the SVD's (Euclidean) inner product. ``None`` (default)
+            reproduces the unweighted basis exactly. See
+            ``preconditioners.implementations.pod.weighting`` for schemes
+            that compute this vector (raw/L2/A-normalized,
+            smoother-persistence).
 
     Returns:
         torch.Tensor: POD basis Phi_r, shape (n_dofs, r), in the resolved
             dtype, on the same device as ``snapshots``.
 
     Raises:
-        ValueError: If ``rank`` is a float outside (0, 1], or an int
-            exceeding ``min(n_samples, n_dofs)``.
+        ValueError: If ``rank`` is a float outside (0, 1], an int exceeding
+            ``min(n_samples, n_dofs)``, or ``row_scales`` has a length other
+            than ``n_samples``.
 
     References:
         - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos,
@@ -104,6 +116,13 @@ def compute_pod_basis(
     max_rank = min(n_samples, n_dofs)
 
     snapshots_t = snapshots if dtype is None else snapshots.to(dtype=dtype)
+
+    if row_scales is not None:
+        if row_scales.shape != (n_samples,):
+            raise ValueError(
+                f"row_scales must have shape ({n_samples},), got {tuple(row_scales.shape)}"
+            )
+        snapshots_t = snapshots_t * row_scales.to(dtype=snapshots_t.dtype).unsqueeze(-1)
 
     _, s, vh = torch.linalg.svd(snapshots_t, full_matrices=False)  # vh: (max_rank, n_dofs)
     resolved_rank = _resolve_rank(s, rank, max_rank)
