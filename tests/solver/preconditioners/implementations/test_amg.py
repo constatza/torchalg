@@ -29,18 +29,13 @@ Deviations from the reference:
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 import torch
 
 from torchalg.preconditioners.base import PreconditionerContext
 from torchalg.preconditioners.implementations import AMGPreconditioner, Identity
-from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
-from torchalg.preconditioners.implementations.amg._aggregation import (
-    piecewise_constant_prolongation,
-    standard_aggregation,
-    strength_of_connection,
-)
-from torchalg.preconditioners.implementations.amg._theta_search import adaptive_theta_scan
 from torchalg.preconditioners.implementations.amg import (
     AggregationCoarsening,
     DenseTransferOperator,
@@ -55,6 +50,13 @@ from torchalg.preconditioners.implementations.amg import (
     WCycle,
     WCycleAMG,
 )
+from torchalg.preconditioners.implementations.amg._aggregation import (
+    piecewise_constant_prolongation,
+    standard_aggregation,
+    strength_of_connection,
+)
+from torchalg.preconditioners.implementations.amg._theta_search import adaptive_theta_scan
+from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
 from torchalg.preconditioners.ports import ExtraInputPredictorPort
 
 # ---------------------------------------------------------------------------
@@ -100,7 +102,7 @@ def dense_transfer(torch_dtype: torch.dtype) -> DenseTransferOperator:
         pytest.param("WCycleAMG", id="WCycleAMG"),
     ]
 )
-def amg_preset_class(request: pytest.FixtureRequest) -> type[VCycleAMG] | type[WCycleAMG]:
+def amg_preset_class(request: pytest.FixtureRequest) -> type[VCycleAMG | WCycleAMG]:
     """Parametrize tests over both preset AMG variant classes.
 
     Args:
@@ -316,7 +318,7 @@ class TestAdaptiveThetaScan:
         )
         thetas = [theta for theta, _ in samples]
         boundary_gaps = [
-            right - left for left, right in zip(thetas, thetas[1:]) if left < 0.30000005 <= right
+            right - left for left, right in pairwise(thetas) if left < 0.30000005 <= right
         ]
         assert boundary_gaps, "no sample straddled the true boundary"
         assert min(boundary_gaps) < step * 0.01, (
@@ -810,7 +812,7 @@ class TestWCycle:
 class TestAMGPresets:
     def test_apply_returns_correct_shape(
         self,
-        amg_preset_class: type[VCycleAMG] | type[WCycleAMG],
+        amg_preset_class: type[VCycleAMG | WCycleAMG],
         poisson_1d: torch.Tensor,
         poisson_rhs: torch.Tensor,
     ) -> None:
@@ -821,7 +823,7 @@ class TestAMGPresets:
 
     def test_apply_returns_expected_dtype(
         self,
-        amg_preset_class: type[VCycleAMG] | type[WCycleAMG],
+        amg_preset_class: type[VCycleAMG | WCycleAMG],
         poisson_1d: torch.Tensor,
         poisson_rhs: torch.Tensor,
     ) -> None:
@@ -831,7 +833,7 @@ class TestAMGPresets:
 
     def test_fcg_converges(
         self,
-        amg_preset_class: type[VCycleAMG] | type[WCycleAMG],
+        amg_preset_class: type[VCycleAMG | WCycleAMG],
         poisson_1d: torch.Tensor,
         poisson_rhs: torch.Tensor,
     ) -> None:
@@ -844,7 +846,7 @@ class TestAMGPresets:
         torch.testing.assert_close(poisson_1d @ x, poisson_rhs, rtol=1e-6, atol=1e-6)
 
     def test_spd_preservation(
-        self, amg_preset_class: type[VCycleAMG] | type[WCycleAMG], poisson_1d: torch.Tensor
+        self, amg_preset_class: type[VCycleAMG | WCycleAMG], poisson_1d: torch.Tensor
     ) -> None:
         """Preset AMG preconditioner must be SPD when applied to an SPD matrix.
 
@@ -872,14 +874,14 @@ class TestAMGPresets:
         )
 
     def test_requires_flexible_cg_false(
-        self, amg_preset_class: type[VCycleAMG] | type[WCycleAMG], poisson_1d: torch.Tensor
+        self, amg_preset_class: type[VCycleAMG | WCycleAMG], poisson_1d: torch.Tensor
     ) -> None:
         """Both presets are linear preconditioners and must not request FCG."""
         precond = amg_preset_class(poisson_1d, n_levels=2)
         assert precond.requires_flexible_cg is False
 
     def test_rejects_single_level_hierarchy(
-        self, amg_preset_class: type[VCycleAMG] | type[WCycleAMG], poisson_1d: torch.Tensor
+        self, amg_preset_class: type[VCycleAMG | WCycleAMG], poisson_1d: torch.Tensor
     ) -> None:
         """Preset AMG variants must reject n_levels=1 for two-grid clarity."""
         with pytest.raises(ValueError, match="n_levels"):

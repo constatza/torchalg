@@ -29,7 +29,6 @@ class Identity(Preconditioner):
 
     def __init__(self):
         """No matrix needed - identity works for any system."""
-        pass
 
     def apply(self, residual: NDArray, context: PreconditionerContext | None = None) -> NDArray:
         """Return residual unchanged (identity preconditioning).

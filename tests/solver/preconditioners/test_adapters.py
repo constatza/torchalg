@@ -22,6 +22,7 @@ Follows project principles:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Self
 
 import pytest
 import torch
@@ -67,7 +68,7 @@ class MockPredictor(ExtraInputPredictorPort):
         """Mark as cleaned up."""
         self.cleaned_up = True
 
-    def __enter__(self) -> MockPredictor:
+    def __enter__(self) -> Self:
         """Enter context manager."""
         return self
 

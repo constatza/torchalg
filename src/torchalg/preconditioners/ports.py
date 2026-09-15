@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     import torch
@@ -76,11 +76,11 @@ class PredictorPort(ABC):
         """Release resources (GPU memory, model weights). Idempotent."""
         ...
 
-    def __enter__(self) -> PredictorPort:
+    def __enter__(self) -> Self:
         """Context manager entry.
 
         Returns:
-            PredictorPort: This predictor instance.
+            Self: This predictor instance.
         """
         return self
 

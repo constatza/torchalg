@@ -222,7 +222,9 @@ b = torch.randn(n, dtype=torch.float64, device=device)
 
 precond = JacobiPreconditioner(A).to(device=device)
 x, info = pcg(A, b, preconditioner=precond)
-print(f"device={device}, x.device={x.device}, converged={info.converged}, iterations={info.iterations}")
+print(
+    f"device={device}, x.device={x.device}, converged={info.converged}, iterations={info.iterations}"
+)
 ```
 
 Output on this machine (no CUDA device, so it ran on CPU — identical code
@@ -284,7 +286,8 @@ A = M @ M.T + n * torch.eye(n, dtype=torch.float64)
 b = torch.randn(n, dtype=torch.float64)
 
 results = run_cg_comparison(
-    A, b,
+    A,
+    b,
     preconditioners={"jacobi": JacobiPreconditioner(A), "ilu": ILUPreconditioner(A)},
 )
 print(format_results_summary(results))

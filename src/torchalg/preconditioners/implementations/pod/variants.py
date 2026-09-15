@@ -81,7 +81,7 @@ class POD2GPreconditioner(AMGPreconditioner):
         self,
         matrix: torch.Tensor,
         snapshots: torch.Tensor,
-        rank: int | float,
+        rank: float,
         n_levels: int = 2,
         omega: float = 0.67,
         n_pre: int = 2,

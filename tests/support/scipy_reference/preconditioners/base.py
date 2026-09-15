@@ -37,12 +37,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from numpy.typing import NDArray
-
-if TYPE_CHECKING:
-    pass  # NDArray moved to top-level for use in generics
 
 
 @dataclass(frozen=True)

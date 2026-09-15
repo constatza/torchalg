@@ -185,7 +185,7 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
 
 
 def create_fcg_orthogonalization(
-    m_max: float | int = DEFAULT_M_MAX,
+    m_max: float = DEFAULT_M_MAX,
 ) -> OrthogonalizationStrategy:
     """Create Notay FCG(m) orthogonalization from a public ``m_max`` value."""
     if m_max == 0:

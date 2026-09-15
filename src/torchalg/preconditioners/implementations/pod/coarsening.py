@@ -77,7 +77,7 @@ class PODCoarseningStrategy(nn.Module):
           solution of large-scale parametrized systems. arXiv:2207.02543.
     """
 
-    def __init__(self, rank: int | float) -> None:
+    def __init__(self, rank: float) -> None:
         """Store the target rank; the basis is not fit until ``fit()`` runs.
 
         Args:

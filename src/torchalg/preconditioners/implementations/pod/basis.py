@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 
-def _resolve_rank(singular_values: torch.Tensor, rank: int | float, max_rank: int) -> int:
+def _resolve_rank(singular_values: torch.Tensor, rank: float, max_rank: int) -> int:
     """Resolve a mode count from a fixed count or an energy-capture threshold.
 
     Args:
@@ -39,7 +39,7 @@ def _resolve_rank(singular_values: torch.Tensor, rank: int | float, max_rank: in
 
 def compute_pod_basis(
     snapshots: torch.Tensor,
-    rank: int | float,
+    rank: float,
     dtype: torch.dtype | None = None,
     row_scales: torch.Tensor | None = None,
 ) -> torch.Tensor:

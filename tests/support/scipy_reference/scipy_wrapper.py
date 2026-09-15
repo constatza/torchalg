@@ -21,20 +21,20 @@ References:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
-from scipy.sparse import spmatrix
 from scipy.linalg import norm
+from scipy.sparse import spmatrix
 from scipy.sparse.linalg import LinearOperator, aslinearoperator, cg
 
 from .models.result import SolverResult
 from .monitoring.callbacks import InitialStateComputer, SciPyCallbackAdapter
-from .monitoring.residual_history_tracker import ResidualHistoryTracker
-from .monitoring.trace_mode import TraceMode
 from .monitoring.event_log import EventLog
 from .monitoring.iteration_history import IterationHistory
+from .monitoring.residual_history_tracker import ResidualHistoryTracker
+from .monitoring.trace_mode import TraceMode
 from .preconditioners import Identity, Preconditioner
 
 if TYPE_CHECKING:

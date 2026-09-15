@@ -40,7 +40,7 @@ def test_run_cg_comparison_records_failed_preconditioner(
     """Comparison runner captures solver failures as failed comparison results."""
 
     class _BrokenIdentity(Identity):
-        def apply(self, residual: torch.Tensor, context=None) -> torch.Tensor:  # noqa: ANN001
+        def apply(self, residual: torch.Tensor, context=None) -> torch.Tensor:
             raise RuntimeError("broken preconditioner")
 
     results = run_cg_comparison(

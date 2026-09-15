@@ -73,7 +73,10 @@ class IterativeSolverBase[S: SolverState](ABC):
             self._log_state(state)
 
         if not isinstance(state, HasVectors):
-            raise RuntimeError("Final solution not found in state")
+            # Internal invariant check, not caller input validation - the loop
+            # above must always leave state satisfying HasVectors; RuntimeError
+            # is correct here, not TypeError (TRY004 doesn't distinguish the two).
+            raise RuntimeError("Final solution not found in state")  # noqa: TRY004
 
         return state.u, self._build_result(state, rtol_eff, atol_eff, maxiter=maxiter_eff)
 

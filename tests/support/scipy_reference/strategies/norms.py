@@ -29,7 +29,6 @@ from collections.abc import Callable
 import numpy as np
 from numpy.typing import NDArray
 
-
 # Type alias: norm takes vector, returns scalar
 Norm = Callable[[NDArray], float]
 

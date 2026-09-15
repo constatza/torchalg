@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Pure PyTorch reimplementation of neuralls' iterative solvers and preconditioners"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
-dependencies = ["torch>=2.8.0,<2.10.0"]
+dependencies = ["torch>=2.8.0,<3.0"]
 
 [dependency-groups]
 dev = ["pytest>=9.0", "ruff>=0.13.1", "scipy>=1.16.2", "tach>=0.29.0", "ty>=0.0.22"]
@@ -21,6 +21,10 @@ docstring-code-format = true
 
 [tool.ruff.lint]
 extend-select = ["UP", "D"]
+# RUF022: __all__ lists here are deliberately grouped by semantic category
+# with comments (state/history/results/..., presets/core/protocols/...), not
+# alphabetized - the rule's auto-sort would scramble that grouping.
+ignore = ["RUF022"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D"]
@@ -31,6 +35,15 @@ convention = "google"
 [tool.ty.src]
 include = ["src/torchalg", "tests"]
 respect-ignore-files = true
+
+[tool.ty.rules]
+# Every concrete preconditioner (AMG/IC0/ICholesky/ILU/Jacobi/...) deliberately
+# names its domain method `apply(residual, context)`, matching the
+# Preconditioner protocol - which collides with nn.Module.apply(fn), a
+# different method these classes also inherit for buffer/device propagation.
+# This is a known, accepted naming collision (see e.g. JacobiPreconditioner's
+# docstring), not something to rename across the whole hierarchy.
+invalid-method-override = "ignore"
 
 [[tool.ty.overrides]]
 include = ["tests/**"]
@@ -57,11 +70,11 @@ markers = [
 package = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu130" }
+torch = { index = "pytorch-cuda" }
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [build-system]

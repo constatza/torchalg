@@ -210,11 +210,11 @@ class TestPODCoarseningStrategy:
         """
         strategy = PODCoarseningStrategy(rank=10)
         strategy.fit(poisson_snapshots.double())
-        assert strategy._basis.dtype == torch.float64  # noqa: SLF001
+        assert strategy._basis.dtype == torch.float64
 
         strategy.to(dtype=torch.float32)
 
-        assert strategy._basis.dtype == torch.float32  # noqa: SLF001
+        assert strategy._basis.dtype == torch.float32
 
     def test_owning_amg_preconditioner_moves_the_basis_too(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
@@ -231,9 +231,9 @@ class TestPODCoarseningStrategy:
 
         precond.to(dtype=torch.float32)
 
-        coarsening = precond._coarsening  # noqa: SLF001
+        coarsening = precond._coarsening
         assert isinstance(coarsening, PODCoarseningStrategy)
-        assert coarsening._basis.dtype == torch.float32  # noqa: SLF001
+        assert coarsening._basis.dtype == torch.float32
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ class TestPODCoarseningStrategyLifecycle:
         reconstructed.load_state_dict(state)
 
         assert reconstructed.is_fitted() is True
-        torch.testing.assert_close(reconstructed._basis, original._basis)  # noqa: SLF001
+        torch.testing.assert_close(reconstructed._basis, original._basis)
 
         a_c, _ = reconstructed.build_transfer(poisson_1d)
         assert a_c.shape == (resolved_rank, resolved_rank)
@@ -331,7 +331,7 @@ class TestPODCoarseningStrategyLifecycle:
         strategy = PODCoarseningStrategy(rank=10)
         strategy.fit(poisson_snapshots, row_scales=snapshot_row_scales)
         expected = compute_pod_basis(poisson_snapshots, rank=10, row_scales=snapshot_row_scales)
-        torch.testing.assert_close(strategy._basis, expected)  # noqa: SLF001
+        torch.testing.assert_close(strategy._basis, expected)
 
 
 # ---------------------------------------------------------------------------
