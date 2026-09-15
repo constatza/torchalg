@@ -98,7 +98,15 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     factor = torch.where(sparsity_mask, torch.tril(matrix), torch.zeros_like(matrix))
 
     for k in range(n):
-        factor[k, k] = torch.sqrt(factor[k, k])
+        pivot = factor[k, k]
+        if pivot <= 0:
+            raise ValueError(
+                f"IC(0) breakdown at pivot {k}: diagonal value {pivot.item()} is "
+                "non-positive, so no real factor L exists for this matrix "
+                "(Saad, Iterative Methods for Sparse Linear Systems, 2nd ed., "
+                "Sec. 10.3) - not every SPD matrix admits an IC(0) factorization."
+            )
+        factor[k, k] = torch.sqrt(pivot)
         if k + 1 >= n:
             break
 

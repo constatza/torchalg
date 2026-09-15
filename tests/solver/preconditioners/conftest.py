@@ -390,7 +390,7 @@ def near_singular_matrix_torch(torch_dtype: torch.dtype) -> torch.Tensor:
 
 @pytest.fixture
 def non_spd_matrix_2x2_torch(torch_dtype: torch.dtype) -> torch.Tensor:
-    """2x2 non-symmetric, non-SPD matrix - IC(0) must not raise on construction.
+    """2x2 non-symmetric, non-SPD matrix - IC(0) must raise ValueError on construction.
 
     Returns:
         torch.Tensor: ``[[1, 2], [3, 4]]``.

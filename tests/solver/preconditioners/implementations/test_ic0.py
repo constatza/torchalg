@@ -4,12 +4,14 @@ Tests the dense masked IC(0) factorization preconditioner to ensure:
 - Correctly factorizes SPD matrices (``L @ L.T ≈ A``).
 - Preserves the original sparsity pattern (no fill-in beyond it).
 - Handles the ``threshold`` drop-tolerance parameter.
-- Does not raise on non-SPD or near-singular input (validation is
-  deliberately not performed at construction time - matches reference).
+- Raises ``ValueError`` at construction on breakdown (non-SPD or
+  near-singular input hitting a non-positive pivot), instead of silently
+  propagating ``nan``/``inf`` through ``apply()``.
 """
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from torchalg.preconditioners.implementations import IC0Preconditioner
@@ -58,28 +60,31 @@ def test_ic0_preserves_sparsity_pattern(tridiagonal_spd_small_torch: torch.Tenso
     assert nnz_factor_default <= nnz_a_lower
 
 
-def test_ic0_requires_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) -> None:
-    """Verify IC(0) can be instantiated on a non-SPD matrix.
+def test_ic0_raises_on_non_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) -> None:
+    """Verify IC(0) raises ValueError constructing from a non-SPD matrix.
 
     Note:
-        IC(0) is designed for symmetric positive definite matrices, but we
-        don't validate this at construction time. Non-SPD matrices may
-        produce numerical issues during factorization.
+        IC(0) is designed for symmetric positive definite matrices. This
+        matrix's elimination hits a negative pivot (no real square root
+        exists), which is a genuine breakdown - it must raise clearly
+        instead of producing a factor full of ``nan``.
     """
-    precond = IC0Preconditioner(non_spd_matrix_2x2_torch)
-    assert precond is not None
+    with pytest.raises(ValueError, match="breakdown"):
+        IC0Preconditioner(non_spd_matrix_2x2_torch)
 
 
-def test_ic0_handles_near_singular_matrix(near_singular_matrix_torch: torch.Tensor) -> None:
-    """Verify IC(0) can be instantiated on a nearly singular matrix.
+def test_ic0_raises_on_near_singular_matrix(near_singular_matrix_torch: torch.Tensor) -> None:
+    """Verify IC(0) raises ValueError on a matrix whose pivot the threshold drops to zero.
 
     Note:
-        IC(0) computes ``sqrt`` of diagonal entries during factorization.
-        We don't validate for near-zero or negative diagonals. Nearly
-        singular matrices may produce numerical issues.
+        The near-zero diagonal entry (``1e-15``) falls below the default
+        drop tolerance and is excluded from the sparsity pattern entirely,
+        leaving a zero pivot - a non-positive pivot is a breakdown by the
+        same definition as a negative one (Saad, Sec. 10.3), so this must
+        raise rather than silently produce a singular, unusable factor.
     """
-    precond = IC0Preconditioner(near_singular_matrix_torch)
-    assert precond is not None
+    with pytest.raises(ValueError, match="breakdown"):
+        IC0Preconditioner(near_singular_matrix_torch)
 
 
 def test_ic0_threshold_drops_small_entries(

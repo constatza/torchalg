@@ -45,12 +45,13 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
 
     Breakdown:
         IC(0) is not guaranteed to exist for every SPD matrix (it can
-        require a negative square root on the diagonal). This
-        implementation does not detect that case: a non-existent
-        factorization currently surfaces as ``nan``/``inf`` propagating
-        through ``apply()`` rather than a raised exception - check
-        ``torch.isfinite`` on the result if that matters for a given
-        matrix.
+        require a square root of a non-positive diagonal value).
+        Construction raises ``ValueError`` as soon as elimination hits a
+        non-positive pivot, instead of letting ``nan``/``inf`` propagate
+        silently through ``apply()`` - a caller that wants to treat
+        breakdown as a soft failure (e.g. mark one preconditioner in a
+        sweep as broken rather than aborting) should catch ``ValueError``
+        around construction.
 
     Attributes:
         _operator (torch.Tensor): Lower triangular factor ``L``.
