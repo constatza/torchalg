@@ -16,9 +16,19 @@ from ..base import LinearPreconditioner, PreconditionerContext
 from ._masked_factorization import dense_ic0
 from ._triangular import cholesky_factor_solve
 
-_DEFAULT_THRESHOLD = 1e-14
+_DEFAULT_THRESHOLD = 0.0
 """Default drop tolerance: entries with |value| <= threshold are treated as
-zero and excluded from the sparsity pattern."""
+zero and excluded from the sparsity pattern.
+
+0.0 only drops exact zeros. A nonzero absolute constant is unsafe as a
+library default: callers may factorize the same matrix at different scales
+(e.g. before/after a data-dependent normalization), and a fixed absolute
+threshold's effective strictness shifts with that scale - it can silently
+drop entries that are structurally real at one scale but fall under the
+threshold at another, corrupting the IC(0) sparsity pattern in a way that's
+invisible until elimination breaks down many steps later. Callers that want
+drop-tolerance behavior should pass an explicit threshold sized relative to
+their own matrix's scale."""
 
 
 class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
@@ -70,8 +80,8 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
             matrix (torch.Tensor): Symmetric positive-definite system
                 matrix ``A``, shape ``(n, n)``.
             threshold (float): Drop tolerance - entries with ``|value| <=
-                threshold`` are treated as zero. Improves numerical
-                stability and maintains sparsity. Default: ``1e-14``.
+                threshold`` are treated as zero. Default: ``0.0`` (only
+                exact zeros are dropped; see ``_DEFAULT_THRESHOLD``).
         """
         nn.Module.__init__(self)
         self._threshold = threshold

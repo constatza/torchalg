@@ -74,17 +74,18 @@ def test_ic0_raises_on_non_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) ->
 
 
 def test_ic0_raises_on_near_singular_matrix(near_singular_matrix_torch: torch.Tensor) -> None:
-    """Verify IC(0) raises ValueError on a matrix whose pivot the threshold drops to zero.
+    """Verify IC(0) raises ValueError on a matrix whose pivot an explicit threshold drops to zero.
 
     Note:
-        The near-zero diagonal entry (``1e-15``) falls below the default
-        drop tolerance and is excluded from the sparsity pattern entirely,
-        leaving a zero pivot - a non-positive pivot is a breakdown by the
-        same definition as a negative one (Saad, Sec. 10.3), so this must
-        raise rather than silently produce a singular, unusable factor.
+        The near-zero diagonal entry (``1e-15``) falls below an explicit
+        drop tolerance (the default is ``0.0`` - see ``_DEFAULT_THRESHOLD``)
+        and is excluded from the sparsity pattern entirely, leaving a zero
+        pivot - a non-positive pivot is a breakdown by the same definition
+        as a negative one (Saad, Sec. 10.3), so this must raise rather than
+        silently produce a singular, unusable factor.
     """
     with pytest.raises(ValueError, match="breakdown"):
-        IC0Preconditioner(near_singular_matrix_torch)
+        IC0Preconditioner(near_singular_matrix_torch, threshold=1e-14)
 
 
 def test_ic0_threshold_drops_small_entries(
