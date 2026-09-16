@@ -19,6 +19,7 @@ from torchalg.preconditioners.implementations.amg.smoothers import JacobiSmoothe
 from torchalg.preconditioners.implementations.pod.weighting import (
     a_row_norms,
     apply_jacobi_damping,
+    apply_jacobi_damping_trajectory,
     l2_row_norms,
     power_norm_scales,
     smoother_persistence_scales,
@@ -145,6 +146,72 @@ class TestApplyJacobiDamping:
         """``steps=0`` must leave every snapshot unchanged."""
         damped = apply_jacobi_damping(poisson_snapshots, poisson_1d, omega=0.67, steps=0)
         torch.testing.assert_close(damped, poisson_snapshots)
+
+
+# ---------------------------------------------------------------------------
+# apply_jacobi_damping_trajectory
+# ---------------------------------------------------------------------------
+
+
+class TestApplyJacobiDampingTrajectory:
+    def test_shape_is_steps_plus_one(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """Trajectory must have exactly steps + 1 rows per vector - no more, no fewer."""
+        steps = 5
+        trajectory = apply_jacobi_damping_trajectory(
+            poisson_snapshots, poisson_1d, omega=0.67, steps=steps
+        )
+        assert trajectory.shape == (
+            poisson_snapshots.shape[0],
+            steps + 1,
+            poisson_snapshots.shape[1],
+        )
+
+    def test_shape_tracks_steps_exactly(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """Increasing steps must grow the trajectory by exactly one row per step - proof no
+        extra sweeps are silently run or dropped."""
+        for steps in (0, 1, 3, 7):
+            trajectory = apply_jacobi_damping_trajectory(
+                poisson_snapshots, poisson_1d, omega=0.67, steps=steps
+            )
+            assert trajectory.shape[1] == steps + 1
+
+    def test_first_row_is_untouched_input(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """Index 0 must be the input vector before any sweep is applied."""
+        trajectory = apply_jacobi_damping_trajectory(
+            poisson_snapshots, poisson_1d, omega=0.67, steps=5
+        )
+        torch.testing.assert_close(trajectory[:, 0, :], poisson_snapshots)
+
+    def test_last_row_matches_apply_jacobi_damping(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """Row `steps` must equal apply_jacobi_damping's own final-iterate output exactly -
+        the two functions must agree on what "steps sweeps" means."""
+        omega, steps = 0.67, 6
+        trajectory = apply_jacobi_damping_trajectory(
+            poisson_snapshots, poisson_1d, omega=omega, steps=steps
+        )
+        final_only = apply_jacobi_damping(poisson_snapshots, poisson_1d, omega=omega, steps=steps)
+        torch.testing.assert_close(trajectory[:, -1, :], final_only)
+
+    def test_intermediate_row_matches_fewer_steps(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """Row k of a `steps`-sweep trajectory must equal a standalone k-sweep damping call -
+        the trajectory isn't just bracketed correctly, every row is the right vector."""
+        omega = 0.67
+        trajectory = apply_jacobi_damping_trajectory(
+            poisson_snapshots, poisson_1d, omega=omega, steps=6
+        )
+        for k in (2, 4):
+            expected = apply_jacobi_damping(poisson_snapshots, poisson_1d, omega=omega, steps=k)
+            torch.testing.assert_close(trajectory[:, k, :], expected, atol=1e-6, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------

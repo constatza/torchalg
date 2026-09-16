@@ -39,6 +39,9 @@ Public API:
           reused by ``smoother_persistence_scales`` and available directly
           for snapshot-generation strategies that want "algebraically
           smooth" probe vectors.
+        - apply_jacobi_damping_trajectory: Same map, returning every
+          intermediate sweep instead of only the final one, for strategies
+          that need to select an arbitrary window of sweeps.
 
     Reused from ``.amg`` (not redefined here):
         - DenseTransferOperator: P/R backed by a dense tensor; satisfies the
@@ -57,6 +60,7 @@ from .variants import POD2GPreconditioner
 from .weighting import (
     a_row_norms,
     apply_jacobi_damping,
+    apply_jacobi_damping_trajectory,
     l2_row_norms,
     power_norm_scales,
     smoother_persistence_scales,
@@ -71,6 +75,7 @@ __all__ = [
     # Weighting
     "a_row_norms",
     "apply_jacobi_damping",
+    "apply_jacobi_damping_trajectory",
     "l2_row_norms",
     "power_norm_scales",
     "smoother_persistence_scales",
