@@ -17,6 +17,8 @@ Populated incrementally, stage by stage (see ``docs/plan.md``). So far
 - ``AMGPreconditioner``: Algebraic Multigrid (smoothed aggregation or
   neural P/R); see ``.amg`` for the full public API (presets, protocols,
   cycles, smoothers, coarsening strategies, transfer operators).
+- ``AdaptiveSAPreconditioner``: Adaptive smoothed aggregation (alpha-SA);
+  test vectors learned from ``A``, see ``.amg.adaptive``.
 - ``POD2GPreconditioner``: Proper Orthogonal Decomposition two-grid
   preconditioner, reusing the ``.amg`` engine with POD-basis coarsening; see
   ``.pod`` for the full public API.
@@ -25,7 +27,7 @@ Populated incrementally, stage by stage (see ``docs/plan.md``). So far
   as a non-linear preconditioner.
 """
 
-from .amg import AMGPreconditioner
+from .amg import AdaptiveSAPreconditioner, AMGPreconditioner
 from .callable import CallablePreconditioner
 from .ic0 import IC0Preconditioner
 from .icholesky import ICholeskyPreconditioner
@@ -38,6 +40,7 @@ from .pod import POD2GPreconditioner
 from .scheduled import ScheduledPreconditioner
 
 __all__ = [
+    "AdaptiveSAPreconditioner",
     "AMGPreconditioner",
     "CallablePreconditioner",
     "IC0Preconditioner",

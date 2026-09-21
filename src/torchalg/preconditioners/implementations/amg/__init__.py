@@ -12,6 +12,9 @@ Public API:
     Presets (recommended entry points):
         - VCycleAMG: SA-AMG with V-cycle; standard default.
         - WCycleAMG: SA-AMG with W-cycle; more robust, higher cost per cycle.
+        - AdaptiveSAPreconditioner: alpha-SA, a port of PyAMG's
+          ``adaptive_sa_solver``; learns the near-null-space candidates from A
+          (``adaptive_sa_hierarchy``) instead of assuming constants.
 
     Core (for custom wiring):
         - AMGPreconditioner: Top-level preconditioner; implements Preconditioner + BindableInputs.
@@ -25,6 +28,7 @@ Public API:
     Smoother hierarchy:
         - SmootherBase: ABC for fixed-step error dampers.
         - JacobiSmoother: Weighted Jacobi smoother (SmootherBase).
+        - GaussSeidelSmoother: Symmetric Gauss-Seidel smoother (SmootherBase).
 
     Cycles:
         - VCycle: Recursive V-cycle (gamma = 1).
@@ -44,12 +48,13 @@ Public API:
         - MultigridHierarchy, MultigridLevel: Frozen dataclasses for the grid hierarchy.
 """
 
+from .adaptive import AdaptiveSAPreconditioner, AdaptiveSAResult, adaptive_sa_hierarchy
 from .amg import AMGPreconditioner
 from .coarsening import AggregationCoarsening, NeuralCoarseningStrategy, TargetDimensionCoarsening
 from .cycle import VCycle, WCycle
 from .hierarchy import MultigridHierarchy, MultigridLevel
 from .protocols import CoarseningStrategy, MultigridCycle, MultigridSmoother, TransferOperator
-from .smoothers import JacobiSmoother, SmootherBase
+from .smoothers import GaussSeidelSmoother, JacobiSmoother, SmootherBase
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 from .variants import VCycleAMG, WCycleAMG
 
@@ -57,6 +62,9 @@ __all__ = [
     # Presets
     "VCycleAMG",
     "WCycleAMG",
+    "AdaptiveSAPreconditioner",
+    "AdaptiveSAResult",
+    "adaptive_sa_hierarchy",
     # Core
     "AMGPreconditioner",
     # Protocols
@@ -67,6 +75,7 @@ __all__ = [
     # Smoother hierarchy
     "SmootherBase",
     "JacobiSmoother",
+    "GaussSeidelSmoother",
     # Cycles
     "VCycle",
     "WCycle",

@@ -38,6 +38,42 @@ code that wants "algebraically smooth" probe vectors, reusing
 `JacobiSmoother` rather than a second Jacobi-map implementation). `None`
 (default) is the original unweighted behavior, unchanged.
 
+`amg.hierarchy.build_hierarchy(matrix, coarsening, n_levels)` is the pure
+function `AMGPreconditioner` uses to build its levels, so setup code can build
+trial hierarchies without instantiating a preconditioner.
+`apply_jacobi_damping[_trajectory]` live in `amg/_test_vectors.py` (`pod`
+depends on `amg`, never the reverse) and are re-exported by `pod.weighting`.
+
+`AdaptiveSAPreconditioner` (`amg/adaptive.py`) is a step-by-step dense-torch
+port of PyAMG 5.3.0's `adaptive_sa_solver` (`initial_setup_stage` =
+Algorithm 3 and `general_setup_stage` = Algorithm 4 of Brezina et al. 2005).
+Every kernel is a port of the PyAMG routine it calls and is tested against
+it on identical inputs (`tests/.../test_adaptive_sa_port.py`): `_tentative.py`
+(`fit_candidates`: modified Gram-Schmidt per aggregate with PyAMG's
+`tol=1e-10` drop rule, always `m` columns per aggregate), `_node_strength.py`
+(symmetric strength on the node graph; coarse levels carry `k` dofs per node,
+strength uses block Frobenius norms), `_prolongation.py` (Jacobi prolongator
+smoothing with `omega / rho(D^-1 A)` and the bridging prolongator),
+`_spectral.py` (restarted-Arnoldi estimate of `rho`, random start, ~1 %
+tolerance), and `_relaxation.py` (symmetric Gauss-Seidel as triangular solves;
+PyAMG's block GS is point-wise, hence identical). The hierarchy is applied
+with a V(1,1)-cycle, `GaussSeidelSmoother` and a pseudo-inverse coarse solve
+(`cycle.pseudo_inverse_solve`), PyAMG's defaults. Defaults follow PyAMG
+(`theta=0`, `omega=4/3`, `candidate_iters=5`, `max_levels=max_coarse=10`).
+All random vectors (including the spectral-radius starts) come from one
+injectable `draw` source, so a run can replay NumPy's stream and be compared
+with PyAMG number for number. Not ported: `improvement_iters`,
+`eliminate_local`, `epsilon`/`pdef` (only used by a branch PyAMG disables),
+non-default smoothers/strength/aggregation/coarse solvers, complex and
+nonsymmetric matrices, and the `work` counter. One documented difference:
+`standard_aggregation`'s second pass depends on the stored column order of
+the sparse coarse matrices in PyAMG (unsorted after sparse products); this
+port uses ascending order, PyAMG's result on a sorted-index copy of the same
+graph.
+
+`AMGPreconditioner._make_hierarchy` is the hook subclasses override when their
+levels are computed elsewhere (as `AdaptiveSAPreconditioner` does).
+
 AMG presets currently expose one `omega` value for both weighted-Jacobi cycle
 smoothing and smoothed-aggregation prolongation smoothing. These are distinct
 Jacobi operations; a future AMG API should split them into separate parameters
