@@ -74,10 +74,22 @@ graph.
 `AMGPreconditioner._make_hierarchy` is the hook subclasses override when their
 levels are computed elsewhere (as `AdaptiveSAPreconditioner` does).
 
-AMG presets currently expose one `omega` value for both weighted-Jacobi cycle
-smoothing and smoothed-aggregation prolongation smoothing. These are distinct
-Jacobi operations; a future AMG API should split them into separate parameters
-once backward compatibility can be managed.
+Weighted-Jacobi damping has two roles with separate parameters, both
+defaulting to a spectral rule with `rho = rho(D^-1 A)` (`amg/_jacobi_omega.py`,
+PyAMG's rules): **relaxation** (`JacobiSmoother`, presets' `smoother_omega`,
+applied to the error every cycle) uses `omega = 1 / rho`; **prolongation
+smoothing** (`AggregationCoarsening`, presets' `prolongation_omega`, one Jacobi
+step on the tentative prolongator at setup) uses `omega = (4/3) / rho`
+(Vanek, Mandel & Brezina 1996). `None` selects the rule, a float fixes the
+value. `rho` is a seeded, hence deterministic, Arnoldi estimate
+(`_spectral.approximate_spectral_radius`), cached per matrix object and
+invalidated on in-place modification, so the smoother and the prolongation
+smoothing of the same level, and every `apply`, share one estimate per level.
+For `rho ~= 2` the rules give about 0.5 and 0.67; unlike a fixed 0.67 they keep
+the smoother convergent when `rho > 3` (`omega` must stay below `2 / rho`).
+The POD helpers `apply_jacobi_damping[_trajectory]` and
+`smoother_persistence_scales` default to the relaxation rule as well.
+Gauss-Seidel has no damping parameter.
 
 AMG hierarchy depth is counted as total levels, including the finest matrix.
 `n_levels=2` is the minimum valid multigrid hierarchy and means one fine level

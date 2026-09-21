@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 from ._relaxation import symmetric_gauss_seidel
 
 _NEAR_ZERO_DIAGONAL_TOL = 1e-14
@@ -65,14 +66,14 @@ class SmootherBase(ABC):
 class JacobiSmoother(SmootherBase):
     """Weighted Jacobi smoother: x <- x + omega * D^{-1} (rhs - Ax).
 
-    Applies ``steps`` stationary Jacobi iterations with damping omega. For smoothed
-    aggregation AMG, omega ~= 2/3 is optimal: it annihilates the high-frequency error
-    components that the coarse-grid correction cannot reach.
+    Applies ``steps`` stationary Jacobi iterations with damping omega, which must
+    stay below ``2 / rho(D^{-1}A)`` for the iteration to converge.
 
     Args:
-        omega (float): Damping factor omega in (0, 1). Default 0.67 ~= 2/3 is
-            the standard choice for isotropic SPD problems where
-            rho(D^{-1}A) ~= 2 (see References).
+        omega (float | None): Damping factor. ``None`` (default) is the
+            relaxation rule ``1 / rho(D^{-1}A)`` (PyAMG's), estimated once per
+            matrix and cached (see ``_jacobi_omega``); a float fixes it
+            (0.67 ~= 2/3 is ``4/(3 rho)`` for ``rho ~= 2``).
 
     References:
         - Young, D. M. (1954). Iterative methods for solving partial difference
@@ -82,11 +83,11 @@ class JacobiSmoother(SmootherBase):
           Computing, 56(3), 179-196. Section 3: omega = 4 / (3 * rho(D^{-1}A)).
     """
 
-    def __init__(self, omega: float = 0.67) -> None:
+    def __init__(self, omega: float | None = None) -> None:
         """Store the Jacobi damping factor.
 
         Args:
-            omega (float): Damping factor omega in (0, 1).
+            omega (float | None): Damping factor, or ``None`` for ``1 / rho``.
         """
         self._omega = omega
 
@@ -109,9 +110,10 @@ class JacobiSmoother(SmootherBase):
             torch.Tensor: Updated iterate after ``steps`` sweeps.
         """
         diag = torch.diagonal(A)
+        omega = jacobi_omega(A, RELAXATION_NOMINAL, self._omega)
         diag_inv = torch.where(
             diag.abs() > _NEAR_ZERO_DIAGONAL_TOL,
-            self._omega / diag,
+            omega / diag,
             torch.zeros_like(diag),
         )
         x = x.clone()

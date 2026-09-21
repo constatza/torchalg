@@ -15,7 +15,7 @@ def apply_jacobi_damping(
     vectors: torch.Tensor,
     matrix: torch.Tensor,
     *,
-    omega: float = 0.67,
+    omega: float | None = None,
     steps: int,
 ) -> torch.Tensor:
     """Apply ``steps`` weighted-Jacobi error-damping sweeps to a batch of vectors.
@@ -33,8 +33,9 @@ def apply_jacobi_damping(
         vectors (torch.Tensor): Batch of vectors to damp, shape
             (n_vectors, n_dofs).
         matrix (torch.Tensor): SPD system matrix A, shape (n_dofs, n_dofs).
-        omega (float): Jacobi damping factor, matching
-            ``JacobiSmoother``'s default.
+        omega (float | None): Jacobi damping factor; ``None`` (default) is the
+            relaxation rule ``1 / rho(D^-1 A)`` (estimated once for ``matrix``),
+            matching ``JacobiSmoother``.
         steps (int): Number of damping sweeps.
 
     Returns:
@@ -50,7 +51,7 @@ def apply_jacobi_damping_trajectory(
     vectors: torch.Tensor,
     matrix: torch.Tensor,
     *,
-    omega: float = 0.67,
+    omega: float | None = None,
     steps: int,
 ) -> torch.Tensor:
     """Apply weighted-Jacobi damping, capturing every intermediate sweep.
@@ -71,8 +72,9 @@ def apply_jacobi_damping_trajectory(
         vectors (torch.Tensor): Batch of vectors to damp, shape
             (n_vectors, n_dofs).
         matrix (torch.Tensor): SPD system matrix A, shape (n_dofs, n_dofs).
-        omega (float): Jacobi damping factor, matching
-            ``JacobiSmoother``'s default.
+        omega (float | None): Jacobi damping factor; ``None`` (default) is the
+            relaxation rule ``1 / rho(D^-1 A)`` (estimated once for ``matrix``),
+            matching ``JacobiSmoother``.
         steps (int): Number of damping sweeps to run.
 
     Returns:

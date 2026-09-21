@@ -95,7 +95,9 @@ def approximate_spectral_radius(
     Returns:
         float: Largest-magnitude Ritz value.
     """
-    start = (draw(matrix.shape[0]) if initial_guess is None else initial_guess).to(matrix.dtype)
+    start = (draw(matrix.shape[0]) if initial_guess is None else initial_guess).to(
+        dtype=matrix.dtype, device=matrix.device
+    )
     for _ in range(restart + 1):
         vectors, values, hessenberg, basis, breakdown = _arnoldi(matrix, start, maxiter)
         count = values.shape[0]

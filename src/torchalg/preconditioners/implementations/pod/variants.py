@@ -29,12 +29,12 @@ class POD2GPreconditioner(AMGPreconditioner):
     - **Relaxation**: the paper's Algorithm 2 uses undamped Gauss-Seidel
       pre/post smoothing (``K = L + V``, ``u_{m+1} = L^{-1} r_m``), which
       has no damping parameter. This class uses weighted Jacobi instead
-      (``omega`` below), reusing the same smoother as this codebase's
+      (``smoother_omega`` below), reusing the same smoother as this codebase's
       algebraic ``VCycleAMG``/``WCycleAMG`` for a uniform, more easily
       parallelized ``SmootherBase`` across all AMG-family presets. The
-      ``omega ~= 2/3`` default is Vanek, Mandel & Brezina (1996)'s
-      prolongation-smoothing optimum (see ``JacobiSmoother``'s docstring);
-      it is not derived from - or needed by - the Nikolopoulos et al. paper.
+      default damping ``1 / rho(D^-1 A)`` (PyAMG's relaxation rule, see
+      ``JacobiSmoother``) is not derived from - or needed by - the
+      Nikolopoulos et al. paper.
       Swap in a Gauss-Seidel smoother via ``AMGPreconditioner`` directly if
       matching the paper's exact relaxer matters for a given comparison.
     - **Snapshot source**: the paper collects snapshots as fully converged
@@ -66,8 +66,8 @@ class POD2GPreconditioner(AMGPreconditioner):
             2 (the paper's POD-2G) is the default; higher values are accepted for a future
             hierarchical-POD coarsening strategy but are not meaningful with
             the single-basis ``PODCoarseningStrategy`` used here.
-        omega (float): Weighted-Jacobi damping factor for pre/post
-            relaxation.
+        smoother_omega (float | None): Weighted-Jacobi damping for pre/post
+            relaxation; ``None`` is ``1 / rho(D^-1 A)``.
         n_pre (int): Pre-smoothing steps.
         n_post (int): Post-smoothing steps.
 
@@ -83,7 +83,7 @@ class POD2GPreconditioner(AMGPreconditioner):
         snapshots: torch.Tensor,
         rank: float,
         n_levels: int = 2,
-        omega: float = 0.67,
+        smoother_omega: float | None = None,
         n_pre: int = 2,
         n_post: int = 2,
     ) -> None:
@@ -96,8 +96,8 @@ class POD2GPreconditioner(AMGPreconditioner):
             rank (int | float): Fixed mode count (int) or minimum cumulative
                 captured energy (float in (0, 1]).
             n_levels (int): Total number of grid levels; must be at least 2.
-            omega (float): Weighted-Jacobi damping factor for pre/post
-                relaxation.
+            smoother_omega (float | None): Weighted-Jacobi damping for pre/post
+                relaxation; ``None`` is ``1 / rho(D^-1 A)``.
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
         """
@@ -106,7 +106,7 @@ class POD2GPreconditioner(AMGPreconditioner):
         super().__init__(
             matrix=matrix,
             coarsening=coarsening,
-            cycle=VCycle(JacobiSmoother(omega=omega), n_pre=n_pre, n_post=n_post),
+            cycle=VCycle(JacobiSmoother(omega=smoother_omega), n_pre=n_pre, n_post=n_post),
             n_levels=n_levels,
             linear=True,
         )

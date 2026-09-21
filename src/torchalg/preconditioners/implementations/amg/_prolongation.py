@@ -14,6 +14,8 @@ from collections.abc import Callable
 
 import torch
 
+from ._jacobi_omega import scaled_by_inverse_diagonal
+
 
 def jacobi_prolongation(
     matrix: torch.Tensor,
@@ -36,9 +38,7 @@ def jacobi_prolongation(
     Returns:
         torch.Tensor: Smoothed prolongator, same shape as ``tentative``.
     """
-    diagonal = torch.diagonal(matrix)
-    inverse = torch.where(diagonal != 0, 1.0 / diagonal, torch.zeros_like(diagonal))
-    scaled = inverse.unsqueeze(1) * matrix
+    scaled = scaled_by_inverse_diagonal(matrix)
     scaled = (omega / spectral_radius(scaled)) * scaled
     return tentative - scaled @ tentative
 

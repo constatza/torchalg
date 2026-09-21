@@ -111,7 +111,7 @@ def smoother_persistence_scales(
     snapshots: torch.Tensor,
     matrix: torch.Tensor,
     *,
-    omega: float = 0.67,
+    omega: float | None = None,
     steps: int = 5,
 ) -> torch.Tensor:
     """Row scale by how well each snapshot survives Jacobi smoothing.
@@ -127,8 +127,8 @@ def smoother_persistence_scales(
     Args:
         snapshots (torch.Tensor): Snapshot ensemble, shape (n_samples, n_dofs).
         matrix (torch.Tensor): SPD system matrix A, shape (n_dofs, n_dofs).
-        omega (float): Jacobi damping factor, matching
-            ``JacobiSmoother``'s default.
+        omega (float | None): Jacobi damping factor; ``None`` (default) is the
+            relaxation rule ``1 / rho(D^-1 A)``, matching ``JacobiSmoother``.
         steps (int): Number of damping sweeps defining "persistence".
 
     Returns:

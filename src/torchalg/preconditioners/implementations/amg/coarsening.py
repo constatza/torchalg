@@ -20,6 +20,7 @@ from ._aggregation import (
     standard_aggregation,
     strength_of_connection,
 )
+from ._jacobi_omega import PROLONGATION_NOMINAL, jacobi_omega
 from ._theta_search import adaptive_theta_scan
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 @lru_cache(maxsize=1024)
 def _cached_aggregation_build_transfer(
-    A: torch.Tensor, theta: float, omega: float
+    A: torch.Tensor, theta: float, omega: float | None
 ) -> tuple[torch.Tensor, DenseTransferOperator]:
     """Build (and cache) one `AggregationCoarsening` candidate for `(A, theta, omega)`.
 
@@ -61,8 +62,9 @@ class AggregationCoarsening:
        for the full three-pass description).
     3. Tentative prolongation P0: piecewise-constant indicator matrix
        (aggregate membership).
-    4. Smoothed prolongation: ``P = (I - omega D^{-1} A) P0``, omega ~= 2/3
-       for isotropic SPD (Vanek et al. 1996, Eq. 3.2).
+    4. Smoothed prolongation: ``P = (I - omega D^{-1} A) P0`` with
+       ``omega = (4/3) / rho(D^{-1}A)`` by default (Vanek et al. 1996,
+       Eq. 3.2; PyAMG's rule), ~= 2/3 for isotropic SPD.
     5. Galerkin coarse matrix: ``A_coarse = P.T @ A @ P``.
 
     Args:
@@ -70,9 +72,10 @@ class AggregationCoarsening:
             Default 0.25 is a literature/practice-standard default (e.g.
             hypre BoomerAMG's ``strong_threshold``, PyAMG's
             ``smoothed_aggregation_solver``), not from Stuben (2001).
-        omega (float): Jacobi-smoothing damping omega in (0, 1) for the
-            prolongation smoother. Default 0.67 ~= 2/3 assumes
-            ``rho(D^{-1}A) ~= 2`` (isotropic SPD).
+        omega (float | None): Jacobi damping for the prolongation smoother.
+            ``None`` (default) is ``(4/3) / rho(D^{-1}A)``, estimated once per
+            level matrix and shared with the relaxation (see
+            ``_jacobi_omega``); a float fixes it.
 
     References:
         - Vanek, P., Mandel, J., & Brezina, M. (1996). Algebraic multigrid by
@@ -82,12 +85,12 @@ class AggregationCoarsening:
           Numerica, 26, 591-721 (arXiv:1611.01917).
     """
 
-    def __init__(self, theta: float = 0.25, omega: float = 0.67) -> None:
+    def __init__(self, theta: float = 0.25, omega: float | None = None) -> None:
         """Store the strength-of-connection threshold and smoothing damping factor.
 
         Args:
             theta (float): Strength-of-connection threshold theta in (0, 1).
-            omega (float): Jacobi-smoothing damping omega in (0, 1).
+            omega (float | None): Jacobi damping, or ``None`` for ``(4/3) / rho``.
         """
         self._theta = theta
         self._omega = omega
@@ -109,7 +112,8 @@ class AggregationCoarsening:
         strength = strength_of_connection(A, self._theta)
         aggregate = standard_aggregation(strength)
         tentative = piecewise_constant_prolongation(aggregate, dtype=A.dtype)
-        prolongation = smoothed_prolongation(A, tentative, self._omega)
+        omega = jacobi_omega(A, PROLONGATION_NOMINAL, self._omega)
+        prolongation = smoothed_prolongation(A, tentative, omega)
 
         coarse_matrix = prolongation.T @ A @ prolongation
         return coarse_matrix, DenseTransferOperator(prolongation)
@@ -212,7 +216,7 @@ class TargetDimensionCoarsening:
         theta_min: float,
         theta_max: float,
         step: float,
-        omega: float,
+        omega: float | None = None,
         cache_candidates: bool = False,
     ) -> None:
         """Store the target dimension and search parameters; unbuilt until `build_transfer`.
@@ -222,7 +226,8 @@ class TargetDimensionCoarsening:
             theta_min (float): Lower bound of the `theta` search grid.
             theta_max (float): Upper bound of the `theta` search grid.
             step (float): Grid spacing for the exhaustive search.
-            omega (float): Prolongation Jacobi-smoothing damping.
+            omega (float | None): Prolongation Jacobi-smoothing damping, or
+                ``None`` for the spectral rule ``(4/3) / rho(D^-1 A)``.
             cache_candidates (bool): Share the winning candidate's full
                 build across instances against the same matrix - see the
                 class docstring.
