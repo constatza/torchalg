@@ -41,7 +41,7 @@ import torch
 from torch import nn
 
 from ...base import BindableInputs, Preconditioner, PreconditionerContext
-from .hierarchy import MultigridHierarchy, MultigridLevel
+from .hierarchy import MultigridHierarchy, build_hierarchy
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -185,26 +185,17 @@ class AMGPreconditioner(Preconditioner, nn.Module):
                 cycle.
         """
         if self._hierarchy is None:
-            self._hierarchy = self._build_hierarchy(self._matrix)
+            self._hierarchy = self._make_hierarchy()
         return self._cycle.apply(self._hierarchy, residual)
 
-    # Private ------------------------------------------------------------------
+    def _make_hierarchy(self) -> MultigridHierarchy:
+        """Build the hierarchy on first use (and after it is invalidated).
 
-    def _build_hierarchy(self, matrix: torch.Tensor) -> MultigridHierarchy:
-        """Iteratively apply coarsening to build all levels.
-
-        Args:
-            matrix (torch.Tensor): Finest-level system matrix.
+        Subclasses whose levels are computed elsewhere override this.
 
         Returns:
-            MultigridHierarchy: Frozen hierarchy of levels from fine to
-                coarse.
+            MultigridHierarchy: Levels built by the coarsening strategy.
         """
-        levels: list[MultigridLevel] = []
-        current_matrix = matrix
-        for _ in range(self._n_levels - 1):
-            coarse_matrix, transfer = self._coarsening.build_transfer(current_matrix)
-            levels.append(MultigridLevel(matrix=current_matrix, transfer=transfer))
-            current_matrix = coarse_matrix
-        levels.append(MultigridLevel(matrix=current_matrix, transfer=None))
-        return MultigridHierarchy(levels=tuple(levels))
+        return build_hierarchy(self._matrix, self._coarsening, self._n_levels)
+
+    # Private ------------------------------------------------------------------

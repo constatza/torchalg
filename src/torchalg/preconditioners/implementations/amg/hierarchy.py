@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import torch
 
-    from .protocols import TransferOperator
+    from .protocols import CoarseningStrategy, TransferOperator
 
 
 @dataclass(frozen=True)
@@ -44,3 +44,31 @@ class MultigridHierarchy:
     """
 
     levels: tuple[MultigridLevel, ...]
+
+
+def build_hierarchy(
+    matrix: torch.Tensor, coarsening: CoarseningStrategy, n_levels: int
+) -> MultigridHierarchy:
+    """Iteratively apply ``coarsening`` to build all levels.
+
+    Pure function of its arguments (apart from any state the strategy itself
+    keeps), so trial hierarchies can be built without instantiating an
+    ``AMGPreconditioner``.
+
+    Args:
+        matrix (torch.Tensor): Finest-level system matrix.
+        coarsening (CoarseningStrategy): Strategy that builds each coarse
+            level.
+        n_levels (int): Total number of levels, including the finest.
+
+    Returns:
+        MultigridHierarchy: Frozen hierarchy of levels from fine to coarse.
+    """
+    levels: list[MultigridLevel] = []
+    current_matrix = matrix
+    for _ in range(n_levels - 1):
+        coarse_matrix, transfer = coarsening.build_transfer(current_matrix)
+        levels.append(MultigridLevel(matrix=current_matrix, transfer=transfer))
+        current_matrix = coarse_matrix
+    levels.append(MultigridLevel(matrix=current_matrix, transfer=None))
+    return MultigridHierarchy(levels=tuple(levels))
