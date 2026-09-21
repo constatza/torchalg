@@ -17,6 +17,8 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from ._relaxation import symmetric_gauss_seidel
+
 _NEAR_ZERO_DIAGONAL_TOL = 1e-14
 """Diagonal entries with magnitude below this are excluded from the Jacobi
 update (treated as a zero step for that component)."""
@@ -116,3 +118,33 @@ class JacobiSmoother(SmootherBase):
         for _ in range(steps):
             x = x + diag_inv * (rhs - A @ x)
         return x
+
+
+class GaussSeidelSmoother(SmootherBase):
+    """Symmetric Gauss-Seidel smoother: one forward then one backward sweep per step.
+
+    The smoother PyAMG's adaptive SA uses by default (``('gauss_seidel',
+    {'sweep': 'symmetric'})``); with equal pre- and post-smoothing counts the
+    resulting cycle is symmetric, so plain PCG is valid. Rows with a zero
+    diagonal are left unchanged.
+    """
+
+    def smooth(
+        self,
+        A: torch.Tensor,
+        rhs: torch.Tensor,
+        x: torch.Tensor,
+        steps: int,
+    ) -> torch.Tensor:
+        """Apply ``steps`` symmetric Gauss-Seidel iterations.
+
+        Args:
+            A (torch.Tensor): System matrix (n x n), dense.
+            rhs (torch.Tensor): Right-hand side vector (n,).
+            x (torch.Tensor): Current iterate (n,).
+            steps (int): Number of symmetric iterations.
+
+        Returns:
+            torch.Tensor: Updated iterate.
+        """
+        return symmetric_gauss_seidel(A, x, rhs, steps)
