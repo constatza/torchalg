@@ -595,3 +595,16 @@ def snapshots_with_zero_row(poisson_snapshots: torch.Tensor) -> torch.Tensor:
     snapshots = poisson_snapshots.clone()
     snapshots[0] = 0.0
     return snapshots
+
+
+@pytest.fixture
+def aggregate_map() -> torch.Tensor:
+    """12 nodes in 3 aggregates of 4, plus one isolated node (index 12, marker -1)."""
+    return torch.tensor([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, -1], dtype=torch.long)
+
+
+@pytest.fixture
+def test_vectors_3(aggregate_map: torch.Tensor, torch_dtype: torch.dtype) -> torch.Tensor:
+    """Seeded random (13, 3) test-vector block matching ``aggregate_map``."""
+    generator = torch.Generator().manual_seed(0)
+    return torch.randn(aggregate_map.shape[0], 3, generator=generator, dtype=torch_dtype)

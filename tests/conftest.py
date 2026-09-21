@@ -131,3 +131,26 @@ def poisson_1d_factory(torch_dtype: torch.dtype) -> Callable[[int], torch.Tensor
         )
 
     return _factory
+
+
+@pytest.fixture
+def anisotropic_2d_factory(torch_dtype: torch.dtype) -> Callable[[int, float], torch.Tensor]:
+    """Factory building a 2D anisotropic Poisson matrix on an ``nx x nx`` grid.
+
+    ``A = kron(I, T) + eps * kron(T, I)`` with ``T`` the 1D Poisson stencil
+    ``[-1, 2, -1]``; ``eps = 1`` is isotropic, ``eps << 1`` is strongly
+    anisotropic (the classic case where a constant near-null vector alone is
+    not enough for aggregation AMG).
+
+    Returns:
+        Callable ``(nx, eps) -> (nx*nx, nx*nx)`` SPD matrix.
+    """
+
+    def build(nx: int, eps: float) -> torch.Tensor:
+        stencil = 2.0 * torch.eye(nx, dtype=torch_dtype)
+        stencil -= torch.diag(torch.ones(nx - 1, dtype=torch_dtype), 1)
+        stencil -= torch.diag(torch.ones(nx - 1, dtype=torch_dtype), -1)
+        eye = torch.eye(nx, dtype=torch_dtype)
+        return torch.kron(eye, stencil) + eps * torch.kron(stencil, eye)
+
+    return build
