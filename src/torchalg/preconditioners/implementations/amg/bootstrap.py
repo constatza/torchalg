@@ -512,6 +512,18 @@ class BootstrapSetup:
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Coarsen ``matrix`` down to ``max_levels``/``max_coarse``.
 
+        Compatible relaxation can legitimately converge with ``C = empty
+        set`` on an already-coarsened level (``rho_f <= delta`` from the
+        start, [AD11] Algorithm 1's own valid stopping case) - producing a
+        zero-column prolongation and a zero-size coarse matrix that would
+        contribute exactly zero coarse-grid correction. A coarsening pass is
+        discarded, and the loop stops with ``current`` standing as the
+        final, coarsest level, whenever it is degenerate in either
+        direction: ``coarse_matrix.shape[0] == 0`` (the empty-``C`` case
+        above) or ``coarse_matrix.shape[0] >= current.shape[0]`` (no real
+        coarsening happened at all). This is a stopping-condition fix, not a
+        change to ``compatible_relaxation_coarsening``'s own semantics.
+
         Args:
             matrix (torch.Tensor): Finest-level matrix.
             coarsening (BAMGCoarsening): Coarsening strategy, already seeded
@@ -532,6 +544,8 @@ class BootstrapSetup:
             )
             coarsening.set_test_vectors(current, relaxed)
             coarse_matrix, _ = coarsening.build_transfer(current)
+            if coarse_matrix.shape[0] == 0 or coarse_matrix.shape[0] >= current.shape[0]:
+                break
             levels.append(coarse_matrix)
             prolongations.append(coarsening.last_prolongation)
         return levels, prolongations

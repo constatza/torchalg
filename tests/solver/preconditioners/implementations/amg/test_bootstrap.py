@@ -180,6 +180,45 @@ def test_bootstrap_setup_run_hierarchy_matches_matrices(
 
 
 @pytest.fixture
+def poisson_31(poisson_1d_factory: Callable[[int], torch.Tensor]) -> torch.Tensor:
+    """31x31 1D Poisson matrix - Task 5's own reproduction case for the degenerate-empty-coarse-level bug."""
+    return poisson_1d_factory(31)
+
+
+@pytest.fixture
+def bootstrap_draw_seed0() -> Callable[[int], torch.Tensor]:
+    """Seeded (seed 0) uniform ``[0, 1)`` draw source - deterministically reproduces a CR pass converging with ``C = empty set`` on an already-coarsened level."""
+    generator = torch.Generator().manual_seed(0)
+
+    def _draw(n: int) -> torch.Tensor:
+        return torch.rand(n, generator=generator, dtype=torch.float64)
+
+    return _draw
+
+
+@pytest.fixture
+def bootstrap_setup_default() -> BootstrapSetup:
+    """``BootstrapSetup`` with the class's own defaults - matches the degenerate-level repro's parameters."""
+    return BootstrapSetup()
+
+
+def test_bootstrap_setup_run_never_appends_a_degenerate_empty_coarse_level(
+    poisson_31: torch.Tensor,
+    bootstrap_setup_default: BootstrapSetup,
+    bootstrap_draw_seed0: Callable[[int], torch.Tensor],
+) -> None:
+    """CR can legitimately converge with ``C = empty set`` on an already-coarsened level; ``_build_levels``
+    must stop the hierarchy there rather than appending the resulting zero-column-prolongation,
+    zero-size "coarsest" level (Task 5's N=31/seed=0 repro: without the fix this produces level
+    shapes ``[31, 15, 0]``, a degenerate final level contributing exactly zero coarse-grid
+    correction)."""
+    result = bootstrap_setup_default.run(poisson_31, bootstrap_draw_seed0)
+
+    assert all(matrix.shape[0] > 0 for matrix in result.matrices)
+    assert all(prolongation.shape[1] > 0 for prolongation in result.prolongations)
+
+
+@pytest.fixture
 def anisotropic_2d_matrix_64(
     anisotropic_2d_factory: Callable[[int, float], torch.Tensor],
 ) -> torch.Tensor:
