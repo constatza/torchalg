@@ -110,6 +110,32 @@ def matrix_graph_factory() -> Callable[[torch.Tensor], torch.Tensor]:
 
 
 @pytest.fixture
+def cr_rate_property_cases(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    anisotropic_2d_factory: Callable[[int, float], torch.Tensor],
+    alternating_coarse_mask_factory: Callable[[int], torch.Tensor],
+) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
+    """Several (SPD matrix, reasonable coarse split) pairs for the ``cr_rate`` bound property test.
+
+    Spans a 1D Poisson matrix at two sizes and a 2D anisotropic Poisson
+    matrix, each with an every-other-point coarse/fine split - a general
+    property sweep across multiple fixture matrices, distinct from
+    ``test_cr_rate_low_for_every_other_point``'s and
+    ``test_cr_rate_high_for_empty_coarse_set``'s single-case numeric-bound
+    checks (``amg-integration-architecture.md`` Sec. 5's still-missing
+    ``cr_rate`` property, per the Task 5 brief).
+    """
+    poisson_12 = poisson_1d_factory(12)
+    poisson_24 = poisson_1d_factory(24)
+    anisotropic_16 = anisotropic_2d_factory(4, 0.1)
+    return (
+        (poisson_12, alternating_coarse_mask_factory(12)),
+        (poisson_24, alternating_coarse_mask_factory(24)),
+        (anisotropic_16, alternating_coarse_mask_factory(16)),
+    )
+
+
+@pytest.fixture
 def skip_one_guidance_graph_5() -> torch.Tensor:
     """Boolean graph connecting 0<->2 and 1<->3 - disjoint from the matrix's own adjacent-index graph."""
     graph = torch.zeros(5, 5, dtype=torch.bool)
@@ -198,6 +224,25 @@ def test_cr_rate_high_for_empty_coarse_set(
     )
 
     assert rho > 0.7
+
+
+def test_cr_rate_bounded_in_zero_one_across_matrices_and_splits(
+    cr_rate_property_cases: tuple[tuple[torch.Tensor, torch.Tensor], ...],
+    seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+) -> None:
+    """``cr_rate``'s rho_f (a spectral-radius estimate) lies in ``[0, 1)`` for every SPD matrix/split tested.
+
+    General property sweep across several fixture matrices (1D and 2D
+    Poisson, two sizes), distinct from ``test_cr_rate_low_for_every_other_point``'s
+    and ``test_cr_rate_high_for_empty_coarse_set``'s single-case numeric
+    bound checks.
+    """
+    for index, (matrix, coarse_mask) in enumerate(cr_rate_property_cases):
+        draw = seeded_draw_factory(index)
+
+        rho, _ = cr_rate(matrix, coarse_mask, GaussSeidelSmoother().smooth, sweeps=5, draw=draw)
+
+        assert 0.0 <= rho < 1.0, f"rho_f={rho} out of [0, 1) for case {index}"
 
 
 def test_independent_set_of_respects_matrix_graph_and_priority(
