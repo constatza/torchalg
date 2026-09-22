@@ -30,7 +30,7 @@ changing the SVD's (Euclidean) inner product or requiring a
 back-transform of the returned basis. `pod.weighting` computes that vector
 for three schemes: `power_norm_scales` (row scale `||e_k||^(-beta)`, `beta=0`
 raw / `beta=1` fully normalized / in between interpolates, `metric="l2"` or
-`"a"`), `smoother_persistence_scales` (row scale by how much of a snapshot's
+`"energy"`), `smoother_persistence_scales` (row scale by how much of a snapshot's
 norm survives `steps` weighted-Jacobi sweeps - directions the smoother
 already handles well contribute little), and the `apply_jacobi_damping`
 helper both build on top of (also usable directly by snapshot-generation

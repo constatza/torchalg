@@ -66,3 +66,8 @@ class TestEnergyNorm:
         """Return type is a plain float, matching the ``Norm`` type alias."""
         anorm = energy_norm(energy_norm_diag_entries)
         assert isinstance(anorm(ones_vector_2), float)
+
+    def test_tiny_negative_quadratic_form_clamps_to_zero(self, torch_dtype: torch.dtype) -> None:
+        """A quadratic form pushed slightly negative by float noise returns 0, not NaN."""
+        anorm = energy_norm(torch.tensor([-1e-20, 1.0], dtype=torch_dtype))
+        assert anorm(torch.tensor([1.0, 0.0], dtype=torch_dtype)) == 0.0

@@ -33,6 +33,8 @@ from collections.abc import Callable
 
 import torch
 
+from torchalg.utils.energy import energy_dot
+
 # Type alias: norm takes vector, returns scalar.
 type Norm = Callable[[torch.Tensor], float]
 
@@ -92,16 +94,9 @@ def energy_norm(A: torch.Tensor) -> Norm:
 
             ||x* - x_k||_A = min_{y in x_0 + K_k} ||x* - y||_A
     """
-    if A.ndim == 1:
 
-        def _energy_norm_diag(v: torch.Tensor) -> float:
-            """Energy norm using diagonal entries: sqrt(sum(d_i * v_i^2))."""
-            return float(torch.sqrt(torch.sum(A * v * v)))
+    def _energy_norm(v: torch.Tensor) -> float:
+        """Energy norm via the shared ``energy_dot`` A-inner-product primitive."""
+        return float(energy_dot(v, v, A).clamp_min(0.0).sqrt())
 
-        return _energy_norm_diag
-
-    def _energy_norm_full(v: torch.Tensor) -> float:
-        """Energy norm using full matrix: sqrt(v^T A v)."""
-        return float(torch.sqrt(v @ A @ v))
-
-    return _energy_norm_full
+    return _energy_norm

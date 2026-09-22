@@ -22,12 +22,14 @@ from typing import Literal
 
 import torch
 
+from torchalg.utils.energy import energy_dot
+
 from ..amg._test_vectors import apply_jacobi_damping, apply_jacobi_damping_trajectory
 
 __all__ = [
-    "a_row_norms",
     "apply_jacobi_damping",
     "apply_jacobi_damping_trajectory",
+    "energy_row_norms",
     "l2_row_norms",
     "power_norm_scales",
     "smoother_persistence_scales",
@@ -50,8 +52,8 @@ def l2_row_norms(snapshots: torch.Tensor) -> torch.Tensor:
     return torch.linalg.vector_norm(snapshots, dim=1)
 
 
-def a_row_norms(snapshots: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
-    """A-inner-product norm of each snapshot row, ``sqrt(e_k^T A e_k)``.
+def energy_row_norms(snapshots: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
+    """Energy (A-inner-product) norm of each snapshot row, ``sqrt(e_k^T A e_k)``.
 
     Args:
         snapshots (torch.Tensor): Snapshot ensemble, shape (n_samples, n_dofs).
@@ -62,15 +64,14 @@ def a_row_norms(snapshots: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
             0 before the square root to absorb tiny negative values from
             floating-point asymmetry on an otherwise-SPD ``matrix``.
     """
-    quadratic_form = (snapshots @ matrix * snapshots).sum(dim=1)
-    return quadratic_form.clamp_min(0.0).sqrt()
+    return energy_dot(snapshots, snapshots, matrix).clamp_min(0.0).sqrt()
 
 
 def power_norm_scales(
     snapshots: torch.Tensor,
     *,
     matrix: torch.Tensor | None = None,
-    metric: Literal["l2", "a"] = "l2",
+    metric: Literal["l2", "energy"] = "l2",
     beta: float = 1.0,
 ) -> torch.Tensor:
     """Row scale ``||e_k||^(-beta)``, interpolating between raw and fully normalized.
@@ -82,8 +83,8 @@ def power_norm_scales(
     Args:
         snapshots (torch.Tensor): Snapshot ensemble, shape (n_samples, n_dofs).
         matrix (torch.Tensor | None): SPD system matrix, required when
-            ``metric="a"``.
-        metric (Literal["l2", "a"]): Which norm to scale by.
+            ``metric="energy"``.
+        metric (Literal["l2", "energy"]): Which norm to scale by.
         beta (float): Normalization exponent; 0 disables scaling entirely,
             1 fully normalizes.
 
@@ -91,7 +92,7 @@ def power_norm_scales(
         torch.Tensor: Shape (n_samples,), per-row scale factor.
 
     Raises:
-        ValueError: If ``metric="a"`` and ``matrix`` is not given.
+        ValueError: If ``metric="energy"`` and ``matrix`` is not given.
     """
     if beta == 0.0:
         return torch.ones(snapshots.shape[0], dtype=snapshots.dtype, device=snapshots.device)
@@ -99,10 +100,10 @@ def power_norm_scales(
     match metric:
         case "l2":
             norms = l2_row_norms(snapshots)
-        case "a":
+        case "energy":
             if matrix is None:
-                raise ValueError("power_norm_scales: metric='a' requires the system matrix.")
-            norms = a_row_norms(snapshots, matrix)
+                raise ValueError("power_norm_scales: metric='energy' requires the system matrix.")
+            norms = energy_row_norms(snapshots, matrix)
 
     return norms.clamp_min(_NEAR_ZERO_NORM_TOL).pow(-beta)
 

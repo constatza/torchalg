@@ -34,7 +34,7 @@ Public API:
           L2/A-normalized snapshots.
         - smoother_persistence_scales: Row scale by how well each snapshot
           survives weighted-Jacobi damping.
-        - l2_row_norms / a_row_norms: The underlying per-row norms.
+        - l2_row_norms / energy_row_norms: The underlying per-row norms.
         - apply_jacobi_damping: Batched weighted-Jacobi error damping,
           reused by ``smoother_persistence_scales`` and available directly
           for snapshot-generation strategies that want "algebraically
@@ -58,9 +58,9 @@ from .basis import compute_pod_basis
 from .coarsening import PODCoarseningStrategy
 from .variants import POD2GPreconditioner
 from .weighting import (
-    a_row_norms,
     apply_jacobi_damping,
     apply_jacobi_damping_trajectory,
+    energy_row_norms,
     l2_row_norms,
     power_norm_scales,
     smoother_persistence_scales,
@@ -73,9 +73,9 @@ __all__ = [
     "PODCoarseningStrategy",
     "compute_pod_basis",
     # Weighting
-    "a_row_norms",
     "apply_jacobi_damping",
     "apply_jacobi_damping_trajectory",
+    "energy_row_norms",
     "l2_row_norms",
     "power_norm_scales",
     "smoother_persistence_scales",

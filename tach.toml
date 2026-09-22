@@ -15,9 +15,12 @@ depends_on = []
 # `tach check` only warns ("Module containing '...' not found in project")
 # for a path with no matching source yet — it does not fail — so declaring
 # the entry ahead of the implementation was safe.
+# `torchalg.utils` added when `monitoring/analysis.py` landed (post-hoc
+# energy-norm/Golub-Meurant helpers): it depends on the shared
+# `energy_dot` floor primitive, never on a concrete preconditioner package.
 [[modules]]
 path = "torchalg.monitoring"
-depends_on = []
+depends_on = ["torchalg.utils"]
 
 # Stage 2: data models (state/history/result/config/diagnostics/protocols) -
 # depends only on the utils floor.

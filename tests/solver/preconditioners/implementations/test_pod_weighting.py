@@ -17,16 +17,16 @@ import torch
 
 from torchalg.preconditioners.implementations.amg.smoothers import JacobiSmoother
 from torchalg.preconditioners.implementations.pod.weighting import (
-    a_row_norms,
     apply_jacobi_damping,
     apply_jacobi_damping_trajectory,
+    energy_row_norms,
     l2_row_norms,
     power_norm_scales,
     smoother_persistence_scales,
 )
 
 # ---------------------------------------------------------------------------
-# l2_row_norms / a_row_norms
+# l2_row_norms / energy_row_norms
 # ---------------------------------------------------------------------------
 
 
@@ -43,12 +43,12 @@ class TestL2RowNorms:
         assert norms[0].item() == 0.0
 
 
-class TestARowNorms:
+class TestEnergyRowNorms:
     def test_matches_manual_quadratic_form(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
         """Must match ``sqrt(e^T A e)`` computed row-by-row."""
-        norms = a_row_norms(poisson_snapshots, poisson_1d)
+        norms = energy_row_norms(poisson_snapshots, poisson_1d)
         expected = torch.tensor(
             [torch.sqrt(row @ poisson_1d @ row).item() for row in poisson_snapshots],
             dtype=poisson_snapshots.dtype,
@@ -58,8 +58,8 @@ class TestARowNorms:
     def test_nonnegative_for_spd_matrix(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
-        """SPD ``A`` must give strictly non-negative A-norms."""
-        norms = a_row_norms(poisson_snapshots, poisson_1d)
+        """SPD ``A`` must give strictly non-negative energy norms."""
+        norms = energy_row_norms(poisson_snapshots, poisson_1d)
         assert torch.all(norms >= 0.0)
 
 
@@ -80,12 +80,12 @@ class TestPowerNormScales:
         expected = 1.0 / l2_row_norms(poisson_snapshots)
         torch.testing.assert_close(scales, expected)
 
-    def test_beta_one_a_gives_a_normalization(
+    def test_beta_one_energy_gives_energy_normalization(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
-        """``metric='a', beta=1`` scale must equal ``1/||e_k||_A``."""
-        scales = power_norm_scales(poisson_snapshots, matrix=poisson_1d, metric="a", beta=1.0)
-        expected = 1.0 / a_row_norms(poisson_snapshots, poisson_1d)
+        """``metric='energy', beta=1`` scale must equal ``1/||e_k||_A``."""
+        scales = power_norm_scales(poisson_snapshots, matrix=poisson_1d, metric="energy", beta=1.0)
+        expected = 1.0 / energy_row_norms(poisson_snapshots, poisson_1d)
         torch.testing.assert_close(scales, expected, atol=1e-6, rtol=1e-6)
 
     def test_partial_beta_interpolates_between_raw_and_normalized(
@@ -101,10 +101,10 @@ class TestPowerNormScales:
         assert torch.all(partial < raw)
         assert torch.all(partial > full)
 
-    def test_metric_a_without_matrix_raises(self, poisson_snapshots: torch.Tensor) -> None:
-        """``metric='a'`` needs the system matrix - omitting it is a usage error."""
+    def test_metric_energy_without_matrix_raises(self, poisson_snapshots: torch.Tensor) -> None:
+        """``metric='energy'`` needs the system matrix - omitting it is a usage error."""
         with pytest.raises(ValueError, match="matrix"):
-            power_norm_scales(poisson_snapshots, metric="a", beta=1.0)
+            power_norm_scales(poisson_snapshots, metric="energy", beta=1.0)
 
     def test_zero_row_does_not_produce_inf(self, snapshots_with_zero_row: torch.Tensor) -> None:
         """A zero snapshot must be clamped, not divide-by-zero into inf/nan."""
