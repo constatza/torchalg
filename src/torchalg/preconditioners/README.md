@@ -130,24 +130,52 @@ caliber-bounded interpolatory-set selection) are pure per-kernel modules;
 `bootstrap.py`'s `BAMGCoarsening` wires them into one `build_transfer(A)` =
 one level of the paper's setup algorithm, `BootstrapSetup.run` is the outer
 Sec. 4.1/5 loop (build the initial hierarchy from relaxed random test
-vectors, then improve every level's vectors for `n_bootstrap_cycles` by
-running the current partial hierarchy on `A x = 0` and rebuilding), and
+vectors, then for `n_bootstrap_cycles` improve the *finest* level's vectors
+by running the current partial hierarchy on `A x = 0` and rebuild the whole
+hierarchy from them — each coarse level's vectors are re-derived from
+scratch during that rebuild, by restriction plus `eta` relaxation sweeps,
+rather than improved in place; a documented simplification of Sec. 5, which
+improves every level), and
 `BootstrapAMGPreconditioner` is the `AdaptiveSAPreconditioner`-shaped preset
-(`_PrebuiltCoarsening` + `_make_hierarchy` override) around it. Not built in
+around it — both presets share `amg/_presets.py`'s `PRESET_CYCLE`,
+`seeded_draw` and `PrebuiltCoarsening` (a placeholder `CoarseningStrategy`
+that always raises, since `_make_hierarchy` is overridden). Not built in
 v1: the multigrid eigensolver (MGE, Sec. 4.2) - bootstrap cycles improve
 test vectors by relaxation/cycling alone. `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
 algebraic-distance strength graph there, computed once per level (before any
 point is marked coarse) and held fixed through CR's outer loop, matching
-that parameter's own fixed-for-the-whole-call shape.
+that parameter's own fixed-for-the-whole-call shape. That graph is
+**symmetrized by union** (`M | Mᵀ`) before being passed: `r_ij` is
+directional by design, while `_independent_set_of` consults only row `i`,
+so an unsymmetrized graph would let two nodes joined by a one-directional
+edge both be marked coarse; the union is the conservative choice (it blocks
+strictly more simultaneous picks than the intersection would).
+
+Two deviations from a literal reading of the papers, both deliberate and
+both load-bearing: `select_interpolatory_set` applies [AD11] §4.3's
+caliber-growth penalization to the LS functional *normalized by its
+empty-set value* rather than to the raw value (the rule is only meaningful
+on a dimensionless order-one residual, and `BootstrapSetup.run` drives the
+test vectors toward zero, so the raw comparison stalls growth at the empty
+set); and `BAMGCoarsening` falls back to the single strongest candidate by
+algebraic distance if a row's interpolatory set still comes back empty,
+rather than emitting an all-zero row of `P` that would make that F-point
+invisible to the coarse grid. `test_bootstrap.py` asserts the resulting
+invariant (`P` has no all-zero rows) and `test_least_squares.py` asserts
+that set selection is scale-invariant.
 
 Verified by property tests (`tests/solver/preconditioners/implementations/amg/test_algebraic_distance.py`,
 `test_compatible_relaxation.py`, `test_least_squares.py`, `test_bootstrap.py`):
 `algebraic_distance` is directional (`r_ij != r_ji` in general, by
 design - a one-sided LS fit at node `i`, not a functional symmetric in
 `i, j`), zero outside the depth neighborhood, and matches a direct
-weighted-LS fit; `hcr_operator` is an idempotent projector on `F`, `cr_rate`
+weighted-LS fit; `hcr_operator` leaves the coarse entries exactly zero
+(it is *not* claimed to be an idempotent projector — it never materializes
+the general habituated-CR projector `π`, using the simpler
+F-relaxation/masking form instead, which is a deliberate approximation of
+`E_ff`, documented in its own docstring and in `test_compatible_relaxation.py`), `cr_rate`
 stays in `[0, 1)`; `ls_interpolation_row` reproduces the test vectors
 exactly when the interpolatory set has full local rank, `lsr_correction`
 never increases fit error; `BAMGCoarsening` always returns a PSD Galerkin
@@ -173,15 +201,26 @@ Bootstrap-AMG pipeline to validate the whole algorithm against. Correctness
 instead rests on the property tests above plus a `benchmark`-marked paper-table reproduction
 (`tests/benchmarks/preconditioners/test_bootstrap_amg.py`) checked against
 [BAMG11]'s Tables 4.2/4.3 convergence-factor trends on this codebase's own
-Poisson fixtures. That benchmark also surfaces a real, known accuracy gap,
-stated plainly rather than swept under the rug: **this implementation seeds
-no a priori near-null vector** (e.g. the constant vector `1`) into the
-test-vector set - only `k_r` random draws - and [BAMG11] Sec. 6 itself
-reports that without that seed, LSR's advantage over LS degrades with
-problem size. This codebase's own measurements (averaged over independent
-`BootstrapSetup` seeds) found LS and LSR statistically indistinguishable
-here, sometimes with LSR measurably worse than LS for a given setup seed,
-rather than the paper's reliably "LSR wins" trend; the benchmark demonstrates
-LSR beating LS only at specific, documented seeds/problem sizes, not as a
-general property. LSR's paper-reported advantage should not be assumed to
-hold without near-null-vector seeding, which is not implemented here.
+Poisson fixtures. That benchmark also records a real, known accuracy gap, stated plainly
+rather than swept under the rug: **this implementation seeds no a priori
+near-null vector** (e.g. the constant vector `1`) into the test-vector set —
+only `k_r` random draws — and [BAMG11] Sec. 6 reports that seeding takes
+LSR into a near-optimal `ρ ≈ 0.04–0.15` range. That gap explains the
+*absolute* level of the numbers measured here (`ρ ≈ 0.45–0.75` on 1D Poisson
+at N=31…511, averaged over 8 setup seeds), and remains a deliberate,
+documented scope decision.
+
+It does **not** explain the LS-vs-LSR comparison. Averaged over 8 setup
+seeds, LSR's advantage over LS is size-dependent, exactly as Sec. 6 reports:
+indistinguishable at the small sizes (1D N=31: 0.470 LS vs 0.480 LSR, LSR
+winning 3/8 seeds; 16×16 2D: 0.460 vs 0.472, 3/8), emerging at N=63 (0.692
+vs 0.640) and N=127 (0.656 vs 0.577), and unambiguous at N=511 (0.716 vs
+0.663, LSR winning **8/8** seeds with a mean gap larger than either
+variant's standard deviation). An earlier version of this section reported
+LS and LSR as statistically indistinguishable at *every* size and blamed
+the seeding gap; that flat result was an artifact of a since-fixed bug in
+`select_interpolatory_set` (it compared raw, un-normalized LS functional
+values, so the bootstrap cycles' own shrinking of the test vectors stalled
+interpolatory-set growth and left most F-rows of `P` entirely zero — 14 of
+15 at N=31, `ρ ≈ 0.88`). The full per-size table lives in the benchmark
+module's docstring.
