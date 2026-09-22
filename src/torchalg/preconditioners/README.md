@@ -141,3 +141,47 @@ plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
 algebraic-distance strength graph there, computed once per level (before any
 point is marked coarse) and held fixed through CR's outer loop, matching
 that parameter's own fixed-for-the-whole-call shape.
+
+Verified by property tests (`tests/solver/preconditioners/implementations/amg/test_algebraic_distance.py`,
+`test_compatible_relaxation.py`, `test_least_squares.py`, `test_bootstrap.py`):
+`algebraic_distance` is directional (`r_ij != r_ji` in general, by
+design - a one-sided LS fit at node `i`, not a functional symmetric in
+`i, j`), zero outside the depth neighborhood, and matches a direct
+weighted-LS fit; `hcr_operator` is an idempotent projector on `F`, `cr_rate`
+stays in `[0, 1)`; `ls_interpolation_row` reproduces the test vectors
+exactly when the interpolatory set has full local rank, `lsr_correction`
+never increases fit error; `BAMGCoarsening` always returns a PSD Galerkin
+operator (with and without LSR) and, after a real bug was caught and fixed,
+never appends a degenerate zero-size coarsest level (CR can legitimately
+converge to an empty coarse set on an already-coarsened level -
+`BootstrapSetup._build_levels` now discards that pass and keeps the
+previous level as the final one); `BootstrapAMGPreconditioner` measurably
+reduces PCG iterations vs. unpreconditioned PCG and is linear (plain `pcg`,
+no `flexible_cg` required).
+
+Unlike `AdaptiveSAPreconditioner`, **no PyAMG oracle exists for this
+algorithm**. PyAMG does have a `pyamg.classical.cr.CR` compatible-relaxation
+splitter and a `pyamg.strength.algebraic_distance` strength measure, but
+neither matches this module's algorithm - `CR` is a different (non
+AD11-guided) compatible-relaxation formulation, `algebraic_distance` is a
+different, unrelated measure (Safro/Sanders/Schulz), and PyAMG's
+`classical/interpolate.py` has no least-squares interpolation scheme at all
+(only `classical_interpolation`/`direct_interpolation`/
+`injection_interpolation`/`one_point_interpolation`/`local_air`) to wire
+either of them into. PyAMG therefore has no complete, assembled
+Bootstrap-AMG pipeline to validate the whole algorithm against. Correctness
+instead rests on the property tests above plus a `benchmark`-marked paper-table reproduction
+(`tests/benchmarks/preconditioners/test_bootstrap_amg.py`) checked against
+[BAMG11]'s Tables 4.2/4.3 convergence-factor trends on this codebase's own
+Poisson fixtures. That benchmark also surfaces a real, known accuracy gap,
+stated plainly rather than swept under the rug: **this implementation seeds
+no a priori near-null vector** (e.g. the constant vector `1`) into the
+test-vector set - only `k_r` random draws - and [BAMG11] Sec. 6 itself
+reports that without that seed, LSR's advantage over LS degrades with
+problem size. This codebase's own measurements (averaged over independent
+`BootstrapSetup` seeds) found LS and LSR statistically indistinguishable
+here, sometimes with LSR measurably worse than LS for a given setup seed,
+rather than the paper's reliably "LSR wins" trend; the benchmark demonstrates
+LSR beating LS only at specific, documented seeds/problem sizes, not as a
+general property. LSR's paper-reported advantage should not be assumed to
+hold without near-null-vector seeding, which is not implemented here.

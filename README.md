@@ -37,9 +37,11 @@ It ships:
 - A real preconditioner library: `Identity`, `JacobiPreconditioner`,
   `ILUPreconditioner` (dense ILU(0)), `IC0Preconditioner` (dense IC(0)),
   `ICholeskyPreconditioner`, `AMGPreconditioner` with `VCycleAMG`/`WCycleAMG`
-  presets (dense smoothed-aggregation multigrid), `POD2GPreconditioner`
-  (POD-basis two-grid), and `NeuralPreconditioner` (adapts a caller-supplied
-  predictor model as a non-linear preconditioner).
+  presets (dense smoothed-aggregation multigrid), `AdaptiveSAPreconditioner`
+  (data-driven smoothed aggregation, a PyAMG port), `BootstrapAMGPreconditioner`
+  (Bootstrap AMG, test-vector-driven coarsening/interpolation),
+  `POD2GPreconditioner` (POD-basis two-grid), and `NeuralPreconditioner`
+  (adapts a caller-supplied predictor model as a non-linear preconditioner).
 - `TraceMode`/`IterationHistory` for opt-in per-iteration residual/solution
   traces.
 - `run_cg_comparison`/`format_results_summary` to benchmark several
