@@ -190,6 +190,10 @@ class CGState(KrylovState):
             ``_check_stopping`` (Notay 2000 treats truncated-orthogonalization
             quality loss as a convergence-rate signal, not a hard breakdown
             requiring termination).
+        energy_decrement (float | None): This step's exact
+            ``alpha_k * rho_k``, the decrease in ``||e_k||_A^2`` (Golub &
+            Meurant 1994). ``None`` for the initial state, before any step.
+            See ``torchalg.models.protocols.HasEnergyDecrement``.
 
     Theory (Notay 2000):
         FCG maintains a window of previous search directions to
@@ -246,6 +250,9 @@ class CGState(KrylovState):
 
     ortho_breakdown_at: int | None = None
     """Iteration of first-detected orthogonalization breakdown, or None."""
+
+    energy_decrement: float | None = None
+    """This step's exact alpha_k * rho_k (decrease in ||e_k||_A^2), or None initially."""
 
     @classmethod
     def create_initial(

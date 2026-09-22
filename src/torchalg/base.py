@@ -8,7 +8,7 @@ from typing import cast
 
 import torch
 
-from torchalg.models.protocols import HasVectors
+from torchalg.models.protocols import HasEnergyDecrement, HasVectors
 from torchalg.models.result import SolverResult
 from torchalg.models.state import SolverState
 from torchalg.monitoring import IterationHistory, TraceMode
@@ -216,16 +216,25 @@ class IterativeSolverBase[S: SolverState](ABC):
         residual = None
         solution = None
         direction = None
-        if self.trace_mode == TraceMode.FULL and isinstance(state, HasVectors):
+        needs_error_norm = self.iteration_history.x_exact is not None
+        if isinstance(state, HasVectors) and (
+            self.trace_mode == TraceMode.FULL or needs_error_norm
+        ):
             residual = state.r
             solution = state.u
+        if self.trace_mode == TraceMode.FULL and isinstance(state, HasVectors):
             direction = state.d
+
+        energy_decrement = None
+        if isinstance(state, HasEnergyDecrement):
+            energy_decrement = state.energy_decrement
 
         self.iteration_history.log_iteration(
             residual_norm=state.residual_norm,
             residual=residual,
             solution=solution,
             direction=direction,
+            energy_decrement=energy_decrement,
         )
 
     def _apply_preconditioner(
@@ -257,14 +266,17 @@ class IterativeSolverBase[S: SolverState](ABC):
         torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
+        tuple[float, ...] | None,
+        tuple[float, ...] | None,
     ]:
         """Extract result histories from the configured iteration history."""
+        empty_result = (None, None, None, None, None, None, None)
         if self.iteration_history is None:
-            return None, None, None, None, None
+            return empty_result
 
         residual_history_abs = tuple(self.iteration_history.residual_norms.to_list())
         if not residual_history_abs:
-            return None, None, None, None, None
+            return empty_result
 
         if rhs_norm > 0:
             residual_history_rel = tuple(value / rhs_norm for value in residual_history_abs)
@@ -283,10 +295,15 @@ class IterativeSolverBase[S: SolverState](ABC):
         if self.iteration_history.directions is not None:
             direction_vectors = self.iteration_history.directions.to_tensor()
 
+        error_history_a_norm = tuple(self.iteration_history.error_norms.to_list()) or None
+        energy_decrements = tuple(self.iteration_history.energy_decrements.to_list()) or None
+
         return (
             residual_history_abs,
             residual_history_rel,
             residual_vectors,
             solution_vectors,
             direction_vectors,
+            error_history_a_norm,
+            energy_decrements,
         )

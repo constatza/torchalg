@@ -26,6 +26,12 @@ def direction_vector() -> torch.Tensor:
     return torch.tensor([-1.0, 0.0, 1.0], dtype=torch.float64)
 
 
+@pytest.fixture
+def x_exact_vector() -> torch.Tensor:
+    """Fixture: known exact solution paired with ``solution_vector``/``residual_vector``."""
+    return torch.tensor([0.5, 0.5, 0.5], dtype=torch.float64)
+
+
 @pytest.fixture(params=[TraceMode.MINIMAL, "minimal"])
 def minimal_trace_mode(request: pytest.FixtureRequest) -> TraceMode | str:
     """Fixture: minimal trace mode as enum and string input."""

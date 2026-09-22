@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 import torch
 
 from torchalg.factories import flexible_cg, pcg
-from torchalg.monitoring import TraceMode
+from torchalg.monitoring import TraceMode, energy_norm_history
 from torchalg.preconditioners.base import (
     BindableInputs,
     Preconditioner,
@@ -114,6 +115,57 @@ def test_factory_full_trace_records_vectors(
     assert result.residual_vectors.shape[1:] == rhs.shape
     assert result.solution_vectors.shape[1:] == rhs.shape
     assert result.direction_vectors.shape[1:] == rhs.shape
+    assert result.residual_vectors.device.type == "cpu"
+    assert result.solution_vectors.device.type == "cpu"
+    assert result.direction_vectors.device.type == "cpu"
+
+
+def test_factory_x_exact_populates_error_history_matching_full_trace(
+    tridiagonal_spd_small: NDArray,
+    rhs_ones_small: NDArray,
+    to_torch: Callable[[NDArray], torch.Tensor],
+) -> None:
+    """``x_exact`` populates ``error_history_a_norm`` matching a post-hoc computation."""
+    matrix = to_torch(tridiagonal_spd_small)
+    rhs = to_torch(rhs_ones_small)
+    x_exact = torch.linalg.solve(matrix, rhs)
+
+    _, result = pcg(matrix, rhs, x_exact=x_exact, trace_mode=TraceMode.FULL, maxiter=20)
+
+    assert result.error_history_a_norm is not None
+    assert result.solution_vectors is not None
+    reference = energy_norm_history(matrix, x_exact, result.solution_vectors)
+    assert list(result.error_history_a_norm) == pytest.approx(reference.tolist(), abs=1e-8)
+
+
+def test_factory_without_x_exact_omits_error_history(
+    identity_matrix_small: NDArray,
+    rhs_ones_small: NDArray,
+    to_torch: Callable[[NDArray], torch.Tensor],
+) -> None:
+    """Without ``x_exact``, ``error_history_a_norm`` stays ``None``."""
+    matrix = to_torch(identity_matrix_small)
+    rhs = to_torch(rhs_ones_small)
+
+    _, result = pcg(matrix, rhs, trace_mode=TraceMode.MINIMAL, maxiter=5)
+
+    assert result.error_history_a_norm is None
+
+
+def test_factory_energy_decrements_recorded_in_minimal_mode(
+    tridiagonal_spd_small: NDArray,
+    rhs_ones_small: NDArray,
+    to_torch: Callable[[NDArray], torch.Tensor],
+) -> None:
+    """``energy_decrements`` is always populated once history is enabled, no ``x_exact`` needed."""
+    matrix = to_torch(tridiagonal_spd_small)
+    rhs = to_torch(rhs_ones_small)
+
+    _, result = pcg(matrix, rhs, trace_mode=TraceMode.MINIMAL, maxiter=20)
+
+    assert result.energy_decrements is not None
+    assert len(result.energy_decrements) == result.iterations
+    assert all(value >= 0.0 for value in result.energy_decrements)
 
 
 def test_factory_disabled_trace_omits_histories(

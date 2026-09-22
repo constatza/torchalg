@@ -51,6 +51,7 @@ def flexible_cg(
     atol: float = DEFAULT_ATOL,
     maxiter: int | None = None,
     trace_mode: TraceMode | str = TraceMode.MINIMAL,
+    x_exact: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, SolverResult]:
     """Solve ``A x = b`` with Flexible Conjugate Gradient (Notay 2000).
 
@@ -92,6 +93,12 @@ def flexible_cg(
         atol (float): Absolute residual tolerance.
         maxiter (int | None): Maximum iterations; defaults to ``10 * n``.
         trace_mode (TraceMode | str): Iteration-history verbosity.
+        x_exact (torch.Tensor | None): Known exact solution, if available
+            (e.g. a synthetic benchmark system). When given, the returned
+            ``SolverResult.error_history_a_norm`` is populated with the
+            exact ``||u_k - x_exact||_A`` per iteration, regardless of
+            ``trace_mode`` - this is a single cheap dot product per
+            iteration, not a stored vector history.
 
     Returns:
         tuple[torch.Tensor, SolverResult]: Final solution and diagnostics.
@@ -103,7 +110,7 @@ def flexible_cg(
         orthogonalization=create_fcg_orthogonalization(m_max=m_max),
         preconditioner=precond_strategy,
         convergence_criterion=CombinedToleranceCriterion(rtol=rtol, atol=atol, norm=norm),
-        iteration_history=_iteration_history(trace_mode_enum),
+        iteration_history=_iteration_history(trace_mode_enum, x_exact=x_exact),
         trace_mode=trace_mode_enum,
     )
     return solver.solve(A, b, x0, rtol=rtol, atol=atol, maxiter=maxiter)
@@ -123,6 +130,7 @@ def pcg(
     maxiter: int | None = None,
     beta_formula: str = "fletcher_reeves",
     trace_mode: TraceMode | str = TraceMode.MINIMAL,
+    x_exact: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, SolverResult]:
     """Solve ``A x = b`` with Preconditioned Conjugate Gradient.
 
@@ -168,6 +176,12 @@ def pcg(
             ``"fletcher_reeves"`` is supported; any other value raises
             ``ValueError``.
         trace_mode (TraceMode | str): Iteration-history verbosity.
+        x_exact (torch.Tensor | None): Known exact solution, if available
+            (e.g. a synthetic benchmark system). When given, the returned
+            ``SolverResult.error_history_a_norm`` is populated with the
+            exact ``||u_k - x_exact||_A`` per iteration, regardless of
+            ``trace_mode`` - this is a single cheap dot product per
+            iteration, not a stored vector history.
 
     Returns:
         tuple[torch.Tensor, SolverResult]: Final solution and diagnostics.
@@ -185,7 +199,7 @@ def pcg(
         convergence_criterion=CombinedToleranceCriterion(rtol=rtol_value, atol=atol),
         reorthogonalization=reorthogonalization,
         beta_formula=beta_formula,
-        iteration_history=_iteration_history(trace_mode_enum),
+        iteration_history=_iteration_history(trace_mode_enum, x_exact=x_exact),
         trace_mode=trace_mode_enum,
     )
     return solver.solve(A, b, x0, rtol=rtol_value, atol=atol, maxiter=maxiter)
@@ -214,8 +228,10 @@ def _bind_extra_inputs(
     preconditioner.bind_inputs(**filtered)
 
 
-def _iteration_history(trace_mode: TraceMode) -> IterationHistory | None:
+def _iteration_history(
+    trace_mode: TraceMode, *, x_exact: torch.Tensor | None = None
+) -> IterationHistory | None:
     """Create iteration history for enabled trace modes."""
     if trace_mode == TraceMode.DISABLED:
         return None
-    return IterationHistory(mode=trace_mode)
+    return IterationHistory(mode=trace_mode, x_exact=x_exact)

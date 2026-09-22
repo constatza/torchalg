@@ -144,13 +144,32 @@ class SolverResult:
     """Description of why solver stopped (e.g., 'converged', 'max_iter', 'breakdown')."""
 
     residual_vectors: torch.Tensor | None = None
-    """Optional full residual vectors (shape: iterations x n). Heavy, use sparingly."""
+    """Optional full residual vectors (shape: iterations x n). Always a CPU
+    tensor, regardless of the solve device - populated only in ``FULL``
+    trace mode. Heavy, use sparingly."""
 
     solution_vectors: torch.Tensor | None = None
-    """Optional full solution vectors (shape: iterations x n). Heavy, use sparingly."""
+    """Optional full solution vectors (shape: iterations x n). Always a CPU
+    tensor, regardless of the solve device - populated only in ``FULL``
+    trace mode. Heavy, use sparingly."""
 
     direction_vectors: torch.Tensor | None = None
-    """Optional full search-direction vectors (shape: iterations x n). Heavy, use sparingly."""
+    """Optional full search-direction vectors (shape: iterations x n). Always
+    a CPU tensor, regardless of the solve device - populated only in
+    ``FULL`` trace mode. Heavy, use sparingly."""
+
+    error_history_a_norm: tuple[float, ...] | None = None
+    """Exact ``||u_k - x_exact||_A`` per iteration; populated only when
+    ``x_exact`` was supplied to the solve call. See
+    ``torchalg.models.protocols.HasVectors`` and
+    ``torchalg.monitoring.IterationHistory``."""
+
+    energy_decrements: tuple[float, ...] | None = None
+    """Raw per-iteration ``alpha_k * rho_k`` (exact decrease in
+    ``||e_k||_A^2``), recorded whenever iteration history is enabled -
+    no ``x_exact`` required. Feed to
+    ``torchalg.monitoring.golub_meurant_error_bound`` for a ground-truth-free
+    lower-bound estimate of ``||e_k||_A``."""
 
 
 @dataclass(frozen=True, slots=True)

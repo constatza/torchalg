@@ -126,6 +126,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         q = linear_op(d)
         curvature = stable_dot_product(d, q)
         alpha = rw_curr / curvature
+        energy_decrement = alpha * rw_curr
         u_new = state.u + alpha * d
         r_new = state.r - alpha * q
         residual_norm_new = float(torch.linalg.norm(r_new))
@@ -154,6 +155,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             r_prev=state.r.clone(),
             rw_prev=rw_curr,
             ortho_breakdown_at=ortho_breakdown_at,
+            energy_decrement=energy_decrement,
         )
 
     def _check_stopping(
@@ -189,6 +191,8 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             residual_vectors,
             solution_vectors,
             direction_vectors,
+            error_history_a_norm,
+            energy_decrements,
         ) = self._extract_histories_from_iteration_history(state.rhs_norm)
         if residual_abs_hist is None and self.iteration_history is not None:
             residual_abs_hist = tuple(state.residual_history.norms_abs)
@@ -216,6 +220,8 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             residual_vectors=residual_vectors,
             solution_vectors=solution_vectors,
             direction_vectors=direction_vectors,
+            error_history_a_norm=error_history_a_norm,
+            energy_decrements=energy_decrements,
         )
 
     def _resolve_history_size(self, *, maxiter: int | None, dimension: int) -> int:

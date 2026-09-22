@@ -153,6 +153,36 @@ class HasDirectionHistory(Protocol):
 
 
 @runtime_checkable
+class HasEnergyDecrement(Protocol):
+    """Protocol for states exposing CG's exact per-iteration A-norm-squared decrement.
+
+    Satisfied By:
+        - ``CGState``
+
+    Theory:
+        For SPD ``A``, CG's error strictly decreases in the A-norm each
+        iteration by exactly ``alpha_k * rho_k``, where
+        ``rho_k = (r_k, w_k)`` (Golub & Meurant 1994; Strakoš & Tichý 2002)::
+
+            ||e_k||_A^2 - ||e_{k+1}||_A^2 = alpha_k * rho_k
+
+        Both ``alpha_k`` and ``rho_k`` are already computed by the CG
+        recurrence, so this is a free byproduct of one iteration, not an
+        extra computation. Summing a forward window of these decrements
+        gives a ground-truth-free lower-bound estimate of ``||e_k||_A^2``
+        (see ``torchalg.monitoring.analysis.golub_meurant_error_bound``).
+
+    References:
+        - Golub, G.H. & Meurant, G. (1994). Matrices, moments and quadrature.
+        - Strakoš, Z. & Tichý, P. (2002). On error estimation in the
+          conjugate gradient method. ETNA 13, 56-80.
+    """
+
+    energy_decrement: float | None
+    """This iteration's ``alpha_k * rho_k``, or ``None`` before the first step."""
+
+
+@runtime_checkable
 class SolverProtocol(Protocol):
     """Minimal structural contract shared by every CG-family solver.
 
