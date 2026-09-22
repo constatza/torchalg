@@ -84,6 +84,18 @@ class TestVectorHistory:
 
         assert not torch.equal(history[0], vector)
 
+    def test_add_moves_to_cpu(self, residual_vector: torch.Tensor) -> None:
+        """Stored vectors are always CPU-resident, regardless of solve device."""
+        history = VectorHistory.empty().add(residual_vector)
+        assert history[0].device.type == "cpu"
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA device")
+    def test_add_moves_cuda_tensor_to_cpu(self) -> None:
+        """A CUDA-resident vector is copied to host memory immediately, not left on device."""
+        vector = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, device="cuda")
+        history = VectorHistory.empty().add(vector)
+        assert history[0].device.type == "cpu"
+
     def test_history_is_frozen(self) -> None:
         """Mutating a field after construction raises."""
         history = VectorHistory.empty()

@@ -7,6 +7,17 @@ from dataclasses import dataclass
 import torch
 
 
+def _to_cpu_copy(vector: torch.Tensor) -> torch.Tensor:
+    """Detach and move ``vector`` to a fresh CPU tensor.
+
+    ``.to("cpu")`` is a no-op view (not a copy) when ``vector`` is already on
+    CPU, so the trailing ``.clone()`` only actually allocates in that case -
+    it guarantees the stored copy is immune to the caller mutating its own
+    tensor afterward, regardless of the solve device.
+    """
+    return vector.detach().to("cpu").clone()
+
+
 @dataclass(frozen=True, slots=True)
 class ScalarHistory:
     """Immutable history of scalar values over iterations."""
@@ -42,10 +53,18 @@ class ScalarHistory:
 
 @dataclass(frozen=True, slots=True)
 class VectorHistory:
-    """Immutable history of tensor values over iterations."""
+    """Immutable history of tensor values over iterations.
+
+    Vectors are always stored on the CPU, regardless of the device they were
+    computed on: ``add``/``prepend`` move each vector to host memory
+    immediately, one at a time, rather than accumulating on the solve device
+    and transferring at the end - the latter would not bound peak device
+    memory at all, since the accumulation itself is what exhausts it (see
+    ``docs/bug-full-trace-history-exhausts-gpu-memory.md``).
+    """
 
     vectors: tuple[torch.Tensor, ...] = ()
-    """Tensor values over iterations."""
+    """Tensor values over iterations, always CPU-resident."""
 
     @classmethod
     def empty(cls) -> VectorHistory:
@@ -53,12 +72,12 @@ class VectorHistory:
         return cls(vectors=())
 
     def add(self, vector: torch.Tensor) -> VectorHistory:
-        """Return a new history with ``vector`` appended."""
-        return VectorHistory(vectors=self.vectors + (vector.clone(),))
+        """Return a new history with ``vector`` appended, moved to CPU."""
+        return VectorHistory(vectors=(*self.vectors, _to_cpu_copy(vector)))
 
     def prepend(self, vector: torch.Tensor) -> VectorHistory:
-        """Return a new history with ``vector`` prepended."""
-        return VectorHistory(vectors=(vector.clone(),) + self.vectors)
+        """Return a new history with ``vector`` prepended, moved to CPU."""
+        return VectorHistory(vectors=(_to_cpu_copy(vector), *self.vectors))
 
     def to_tensor(self) -> torch.Tensor:
         """Stack vectors into a tensor with iteration as the first dimension."""
