@@ -15,6 +15,11 @@ Public API:
         - AdaptiveSAPreconditioner: alpha-SA, a port of PyAMG's
           ``adaptive_sa_solver``; learns the near-null-space candidates from A
           (``adaptive_sa_hierarchy``) instead of assuming constants.
+        - BootstrapAMGPreconditioner: Bootstrap AMG (BAMG); derives the C/F
+          split, strength measure and interpolation weights from test
+          vectors via compatible relaxation, algebraic distance and
+          weighted least squares (``bootstrap.py``), instead of assuming an
+          M-matrix sign structure.
 
     Core (for custom wiring):
         - AMGPreconditioner: Top-level preconditioner; implements Preconditioner + BindableInputs.
@@ -50,6 +55,7 @@ Public API:
 
 from .adaptive import AdaptiveSAPreconditioner, AdaptiveSAResult, adaptive_sa_hierarchy
 from .amg import AMGPreconditioner
+from .bootstrap import BootstrapAMGPreconditioner, BootstrapAMGResult, BootstrapSetup
 from .coarsening import AggregationCoarsening, NeuralCoarseningStrategy, TargetDimensionCoarsening
 from .cycle import VCycle, WCycle
 from .hierarchy import MultigridHierarchy, MultigridLevel
@@ -65,6 +71,9 @@ __all__ = [
     "AdaptiveSAPreconditioner",
     "AdaptiveSAResult",
     "adaptive_sa_hierarchy",
+    "BootstrapAMGPreconditioner",
+    "BootstrapAMGResult",
+    "BootstrapSetup",
     # Core
     "AMGPreconditioner",
     # Protocols

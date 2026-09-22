@@ -117,3 +117,27 @@ the same matrix object (e.g. several `target_coarse_dim` values in one
 comparison sweep) via a module-level `functools.lru_cache`; off by default
 since it's only a win when multiple instances against the same matrix are
 expected.
+
+`BootstrapAMGPreconditioner` (`amg/bootstrap.py`) is Bootstrap AMG (BAMG,
+Brandt/Brannick/Kahl/Livshits 2011, `docs/bootstrap-amg.md`): unlike
+`AggregationCoarsening`/`AdaptiveSAPreconditioner`, the C/F split, the
+strength-of-connection measure and the interpolation weights are all
+derived from test vectors instead of `A`'s raw entries or an M-matrix sign
+assumption. `_compatible_relaxation.py` (compatible relaxation, choosing
+`C`), `_algebraic_distance.py` (the algebraic-distance strength graph
+`M_d`) and `_least_squares.py` (LS/LSR interpolation, greedy
+caliber-bounded interpolatory-set selection) are pure per-kernel modules;
+`bootstrap.py`'s `BAMGCoarsening` wires them into one `build_transfer(A)` =
+one level of the paper's setup algorithm, `BootstrapSetup.run` is the outer
+Sec. 4.1/5 loop (build the initial hierarchy from relaxed random test
+vectors, then improve every level's vectors for `n_bootstrap_cycles` by
+running the current partial hierarchy on `A x = 0` and rebuilding), and
+`BootstrapAMGPreconditioner` is the `AdaptiveSAPreconditioner`-shaped preset
+(`_PrebuiltCoarsening` + `_make_hierarchy` override) around it. Not built in
+v1: the multigrid eigensolver (MGE, Sec. 4.2) - bootstrap cycles improve
+test vectors by relaxation/cycling alone. `compatible_relaxation_coarsening`
+takes an optional keyword-only `guidance_graph` overriding its default
+plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
+algebraic-distance strength graph there, computed once per level (before any
+point is marked coarse) and held fixed through CR's outer loop, matching
+that parameter's own fixed-for-the-whole-call shape.

@@ -19,6 +19,10 @@ Populated incrementally, stage by stage (see ``docs/plan.md``). So far
   cycles, smoothers, coarsening strategies, transfer operators).
 - ``AdaptiveSAPreconditioner``: Adaptive smoothed aggregation (alpha-SA);
   test vectors learned from ``A``, see ``.amg.adaptive``.
+- ``BootstrapAMGPreconditioner``: Bootstrap AMG (BAMG); C/F split, strength
+  measure and interpolation all derived from test vectors via compatible
+  relaxation, algebraic distance and weighted least squares, see
+  ``.amg.bootstrap``.
 - ``POD2GPreconditioner``: Proper Orthogonal Decomposition two-grid
   preconditioner, reusing the ``.amg`` engine with POD-basis coarsening; see
   ``.pod`` for the full public API.
@@ -27,7 +31,7 @@ Populated incrementally, stage by stage (see ``docs/plan.md``). So far
   as a non-linear preconditioner.
 """
 
-from .amg import AdaptiveSAPreconditioner, AMGPreconditioner
+from .amg import AdaptiveSAPreconditioner, AMGPreconditioner, BootstrapAMGPreconditioner
 from .callable import CallablePreconditioner
 from .ic0 import IC0Preconditioner
 from .icholesky import ICholeskyPreconditioner
@@ -42,6 +46,7 @@ from .scheduled import ScheduledPreconditioner
 __all__ = [
     "AdaptiveSAPreconditioner",
     "AMGPreconditioner",
+    "BootstrapAMGPreconditioner",
     "CallablePreconditioner",
     "IC0Preconditioner",
     "ICholeskyPreconditioner",

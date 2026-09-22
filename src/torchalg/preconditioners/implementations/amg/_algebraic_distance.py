@@ -76,7 +76,7 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
     return test_vectors - (matrix @ test_vectors) / diagonal_safe.unsqueeze(1)
 
 
-def _depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
+def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
     """Boolean off-diagonal adjacency of ``matrix`` raised to ``depth`` ([AD11] eq. 4.2/Remark 4.3).
 
     ``depth=1`` is ``matrix``'s own off-diagonal nonzero pattern. Deeper
@@ -103,7 +103,7 @@ def _depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
     return reachable & off_diagonal
 
 
-def _test_vector_weights(test_vectors: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
+def test_vector_weights(test_vectors: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
     """Per-test-vector weights ``omega_kappa`` ([BAMG11] eq. 4.1, ``T = I`` reduction).
 
     ``omega_kappa = <v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>`` - the
@@ -157,8 +157,8 @@ def algebraic_distance(
         ``(n, n)``, zero outside the depth-``d`` neighborhood. Not
         symmetric in general.
     """
-    neighborhood = _depth_neighborhood(matrix, depth)
-    weights = _test_vector_weights(test_vectors, matrix)
+    neighborhood = depth_neighborhood(matrix, depth)
+    weights = test_vector_weights(test_vectors, matrix)
     corrected = _residual_corrected_vectors(test_vectors, matrix)
 
     cross = (corrected * weights) @ test_vectors.T

@@ -92,6 +92,32 @@ def descending_priority_5() -> torch.Tensor:
     return torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0])
 
 
+@pytest.fixture
+def matrix_graph_factory() -> Callable[[torch.Tensor], torch.Tensor]:
+    """Factory building a matrix's own off-diagonal nonzero graph (``_independent_set_of``'s default adjacency).
+
+    A factory, not a plain fixture, since the graph's shape depends on
+    whichever matrix a test builds at runtime (e.g. ``poisson_1d_factory``'s
+    output), matching this module's ``alternating_coarse_mask_factory``/
+    ``seeded_draw_factory`` precedent for runtime-shape-dependent values.
+    """
+
+    def _factory(matrix: torch.Tensor) -> torch.Tensor:
+        n = matrix.shape[0]
+        return (matrix != 0) & ~torch.eye(n, dtype=torch.bool, device=matrix.device)
+
+    return _factory
+
+
+@pytest.fixture
+def skip_one_guidance_graph_5() -> torch.Tensor:
+    """Boolean graph connecting 0<->2 and 1<->3 - disjoint from the matrix's own adjacent-index graph."""
+    graph = torch.zeros(5, 5, dtype=torch.bool)
+    graph[0, 2] = graph[2, 0] = True
+    graph[1, 3] = graph[3, 1] = True
+    return graph
+
+
 def test_hcr_operator_zeros_coarse_entries(
     poisson_1d_factory: Callable[[int], torch.Tensor],
     two_of_eight_coarse_mask: torch.Tensor,
@@ -185,6 +211,51 @@ def test_independent_set_of_respects_matrix_graph_and_priority(
     selected = _independent_set_of(five_true_candidates, matrix, descending_priority_5)
 
     assert selected.tolist() == [True, False, True, False, True]
+
+
+def test_independent_set_of_uses_guidance_graph_when_given(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    five_true_candidates: torch.Tensor,
+    descending_priority_5: torch.Tensor,
+    skip_one_guidance_graph_5: torch.Tensor,
+) -> None:
+    """A ``guidance_graph`` overrides the matrix's own graph and can change which set is chosen."""
+    matrix = poisson_1d_factory(5)
+
+    selected_default = _independent_set_of(five_true_candidates, matrix, descending_priority_5)
+    selected_guided = _independent_set_of(
+        five_true_candidates,
+        matrix,
+        descending_priority_5,
+        guidance_graph=skip_one_guidance_graph_5,
+    )
+
+    assert selected_default.tolist() == [True, False, True, False, True]
+    assert selected_guided.tolist() == [True, True, False, False, True]
+
+
+def test_compatible_relaxation_coarsening_with_explicit_matrix_graph_matches_default(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    matrix_graph_factory: Callable[[torch.Tensor], torch.Tensor],
+) -> None:
+    """Passing the matrix's own graph as ``guidance_graph`` reproduces the ``None`` default exactly."""
+    matrix = poisson_1d_factory(16)
+    matrix_graph = matrix_graph_factory(matrix)
+
+    default_mask = compatible_relaxation_coarsening(
+        matrix, GaussSeidelSmoother().smooth, nu=5, delta=0.7, draw=seeded_draw_factory(1)
+    )
+    explicit_mask = compatible_relaxation_coarsening(
+        matrix,
+        GaussSeidelSmoother().smooth,
+        nu=5,
+        delta=0.7,
+        draw=seeded_draw_factory(1),
+        guidance_graph=matrix_graph,
+    )
+
+    assert torch.equal(default_mask, explicit_mask)
 
 
 def test_compatible_relaxation_coarsening_terminates_and_grows_c(

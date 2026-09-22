@@ -114,31 +114,41 @@ def _independent_set_of(
     candidates: torch.Tensor,
     matrix: torch.Tensor,
     priority: torch.Tensor,
+    guidance_graph: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Greedy independent set over ``candidates``, ordered by descending ``priority``.
 
     Visits nodes in descending ``priority`` order; a still-eligible node is
-    added to the set and its graph neighbors (``matrix``'s nonzero
-    off-diagonal pattern) are removed from further consideration - a
-    placeholder for the algebraic-distance-guided strength graph ``M_d``
-    ([AD11] eq. 4.4), which Task 4's ``BAMGCoarsening`` wires in in place of
-    the plain matrix graph used here.
+    added to the set and its graph neighbors are removed from further
+    consideration. The adjacency guiding that removal is ``guidance_graph``
+    when given (e.g. the algebraic-distance-guided strength graph ``M_d``,
+    [AD11] eq. 4.4, which ``BAMGCoarsening`` wires in), else ``matrix``'s own
+    nonzero off-diagonal pattern - the plain-matrix-graph default this
+    function has always used.
 
     Args:
         candidates (torch.Tensor): Boolean mask, shape ``(n,)``, the
             eligible node set ``Z``.
         matrix (torch.Tensor): Graph source; a nonzero off-diagonal entry
-            ``(i, j)`` marks an edge, shape ``(n, n)``.
+            ``(i, j)`` marks an edge, shape ``(n, n)``. Ignored in favor of
+            ``guidance_graph`` when the latter is given.
         priority (torch.Tensor): Per-node priority (``sigma_i``), shape
             ``(n,)``; higher is visited first.
+        guidance_graph (torch.Tensor | None): Boolean adjacency, shape
+            ``(n, n)``, overriding ``matrix``'s own graph as the
+            independent-set guide; ``None`` keeps the default matrix-graph
+            behavior.
 
     Returns:
         torch.Tensor: Boolean mask, shape ``(n,)``, the selected independent
         subset of ``candidates``.
     """
     n = matrix.shape[0]
-    off_diagonal = ~torch.eye(n, dtype=torch.bool, device=matrix.device)
-    adjacency = (matrix != 0) & off_diagonal
+    if guidance_graph is not None:
+        adjacency = guidance_graph
+    else:
+        off_diagonal = ~torch.eye(n, dtype=torch.bool, device=matrix.device)
+        adjacency = (matrix != 0) & off_diagonal
     eligible = candidates.clone()
     selected = torch.zeros(n, dtype=torch.bool, device=matrix.device)
     for i in torch.argsort(priority, descending=True).tolist():
@@ -159,6 +169,7 @@ def compatible_relaxation_coarsening(
     initial_coarse: torch.Tensor | None = None,
     draw: Callable[[int], torch.Tensor],
     max_iterations: int = 100,
+    guidance_graph: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compatible-relaxation coarsening outer loop (Algorithm 2.1, [AD11]/[STATUS14]).
 
@@ -166,8 +177,9 @@ def compatible_relaxation_coarsening(
     convergence rate ``rho_f`` drops to ``delta`` or below: each iteration
     marks candidate points ``i`` whose relative error component ``sigma_i =
     |e_i| / ||e||_inf`` exceeds ``tol = 1 - rho_f`` ([AD11] Remark 4.2), then
-    adds a greedy independent set of those candidates (guided by ``matrix``'s
-    graph; see ``_independent_set_of``) to ``C``.
+    adds a greedy independent set of those candidates (guided by
+    ``guidance_graph`` when given, else ``matrix``'s own graph; see
+    ``_independent_set_of``) to ``C``.
 
     Algorithm 2.1 itself has no iteration bound - its ``while rho_f > delta``
     is a mathematical description, not production code. ``max_iterations``
@@ -189,6 +201,11 @@ def compatible_relaxation_coarsening(
             source, ``n -> tensor of length n``.
         max_iterations (int): Defensive cap (not part of Algorithm 2.1) on
             the number of outer-loop stages before giving up.
+        guidance_graph (torch.Tensor | None): Boolean adjacency, shape
+            ``(n, n)``, overriding ``matrix``'s own graph as the
+            independent-set guide (e.g. the algebraic-distance strength
+            graph ``M_d``); ``None`` keeps the default matrix-graph
+            behavior.
 
     Returns:
         torch.Tensor: Boolean mask, shape ``(n,)``, ``True`` at the final
@@ -216,7 +233,9 @@ def compatible_relaxation_coarsening(
         sigma = e.abs() / e.abs().max()
         tol = 1.0 - rho_f
         candidates = ~coarse_mask & (sigma > tol)
-        coarse_mask = coarse_mask | _independent_set_of(candidates, matrix, sigma)
+        coarse_mask = coarse_mask | _independent_set_of(
+            candidates, matrix, sigma, guidance_graph=guidance_graph
+        )
         rho_f, e = cr_rate(matrix, coarse_mask, relaxation, nu, draw)
         iterations += 1
     return coarse_mask
