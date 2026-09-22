@@ -212,6 +212,84 @@ def test_select_interpolatory_set_respects_caliber(
 
 
 @pytest.fixture
+def scale_factors() -> tuple[float, ...]:
+    """Test-vector magnitudes spanning the range bootstrap cycles actually produce.
+
+    ``BootstrapSetup.run`` relaxes/cycles on ``A x = 0`` (exact solution
+    ``0``), driving the test vectors' magnitude down by many orders of
+    magnitude - measured around ``1e-08`` at N=31 after the default two
+    bootstrap cycles. The selection rule must behave identically at every
+    one of these scales.
+    """
+    return (1.0, 1e-4, 1e-8, 1e-12)
+
+
+def test_select_interpolatory_set_is_non_empty_in_the_non_degenerate_case(
+    anisotropic_2d_factory,
+    caliber_bound_test_vectors: torch.Tensor,
+    caliber_bound_candidates: torch.Tensor,
+    caliber_bound_weights: torch.Tensor,
+    scale_factors: tuple[float, ...],
+) -> None:
+    """Reasonable test vectors + reasonable caliber + available candidates must give a non-empty ``C_i``.
+
+    A genuine lower bound (the upper bound is
+    ``test_select_interpolatory_set_respects_caliber``): an empty set means
+    an all-zero prolongation row, i.e. an F-point invisible to the coarse
+    grid. Asserted at every scale in ``scale_factors`` because [AD11] Sec.
+    4.3's penalization rule is only meaningful on a *relative* residual -
+    an implementation comparing raw functional values collapses to the
+    empty set as soon as the test vectors are small.
+    """
+    matrix = anisotropic_2d_factory(4, 0.1)
+    for scale in scale_factors:
+        interp_set = select_interpolatory_set(
+            caliber_bound_candidates,
+            caliber_bound_test_vectors * scale,
+            matrix,
+            target=0,
+            weights=caliber_bound_weights,
+            caliber=3,
+        )
+        assert interp_set.numel() > 0, f"empty interpolatory set at test-vector scale {scale}"
+
+
+def test_select_interpolatory_set_is_scale_invariant(
+    anisotropic_2d_factory,
+    caliber_bound_test_vectors: torch.Tensor,
+    caliber_bound_candidates: torch.Tensor,
+    caliber_bound_weights: torch.Tensor,
+    scale_factors: tuple[float, ...],
+) -> None:
+    """Scaling every test vector by a constant must not change the chosen set.
+
+    ``LS_W`` scales as ``||V||^2``, so a raw-value penalization comparison
+    is scale-dependent; the normalized comparison this module implements is
+    not. Regression guard for the bug where bootstrap-shrunk test vectors
+    made growth stall at the empty set.
+    """
+    matrix = anisotropic_2d_factory(4, 0.1)
+    reference = select_interpolatory_set(
+        caliber_bound_candidates,
+        caliber_bound_test_vectors,
+        matrix,
+        target=0,
+        weights=caliber_bound_weights,
+        caliber=3,
+    )
+    for scale in scale_factors:
+        scaled = select_interpolatory_set(
+            caliber_bound_candidates,
+            caliber_bound_test_vectors * scale,
+            matrix,
+            target=0,
+            weights=caliber_bound_weights,
+            caliber=3,
+        )
+        assert scaled.tolist() == reference.tolist(), f"set changed at scale {scale}"
+
+
+@pytest.fixture
 def single_tv_test_vectors(torch_dtype: torch.dtype) -> torch.Tensor:
     """Single-test-vector data, shape ``(3, 1)``: candidate 0 alone perfectly fits the target row."""
     return torch.tensor([[2.0], [1.0], [4.0]], dtype=torch_dtype)

@@ -52,8 +52,9 @@ to ``torch.linalg.lstsq`` instead of ``torch.linalg.solve``."""
 
 _NEAR_ZERO_DIAGONAL_TOL = 1e-14
 """Diagonal entries with magnitude below this are treated as 1.0 in the
-residual-correction step, protecting against division by near-zero (matches
-``_algebraic_distance.py``'s guard convention)."""
+residual-correction step, protecting against division by near-zero (the
+package-wide treat-as-1.0 diagonal-guard convention, shared with
+``_aggregation.py``)."""
 
 
 def ls_interpolation_row(
@@ -181,6 +182,29 @@ def select_interpolatory_set(
     candidate fails the test no other candidate would pass it either, so
     testing only the best candidate per step is sufficient.
 
+    **Documented deviation: the penalization test is normalized.** [AD11]
+    Sec. 4.3 states the rule on the raw functional value, which is only
+    meaningful if ``LS`` is a dimensionless residual of order one: ``LS_W``
+    scales as ``||V||^2``, so raising it to a power ``gamma > 1`` is not a
+    scale-invariant operation. Callers whose test vectors have been driven
+    to near-zero magnitude by many relaxation/bootstrap passes - exactly
+    what ``BootstrapSetup.run`` does, since it relaxes on ``A x = 0``, whose
+    exact solution is ``0`` - would otherwise see the threshold
+    ``LS^gamma`` fall far below any attainable ``LS``, stalling growth
+    immediately and frequently returning the empty set. Both sides are
+    therefore divided by the empty-set functional value ``LS_0 = sum_kappa
+    omega_kappa (v_i^(kappa))^2`` (the target row's own weighted energy,
+    the loop's initial ``current_value``), captured once before the loop as
+    a fixed normalization constant for this row's fit: the test becomes
+    ``LS_{W''}/LS_0 < (LS_{W'}/LS_0)^gamma``, i.e. the identical rule
+    applied to the *relative* LS residual. This is the same rule, made
+    scale-invariant - not a different criterion. The guard on ``LS_0`` is a
+    strict positivity test rather than the package's usual absolute
+    ``1e-14`` near-zero tolerance, precisely because an absolute floor would
+    reintroduce the scale dependence this normalization removes; ``LS_0`` is
+    a sum of squares under positive weights, so it is zero only for an
+    exactly-zero target row.
+
     ``candidates`` is expected to already be restricted to the LS-ring
     neighborhood ``N_{d_LS,i}`` ([AD11] eq. 4.5); computing that
     neighborhood (depth ``d_LS = d + 2`` graph connectivity from ``matrix``)
@@ -203,7 +227,9 @@ def select_interpolatory_set(
     """
     remaining = candidates.tolist()
     chosen: list[int] = []
-    current_value = (weights * test_vectors[target] ** 2).sum().item()
+    empty_set_value = (weights * test_vectors[target] ** 2).sum().item()
+    normalizer = empty_set_value if empty_set_value > 0.0 else 1.0
+    current_value = empty_set_value / normalizer
     while remaining and len(chosen) < caliber:
         trial_values = {
             candidate: _ls_residual(
@@ -215,7 +241,7 @@ def select_interpolatory_set(
             for candidate in remaining
         }
         best_candidate = min(trial_values, key=lambda candidate: trial_values[candidate])
-        best_value = trial_values[best_candidate]
+        best_value = trial_values[best_candidate] / normalizer
         if not best_value < current_value**gamma:
             break
         chosen.append(best_candidate)

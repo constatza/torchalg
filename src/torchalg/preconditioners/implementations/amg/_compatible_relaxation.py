@@ -26,6 +26,8 @@ from collections.abc import Callable
 
 import torch
 
+from ._algebraic_distance import depth_neighborhood
+
 _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
 """Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
 
@@ -40,9 +42,22 @@ def hcr_operator(
     """F-relaxation form of compatible relaxation on ``A x = 0`` ([AD11] eq. 3.3).
 
     Applies ``relaxation`` one sweep at a time, projecting the coarse-marked
-    entries to zero after every sweep so the coarse variables stay exactly
-    fixed at zero throughout - the effect of ``E_ff = I - M_ff^{-1} B_ff``
-    without requiring a separate F-only relaxation routine.
+    entries to zero after every sweep.
+
+    This is a **deliberate approximation of** ``E_ff = I - M_ff^{-1} B_ff``,
+    not an exact reproduction of it, and it is the form the reference
+    implementation uses. With a sequential relaxation such as
+    ``GaussSeidelSmoother`` (symmetric Gauss-Seidel updates rows one at a
+    time within a sweep), later F-rows consume C-row values that were
+    nonzero *during* the sweep; the zeroing only takes effect afterwards, so
+    the coarse variables are not truly held fixed throughout. The true
+    ``E_ff`` would require an F-only relaxation -
+    ``_relaxation.symmetric_gauss_seidel(..., rows=fine_indices)``, as
+    ``adaptive.py`` uses. ``tests/.../test_compatible_relaxation.py``
+    quantifies the gap (its N=16 1D-Poisson worked example measures
+    ``rho ~= 0.516`` where a true F-relaxation would give the brief's
+    ``rho < 0.5``); the resulting rate is still a usable CR diagnostic,
+    which is all ``cr_rate``/``compatible_relaxation_coarsening`` need.
 
     Args:
         matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.
@@ -85,6 +100,14 @@ def cr_rate(
     typically ``nu=5``) rather than assuming ``nu`` large enough for the
     single-step ratio to have settled.
 
+    An all-coarse mask leaves no F-variables at all, so ``e^0`` is exactly
+    zero and eq. 3.4's ratio is ``0/0``. That case returns ``rho_f = 0.0``
+    explicitly - CR has nothing left to converge, which is perfect
+    convergence, not an undefined quantity. (It is stated rather than left
+    to floating point: ``0/0`` is ``NaN``, and callers such as
+    ``compatible_relaxation_coarsening``'s ``while rho_f > delta`` would
+    only terminate because ``NaN > delta`` happens to be ``False``.)
+
     Args:
         matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.
         coarse_mask (torch.Tensor): Boolean mask, shape ``(n,)``, ``True`` at
@@ -105,6 +128,8 @@ def cr_rate(
     start[coarse_mask] = 0.0
     initial_norm = torch.linalg.norm(start)
     e = hcr_operator(matrix, coarse_mask, relaxation, sweeps, start=start)
+    if initial_norm == 0.0:
+        return 0.0, e
     final_norm = torch.linalg.norm(e)
     rho_f = (final_norm / initial_norm).item() ** (1.0 / sweeps)
     return rho_f, e
@@ -124,7 +149,15 @@ def _independent_set_of(
     when given (e.g. the algebraic-distance-guided strength graph ``M_d``,
     [AD11] eq. 4.4, which ``BAMGCoarsening`` wires in), else ``matrix``'s own
     nonzero off-diagonal pattern - the plain-matrix-graph default this
-    function has always used.
+    function has always used, taken from
+    ``_algebraic_distance.depth_neighborhood(matrix, 1)``, which is exactly
+    that pattern ([AD11] eq. 4.2 at depth 1).
+
+    Only row ``i`` of the adjacency is consulted when removing neighbors, so
+    the graph is treated as undirected. Callers passing a directional graph
+    (such as the algebraic-distance strength graph, where ``r_ij != r_ji``)
+    must symmetrize it themselves - ``BAMGCoarsening._coarse_mask`` does,
+    and documents why it unions rather than intersects.
 
     Args:
         candidates (torch.Tensor): Boolean mask, shape ``(n,)``, the
@@ -144,11 +177,7 @@ def _independent_set_of(
         subset of ``candidates``.
     """
     n = matrix.shape[0]
-    if guidance_graph is not None:
-        adjacency = guidance_graph
-    else:
-        off_diagonal = ~torch.eye(n, dtype=torch.bool, device=matrix.device)
-        adjacency = (matrix != 0) & off_diagonal
+    adjacency = guidance_graph if guidance_graph is not None else depth_neighborhood(matrix, 1)
     eligible = candidates.clone()
     selected = torch.zeros(n, dtype=torch.bool, device=matrix.device)
     for i in torch.argsort(priority, descending=True).tolist():

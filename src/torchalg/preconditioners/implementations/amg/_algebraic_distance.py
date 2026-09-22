@@ -23,7 +23,8 @@ References:
       (test-vector weights ``omega_kappa``, ``T = I`` reduction used here
       since no composite-interpolation operator exists yet at this stage),
       eq. 2.3 (the residual-correction/"adaptive relaxation" step that eq.
-      4.3 below applies to the target test vectors).
+      4.3 below applies to the target test vectors - implemented once, in
+      ``_least_squares.lsr_correction``, which this module delegates to).
 
 ``r_ij`` is a **one-sided, directional** measure, not a distance in the
 metric sense: [AD11] describes eq. 4.3 explicitly as "the simplified variant
@@ -40,17 +41,21 @@ from __future__ import annotations
 
 import torch
 
+from ._least_squares import lsr_correction
+
 _NEAR_ZERO_ENERGY_TOL = 1e-14
 """Test-vector energies with magnitude below this are treated as 1.0 when
 computing weights, protecting against division by near-zero."""
 
-_MIN_RESIDUAL = 1e-14
-"""Floor applied to the caliber-one LS residual before inversion, protecting
-against division by zero/negative floating-point noise on a near-perfect fit."""
-
-_NEAR_ZERO_DIAGONAL_TOL = 1e-14
-"""Diagonal entries with magnitude below this are treated as 1.0 in the
-residual-correction step, protecting against division by near-zero."""
+_MIN_RESIDUAL_RTOL = 1e-14
+"""Floor applied to the caliber-one LS residual before inversion, *relative*
+to the target's own weighted energy ``T_i``, protecting against division by
+zero/negative floating-point noise on a near-perfect fit. Relative rather
+than absolute: ``T_i`` scales as ``||V||^2``, so an absolute floor saturates
+on ordinary inputs (measured: 2 of 60 neighborhood edges hit a ``1e-14``
+absolute floor exactly on N=31 with unrelaxed random test vectors), which
+then corrupts ``strength_graph``'s per-row ``theta_ad * max`` normalization
+by clamping unrelated edges to one common value."""
 
 
 def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
@@ -58,9 +63,9 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
 
     ``v_i^(kappa) <- v_i^(kappa) - (A v^(kappa))_i / a_ii`` - the "adaptive
     relaxation" step eq. 4.3 fits its LS regression to, rather than the raw
-    test vectors. Assumes ``a_ii != 0`` (the paper's own precondition),
-    guarded against near-zero diagonals the same way ``_aggregation.py``
-    guards its diagonal normalizer.
+    test vectors. This is exactly ``_least_squares.lsr_correction`` applied
+    to *every* row, so it delegates there rather than reimplementing eq. 2.3
+    (including its near-zero-diagonal guard) a second time.
 
     Args:
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
@@ -69,11 +74,8 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
     Returns:
         torch.Tensor: Residual-corrected test vectors, shape ``(n, k)``.
     """
-    diagonal = torch.diagonal(matrix)
-    diagonal_safe = torch.where(
-        diagonal.abs() > _NEAR_ZERO_DIAGONAL_TOL, diagonal, torch.ones_like(diagonal)
-    )
-    return test_vectors - (matrix @ test_vectors) / diagonal_safe.unsqueeze(1)
+    all_rows = torch.arange(matrix.shape[0], device=matrix.device)
+    return lsr_correction(test_vectors, matrix, all_rows)
 
 
 def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
@@ -163,10 +165,16 @@ def algebraic_distance(
 
     cross = (corrected * weights) @ test_vectors.T
     predictor_energy = (test_vectors**2 * weights).sum(dim=1)
-    coefficients = cross / predictor_energy.unsqueeze(0)
+    predictor_safe = torch.where(
+        predictor_energy.abs() > _NEAR_ZERO_ENERGY_TOL,
+        predictor_energy,
+        torch.ones_like(predictor_energy),
+    )
+    coefficients = cross / predictor_safe.unsqueeze(0)
     target_energy = (corrected**2 * weights).sum(dim=1)
     residual = target_energy.unsqueeze(1) - coefficients * cross
-    residual = torch.clamp(residual, min=_MIN_RESIDUAL)
+    floor = (_MIN_RESIDUAL_RTOL * target_energy).clamp(min=torch.finfo(residual.dtype).tiny)
+    residual = torch.maximum(residual, floor.unsqueeze(1))
     return torch.where(neighborhood, 1.0 / residual, torch.zeros_like(residual))
 
 

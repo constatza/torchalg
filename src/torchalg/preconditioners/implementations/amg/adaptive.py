@@ -41,21 +41,18 @@ import torch
 
 from ._aggregation import standard_aggregation
 from ._node_strength import node_strength
+from ._presets import PRESET_CYCLE, PrebuiltCoarsening, seeded_draw
 from ._prolongation import jacobi_prolongation, make_bridge
 from ._relaxation import symmetric_gauss_seidel
 from ._spectral import approximate_spectral_radius
 from ._tentative import fit_candidates
 from .amg import AMGPreconditioner
-from .cycle import VCycle, pseudo_inverse_solve
+from .cycle import pseudo_inverse_solve
 from .hierarchy import MultigridHierarchy, MultigridLevel
-from .smoothers import GaussSeidelSmoother
 from .transfer import DenseTransferOperator
 
 _SOLVE_TOLERANCE = 1e-20
 """Absolute residual tolerance of the trial cycles (``ml.solve(..., tol=1e-20)``)."""
-
-_CYCLE = VCycle(GaussSeidelSmoother(), n_pre=1, n_post=1, coarse_solver=pseudo_inverse_solve)
-"""PyAMG's default cycle: V(1,1), symmetric Gauss-Seidel, ``pinv`` coarse solve."""
 
 
 @dataclass
@@ -227,7 +224,7 @@ def _solve(levels: list[_Level], x: torch.Tensor, iterations: int) -> torch.Tens
         return pseudo_inverse_solve(levels[0].A, torch.zeros_like(x))
     hierarchy, matrix = _hierarchy_of(levels), levels[0].A
     for _ in range(iterations):
-        x = x - _CYCLE.apply(hierarchy, matrix @ x)
+        x = x - PRESET_CYCLE.apply(hierarchy, matrix @ x)
         if torch.linalg.norm(matrix @ x) < _SOLVE_TOLERANCE:
             break
     return x
@@ -374,19 +371,6 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
     return x
 
 
-def _seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:
-    """Stateful uniform ``[0, 1)`` source seeded for reproducibility.
-
-    Args:
-        seed (int): Generator seed.
-
-    Returns:
-        Callable[[int], torch.Tensor]: ``n -> float64`` tensor of length ``n``.
-    """
-    generator = torch.Generator().manual_seed(seed)
-    return lambda n: torch.rand(n, generator=generator, dtype=torch.float64)
-
-
 def adaptive_sa_hierarchy(
     matrix: torch.Tensor,
     *,
@@ -429,7 +413,7 @@ def adaptive_sa_hierarchy(
         ValueError: If a computed candidate is identically zero.
     """
     params = _Params(
-        theta, omega, candidate_iters, max_levels, max_coarse, draw or _seeded_draw(seed)
+        theta, omega, candidate_iters, max_levels, max_coarse, draw or seeded_draw(seed)
     )
     predefined: _Predefined | None = None
     if initial_candidates is None:
@@ -460,25 +444,6 @@ def adaptive_sa_hierarchy(
         aggregates=tuple(_built(level.aggregate) for level in levels[:-1]),
         strengths=tuple(_built(level.strength) for level in levels[:-1]),
     )
-
-
-class _PrebuiltCoarsening:
-    """Placeholder ``CoarseningStrategy``: the levels are prebuilt, never built by the engine.
-
-    ``AdaptiveSAPreconditioner`` overrides ``_make_hierarchy``, so the engine
-    never asks this strategy for a level.
-    """
-
-    def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
-        """Always raises: the hierarchy is prebuilt by ``adaptive_sa_hierarchy``.
-
-        Args:
-            A (torch.Tensor): Unused.
-
-        Raises:
-            RuntimeError: Always.
-        """
-        raise RuntimeError("adaptive SA levels are prebuilt; the engine must not rebuild them")
 
 
 class AdaptiveSAPreconditioner(AMGPreconditioner):
@@ -558,8 +523,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
             raise ValueError("adaptive setup produced a single level; lower max_coarse")
         super().__init__(
             matrix=matrix,
-            coarsening=_PrebuiltCoarsening(),
-            cycle=_CYCLE,
+            coarsening=PrebuiltCoarsening("adaptive SA"),
+            cycle=PRESET_CYCLE,
             n_levels=len(result.matrices),
             linear=True,
         )

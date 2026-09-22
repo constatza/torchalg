@@ -120,6 +120,43 @@ def test_bamg_coarsening_last_prolongation_raises_before_build_transfer(
 
 
 @pytest.fixture
+def bootstrap_scale_test_vectors(seeded_test_vectors_16_3: torch.Tensor) -> torch.Tensor:
+    """``seeded_test_vectors_16_3`` shrunk to the magnitude bootstrap cycles actually produce.
+
+    Relaxing/cycling on ``A x = 0`` (exact solution ``0``) drives the test
+    vectors toward zero - measured around ``1e-08`` at N=31 after the
+    default two bootstrap cycles. Interpolation must not degrade when that
+    happens.
+    """
+    return seeded_test_vectors_16_3 * 1e-8
+
+
+def test_bamg_coarsening_prolongation_has_no_all_zero_rows(
+    poisson_16: torch.Tensor, bamg_coarsening: BAMGCoarsening
+) -> None:
+    """Every row of ``P`` must carry at least one nonzero: an all-zero F-row is invisible to the coarse grid."""
+    bamg_coarsening.build_transfer(poisson_16)
+
+    prolongation = bamg_coarsening.last_prolongation
+    zero_rows = torch.nonzero(prolongation.abs().sum(dim=1) == 0).flatten()
+    assert zero_rows.numel() == 0, f"all-zero prolongation rows at {zero_rows.tolist()}"
+
+
+def test_bamg_coarsening_prolongation_has_no_all_zero_rows_for_tiny_test_vectors(
+    poisson_16: torch.Tensor, bootstrap_scale_test_vectors: torch.Tensor
+) -> None:
+    """The same invariant must hold for bootstrap-shrunk test vectors (~1e-08), not only unit-scale ones."""
+    coarsening = BAMGCoarsening(
+        bootstrap_scale_test_vectors, relaxation=GaussSeidelSmoother().smooth, caliber=3
+    )
+    coarsening.build_transfer(poisson_16)
+
+    prolongation = coarsening.last_prolongation
+    zero_rows = torch.nonzero(prolongation.abs().sum(dim=1) == 0).flatten()
+    assert zero_rows.numel() == 0, f"all-zero prolongation rows at {zero_rows.tolist()}"
+
+
+@pytest.fixture
 def bootstrap_setup_small() -> BootstrapSetup:
     """``BootstrapSetup`` with small counts, fast enough for a unit test."""
     return BootstrapSetup(
@@ -216,6 +253,25 @@ def test_bootstrap_setup_run_never_appends_a_degenerate_empty_coarse_level(
 
     assert all(matrix.shape[0] > 0 for matrix in result.matrices)
     assert all(prolongation.shape[1] > 0 for prolongation in result.prolongations)
+
+
+def test_bootstrap_setup_run_prolongations_have_no_all_zero_rows(
+    poisson_31: torch.Tensor,
+    bootstrap_setup_default: BootstrapSetup,
+    bootstrap_draw_seed0: Callable[[int], torch.Tensor],
+) -> None:
+    """End-to-end invariant: no level's ``P`` may contain an all-zero row after the full bootstrap setup.
+
+    The setup's own bootstrap cycles shrink the test vectors by many orders
+    of magnitude (they relax on ``A x = 0``), which is exactly the regime
+    where a scale-dependent interpolatory-set rule collapses to the empty
+    set and leaves F-rows of ``P`` entirely zero.
+    """
+    result = bootstrap_setup_default.run(poisson_31, bootstrap_draw_seed0)
+
+    for level, prolongation in enumerate(result.prolongations):
+        zero_rows = torch.nonzero(prolongation.abs().sum(dim=1) == 0).flatten()
+        assert zero_rows.numel() == 0, f"level {level}: all-zero rows at {zero_rows.tolist()}"
 
 
 @pytest.fixture

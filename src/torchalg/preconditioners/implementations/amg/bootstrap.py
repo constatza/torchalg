@@ -38,6 +38,15 @@ Scope decisions (v1, matching ``docs/amg-integration-architecture.md`` Sec.
   ``_independent_set_of``'s own ``eligible``/``candidates`` bookkeeping
   already restricts every lookup to genuinely still-eligible (not-yet-coarse)
   nodes regardless of what the guidance graph itself contains.
+- **Finest-level-only test-vector improvement.** [BAMG11] Sec. 5's outer
+  loop improves the test vectors on *every* level; ``BootstrapSetup.run``
+  improves only the **finest** level's vectors per bootstrap cycle (running
+  the current hierarchy's cycle on ``A x = 0``) and then re-derives every
+  coarse level's vectors from scratch inside ``_build_levels``, by
+  restriction plus ``eta`` relaxation sweeps, rather than improving them in
+  place. Defensible because the whole hierarchy is rebuilt from the improved
+  finest-level vectors anyway, so the coarse vectors already reflect the
+  improvement; disclosed here because it is a real simplification of Sec. 5.
 - **LSR practical schedule ([BAMG11] Sec. 4).** The paper's default schedule
   corrects only the single largest-weight test vector at the 20% of F-points
   with the largest residual; ``lsr_correction`` (Task 3) corrects every test
@@ -64,8 +73,8 @@ from ._algebraic_distance import (
 )
 from ._compatible_relaxation import compatible_relaxation_coarsening
 from ._least_squares import ls_interpolation_row, lsr_correction, select_interpolatory_set
+from ._presets import PRESET_CYCLE, PrebuiltCoarsening, seeded_draw
 from .amg import AMGPreconditioner
-from .cycle import VCycle, pseudo_inverse_solve
 from .hierarchy import MultigridHierarchy, MultigridLevel
 from .smoothers import GaussSeidelSmoother
 from .transfer import DenseTransferOperator
@@ -75,23 +84,6 @@ _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Te
 
 _LSR_TARGET_FRACTION = 0.2
 """Fraction of F-points corrected by LSR - [BAMG11] Sec. 4's practical schedule."""
-
-_CYCLE = VCycle(GaussSeidelSmoother(), n_pre=1, n_post=1, coarse_solver=pseudo_inverse_solve)
-"""Solve-phase cycle ([BAMG11] Sec. 6: Gauss-Seidel, V(n_pre,n_post)); also the
-cycle bootstrap cycles use to improve test vectors ([BAMG11] Sec. 3)."""
-
-
-def _seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:
-    """Stateful uniform ``[0, 1)`` source seeded for reproducibility.
-
-    Args:
-        seed (int): Generator seed.
-
-    Returns:
-        Callable[[int], torch.Tensor]: ``n -> float64`` tensor of length ``n``.
-    """
-    generator = torch.Generator().manual_seed(seed)
-    return lambda n: torch.rand(n, generator=generator, dtype=torch.float64)
 
 
 def _random_test_vectors(
@@ -157,7 +149,7 @@ def _improve_test_vectors(
     for k in range(vectors.shape[1]):
         x = vectors[:, k]
         for _ in range(iterations):
-            x = x - _CYCLE.apply(hierarchy, matrix @ x)
+            x = x - PRESET_CYCLE.apply(hierarchy, matrix @ x)
         columns.append(x)
     return torch.stack(columns, dim=1)
 
@@ -240,6 +232,21 @@ class BAMGCoarsening:
     leading ``eta``-sweep relaxation, which is ``BootstrapSetup``'s
     responsibility (the same relaxed vectors also seed the CR loop itself).
 
+    **Robustness addition, not part of the literal paper algorithm:** if
+    ``select_interpolatory_set`` returns an empty ``C_i`` for an F-point,
+    that row falls back to the single strongest candidate by algebraic
+    distance (``argmax`` of ``r_ij`` over the candidate set, [AD11] eq.
+    4.3) instead of being left all-zero. An all-zero row of ``P`` makes
+    that F-point permanently invisible to the coarse grid - it receives no
+    coarse-grid correction at all - which silently degrades the cycle far
+    more than a merely suboptimal caliber-one row would. [AD11] Sec. 4.3's
+    greedy rule has no such case because its penalization test is stated on
+    a near-order-one relative residual; this is the defensive floor for the
+    degenerate inputs that can still reach it. The one case that keeps an
+    all-zero row is an empty coarse set (``C = {}``, a legitimate CR
+    outcome - see ``BootstrapSetup._build_levels``), where there is simply
+    nothing to interpolate from; that pass is discarded by the caller.
+
     Args:
         test_vectors (torch.Tensor): Test vectors for this level, shape
             ``(n, k)``.
@@ -300,7 +307,7 @@ class BAMGCoarsening:
         self._gamma = gamma
         self._use_lsr = use_lsr
         self._depth = depth
-        self._draw = draw if draw is not None else _seeded_draw(seed)
+        self._draw = draw if draw is not None else seeded_draw(seed)
         self._vectors: dict[int, torch.Tensor] = {test_vectors.shape[0]: test_vectors}
         self._last_prolongation: torch.Tensor | None = None
 
@@ -348,34 +355,47 @@ class BAMGCoarsening:
             tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse, transfer)``.
         """
         test_vectors = self._vectors[A.shape[0]]
-        coarse_mask = self._coarse_mask(A, test_vectors)
-        prolongation = self._prolongation(A, test_vectors, coarse_mask)
+        distance = algebraic_distance(test_vectors, A, depth=self._depth)
+        coarse_mask = self._coarse_mask(A, distance)
+        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance)
         coarse_matrix = prolongation.T @ A @ prolongation
         self._last_prolongation = prolongation
         self._vectors[coarse_matrix.shape[0]] = prolongation.T @ test_vectors
         return coarse_matrix, DenseTransferOperator(prolongation)
 
-    def _coarse_mask(self, A: torch.Tensor, test_vectors: torch.Tensor) -> torch.Tensor:
+    def _coarse_mask(self, A: torch.Tensor, distance: torch.Tensor) -> torch.Tensor:
         """Compatible-relaxation coarse set, guided by the algebraic-distance graph.
+
+        ``strength_graph`` is directional by design (``r_ij != r_ji``, see
+        ``_algebraic_distance.py``'s module docstring), while
+        ``_independent_set_of`` consults only row ``i`` of whatever graph it
+        is handed - so a one-directional edge ``j -> i`` would let both ``i``
+        and ``j`` be marked coarse in the same stage, which is not an
+        independent set with respect to the strength relation. The graph is
+        therefore symmetrized *here*, at the call site that owns the choice,
+        by union (``M | M^T``: an edge exists if either direction is strong)
+        rather than intersection: the union is the conservative option, since
+        it blocks strictly more simultaneous coarse picks and so can only
+        make the independent set safer, whereas the intersection would keep
+        exactly the one-directional edges that cause the problem.
 
         Args:
             A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
-            test_vectors (torch.Tensor): Test vectors, shape ``(n, k)``.
+            distance (torch.Tensor): Algebraic-distance matrix ``r``, shape
+                ``(n, n)`` ([AD11] eq. 4.3).
 
         Returns:
             torch.Tensor: Boolean coarse mask, shape ``(n,)``.
         """
-        n = A.shape[0]
-        distance = algebraic_distance(test_vectors, A, depth=self._depth)
-        all_fine = torch.ones(n, dtype=torch.bool, device=A.device)
-        guidance_graph = strength_graph(distance, all_fine, theta_ad=self._theta_ad)
+        all_fine = torch.ones(A.shape[0], dtype=torch.bool, device=A.device)
+        directed = strength_graph(distance, all_fine, theta_ad=self._theta_ad)
         return compatible_relaxation_coarsening(
             A,
             self._relaxation,
             nu=self._nu,
             delta=self._delta,
             draw=self._draw,
-            guidance_graph=guidance_graph,
+            guidance_graph=directed | directed.T,
         )
 
     def _fit_vectors(
@@ -399,8 +419,27 @@ class BAMGCoarsening:
         target_rows = fine_points[top_local]
         return lsr_correction(test_vectors, A, target_rows)
 
+    @staticmethod
+    def _strongest_candidate(candidates: torch.Tensor, strengths: torch.Tensor) -> torch.Tensor:
+        """Fallback interpolatory set: the single algebraically closest candidate.
+
+        Args:
+            candidates (torch.Tensor): Long tensor of candidate ``C``-indices.
+            strengths (torch.Tensor): Algebraic distances ``r_ij`` from the
+                target row ``i`` to every node, shape ``(n,)``; larger is
+                stronger ([AD11] eq. 4.3).
+
+        Returns:
+            torch.Tensor: Long tensor of shape ``(1,)``.
+        """
+        return candidates[torch.argmax(strengths[candidates])].reshape(1)
+
     def _prolongation(
-        self, A: torch.Tensor, test_vectors: torch.Tensor, coarse_mask: torch.Tensor
+        self,
+        A: torch.Tensor,
+        test_vectors: torch.Tensor,
+        coarse_mask: torch.Tensor,
+        distance: torch.Tensor,
     ) -> torch.Tensor:
         """LS/LSR-fitted prolongation matrix ``P`` (identity on ``C``, fitted rows on ``F``).
 
@@ -408,6 +447,8 @@ class BAMGCoarsening:
             A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
             test_vectors (torch.Tensor): Test vectors, shape ``(n, k)``.
             coarse_mask (torch.Tensor): Boolean coarse mask, shape ``(n,)``.
+            distance (torch.Tensor): Algebraic-distance matrix ``r``, shape
+                ``(n, n)``, used by the empty-interpolatory-set fallback.
 
         Returns:
             torch.Tensor: Prolongation matrix, shape ``(n, n_c)``.
@@ -432,6 +473,8 @@ class BAMGCoarsening:
             interp_set = select_interpolatory_set(
                 candidates, fit_vectors, A, i, weights, self._caliber, gamma=self._gamma
             )
+            if interp_set.numel() == 0 and candidates.numel() > 0:
+                interp_set = self._strongest_candidate(candidates, distance[i])
             if interp_set.numel() == 0:
                 continue
             row = ls_interpolation_row(fit_vectors, i, interp_set, weights)
@@ -449,8 +492,11 @@ class BootstrapSetup:
     levels[-1].shape[0] > max_coarse`` (the same stopping-condition shape as
     ``adaptive.py``'s ``_smoothed_aggregation_levels``), then for
     ``n_bootstrap_cycles`` cycles replaces plain relaxation with a full
-    ``VCycle.apply`` on ``A x = 0`` to improve every level's test vectors
-    and rebuilds the hierarchy from the improved vectors.
+    ``VCycle.apply`` on ``A x = 0`` to improve the **finest** level's test
+    vectors and rebuilds the whole hierarchy from them. Each coarse level's
+    vectors are re-derived from scratch during that rebuild (restriction by
+    ``P^T`` plus ``eta`` relaxation sweeps in ``_build_levels``), not
+    improved in place - see the module docstring's scope note.
 
     Attributes:
         nu (int): CR sweeps per stage.
@@ -582,26 +628,6 @@ class BootstrapSetup:
         )
 
 
-class _PrebuiltCoarsening:
-    """Placeholder ``CoarseningStrategy``: the levels are prebuilt, never built by the engine.
-
-    ``BootstrapAMGPreconditioner`` overrides ``_make_hierarchy``, so the
-    engine never asks this strategy for a level (same pattern as
-    ``adaptive.py``'s ``_PrebuiltCoarsening``).
-    """
-
-    def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
-        """Always raises: the hierarchy is prebuilt by ``BootstrapSetup.run``.
-
-        Args:
-            A (torch.Tensor): Unused.
-
-        Raises:
-            RuntimeError: Always.
-        """
-        raise RuntimeError("bootstrap AMG levels are prebuilt; the engine must not rebuild them")
-
-
 class BootstrapAMGPreconditioner(AMGPreconditioner):
     """Bootstrap AMG preconditioner (BAMG), ``docs/bootstrap-amg.md``.
 
@@ -689,13 +715,13 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             max_levels=max_levels,
             max_coarse=max_coarse,
         )
-        result = setup.run(matrix, draw if draw is not None else _seeded_draw(seed))
+        result = setup.run(matrix, draw if draw is not None else seeded_draw(seed))
         if len(result.matrices) < 2:
             raise ValueError("bootstrap AMG setup produced a single level; lower max_coarse")
         super().__init__(
             matrix=matrix,
-            coarsening=_PrebuiltCoarsening(),
-            cycle=_CYCLE,
+            coarsening=PrebuiltCoarsening("bootstrap AMG"),
+            cycle=PRESET_CYCLE,
             n_levels=len(result.matrices),
             linear=True,
         )
