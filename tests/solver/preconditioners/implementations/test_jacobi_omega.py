@@ -71,7 +71,7 @@ def estimator_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     calls: list[int] = []
     original = jacobi_omega_module.approximate_spectral_radius
 
-    def counting(matrix: torch.Tensor, *args: object, **kwargs: object) -> float:
+    def counting(matrix: torch.Tensor, *args: object, **kwargs: object) -> torch.Tensor:
         calls.append(matrix.shape[0])
         return original(matrix, *args, **kwargs)  # ty: ignore[invalid-argument-type]
 

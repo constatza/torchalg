@@ -204,7 +204,7 @@ def piecewise_constant_prolongation(
 def smoothed_prolongation(
     matrix: torch.Tensor,
     tentative: torch.Tensor,
-    omega: float,
+    omega: float | torch.Tensor,
 ) -> torch.Tensor:
     """Apply one Jacobi smoothing step to the tentative prolongation P0.
 
@@ -218,7 +218,7 @@ def smoothed_prolongation(
         matrix (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``.
         tentative (torch.Tensor): Piecewise-constant tentative prolongation
             P0, shape ``(n, n_coarse)``.
-        omega (float): Jacobi damping factor omega.
+        omega (float | torch.Tensor): Jacobi damping factor omega.
 
     Returns:
         torch.Tensor: Smoothed prolongation matrix ``P = (I - omega D^{-1}

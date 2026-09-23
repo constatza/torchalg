@@ -21,7 +21,7 @@ def jacobi_prolongation(
     matrix: torch.Tensor,
     tentative: torch.Tensor,
     omega: float,
-    spectral_radius: Callable[[torch.Tensor], float],
+    spectral_radius: Callable[[torch.Tensor], torch.Tensor],
 ) -> torch.Tensor:
     """Smooth ``tentative`` once: ``P = T - (omega / rho(D^-1 S)) D^-1 S T``.
 
@@ -32,8 +32,8 @@ def jacobi_prolongation(
         matrix (torch.Tensor): System matrix ``S = A`` on this level.
         tentative (torch.Tensor): Tentative prolongator ``T``.
         omega (float): Nominal damping (PyAMG's default is 4/3).
-        spectral_radius (Callable[[torch.Tensor], float]): Estimator of
-            ``rho`` applied to ``D^-1 S``.
+        spectral_radius (Callable[[torch.Tensor], torch.Tensor]): Estimator
+            of ``rho`` applied to ``D^-1 S``, returning a 0-d tensor.
 
     Returns:
         torch.Tensor: Smoothed prolongator, same shape as ``tentative``.

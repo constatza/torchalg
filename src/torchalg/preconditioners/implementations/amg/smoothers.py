@@ -74,10 +74,13 @@ class JacobiSmoother(SmootherBase):
     stay below ``2 / rho(D^{-1}A)`` for the iteration to converge.
 
     Args:
-        omega (float | None): Damping factor. ``None`` (default) is the
-            relaxation rule ``1 / rho(D^{-1}A)`` (PyAMG's), estimated once per
-            matrix and cached (see ``_jacobi_omega``); a float fixes it
-            (0.67 ~= 2/3 is ``4/(3 rho)`` for ``rho ~= 2``).
+        omega (float | torch.Tensor | None): Damping factor. ``None``
+            (default) is the relaxation rule ``1 / rho(D^{-1}A)`` (PyAMG's),
+            estimated once per matrix and cached (see ``_jacobi_omega``); a
+            float or 0-d tensor fixes it (0.67 ~= 2/3 is ``4/(3 rho)`` for
+            ``rho ~= 2``) - a tensor is accepted so callers holding an
+            already-computed spectral-radius-derived value never have to
+            round-trip it through Python before passing it back in.
 
     References:
         - Young, D. M. (1954). Iterative methods for solving partial difference
@@ -87,7 +90,7 @@ class JacobiSmoother(SmootherBase):
           Computing, 56(3), 179-196. Section 3: omega = 4 / (3 * rho(D^{-1}A)).
     """
 
-    def __init__(self, omega: float | None = None) -> None:
+    def __init__(self, omega: float | torch.Tensor | None = None) -> None:
         """Store the Jacobi damping factor.
 
         Args:

@@ -79,7 +79,7 @@ def approximate_spectral_radius(
     maxiter: int = 15,
     restart: int = 5,
     initial_guess: torch.Tensor | None = None,
-) -> float:
+) -> torch.Tensor:
     """Estimate ``rho(matrix)`` with restarted Arnoldi.
 
     Args:
@@ -93,7 +93,8 @@ def approximate_spectral_radius(
         initial_guess (torch.Tensor | None): Starting vector, shape ``(n,)``.
 
     Returns:
-        float: Largest-magnitude Ritz value.
+        torch.Tensor: Largest-magnitude Ritz value, 0-d, ``matrix``'s
+            real dtype and device.
     """
     start = (draw(matrix.shape[0]) if initial_guess is None else initial_guess).to(
         dtype=matrix.dtype, device=matrix.device
@@ -106,4 +107,4 @@ def approximate_spectral_radius(
         start = torch.stack(basis[:-1], dim=1).to(vectors.dtype) @ vectors[:, top]
         if float(error.abs() / values[top].abs()) < tol or breakdown:
             break
-    return float(values[top].abs())
+    return values[top].abs()

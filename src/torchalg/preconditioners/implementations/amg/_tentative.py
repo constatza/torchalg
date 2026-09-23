@@ -42,11 +42,14 @@ def _fit_aggregate(block: torch.Tensor, tol: float) -> tuple[torch.Tensor, torch
             r[i, j] = torch.dot(q[:, j], q[:, i])
             q[:, j] = q[:, j] - r[i, j] * q[:, i]
         norm = torch.linalg.norm(q[:, j])
-        if norm > threshold:
-            r[j, j] = norm
-            q[:, j] = q[:, j] / norm
-        else:
-            q[:, j] = 0.0
+        # torch.where, not a Python `if norm > threshold`: this runs once per
+        # (aggregate, candidate) pair - n_aggregates * m times per hierarchy
+        # level - so a host sync here would be paid n_aggregates * m times
+        # per level per candidate build, not once.
+        keep = norm > threshold
+        r[j, j] = torch.where(keep, norm, torch.zeros_like(norm))
+        safe_norm = torch.where(keep, norm, torch.ones_like(norm))
+        q[:, j] = torch.where(keep, q[:, j] / safe_norm, torch.zeros_like(q[:, j]))
     return q, r
 
 

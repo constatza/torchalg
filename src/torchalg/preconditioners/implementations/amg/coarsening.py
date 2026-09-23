@@ -72,10 +72,11 @@ class AggregationCoarsening:
             Default 0.25 is a literature/practice-standard default (e.g.
             hypre BoomerAMG's ``strong_threshold``, PyAMG's
             ``smoothed_aggregation_solver``), not from Stuben (2001).
-        omega (float | None): Jacobi damping for the prolongation smoother.
-            ``None`` (default) is ``(4/3) / rho(D^{-1}A)``, estimated once per
-            level matrix and shared with the relaxation (see
-            ``_jacobi_omega``); a float fixes it.
+        omega (float | torch.Tensor | None): Jacobi damping for the
+            prolongation smoother. ``None`` (default) is ``(4/3) /
+            rho(D^{-1}A)``, estimated once per level matrix and shared with
+            the relaxation (see ``_jacobi_omega``); a float or 0-d tensor
+            fixes it.
 
     References:
         - Vanek, P., Mandel, J., & Brezina, M. (1996). Algebraic multigrid by
@@ -85,12 +86,13 @@ class AggregationCoarsening:
           Numerica, 26, 591-721 (arXiv:1611.01917).
     """
 
-    def __init__(self, theta: float = 0.25, omega: float | None = None) -> None:
+    def __init__(self, theta: float = 0.25, omega: float | torch.Tensor | None = None) -> None:
         """Store the strength-of-connection threshold and smoothing damping factor.
 
         Args:
             theta (float): Strength-of-connection threshold theta in (0, 1).
-            omega (float | None): Jacobi damping, or ``None`` for ``(4/3) / rho``.
+            omega (float | torch.Tensor | None): Jacobi damping, or ``None``
+                for ``(4/3) / rho``.
         """
         self._theta = theta
         self._omega = omega

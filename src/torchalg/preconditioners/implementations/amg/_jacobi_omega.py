@@ -36,7 +36,7 @@ PROLONGATION_NOMINAL = 4.0 / 3.0
 """Nominal Jacobi damping for prolongator smoothing: ``omega = (4/3) / rho``."""
 
 _SEED = 0
-_cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], float]] = {}
+_cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], torch.Tensor]] = {}
 
 
 def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
@@ -66,14 +66,14 @@ def _seeded_draw(size: int) -> torch.Tensor:
     return torch.rand(size, generator=generator, dtype=torch.float64)
 
 
-def jacobi_spectral_radius(matrix: torch.Tensor) -> float:
+def jacobi_spectral_radius(matrix: torch.Tensor) -> torch.Tensor:
     """Cached, deterministic Arnoldi estimate of ``rho(D^-1 A)``.
 
     Args:
         matrix (torch.Tensor): Square matrix ``A``.
 
     Returns:
-        float: Estimated spectral radius of ``D^-1 A``.
+        torch.Tensor: Estimated spectral radius of ``D^-1 A``, 0-d.
     """
     key = id(matrix)
     entry = _cache.get(key)
@@ -84,15 +84,25 @@ def jacobi_spectral_radius(matrix: torch.Tensor) -> float:
     return rho
 
 
-def jacobi_omega(matrix: torch.Tensor, nominal: float, override: float | None) -> float:
+def jacobi_omega(
+    matrix: torch.Tensor, nominal: float, override: float | torch.Tensor | None
+) -> torch.Tensor:
     """Resolve a Jacobi damping factor: the explicit value, else ``nominal / rho``.
 
     Args:
         matrix (torch.Tensor): Matrix the damping is applied to.
         nominal (float): ``RELAXATION_NOMINAL`` or ``PROLONGATION_NOMINAL``.
-        override (float | None): Explicit omega; ``None`` selects the spectral rule.
+        override (float | torch.Tensor | None): Explicit omega; ``None``
+            selects the spectral rule.
 
     Returns:
-        float: Damping factor.
+        torch.Tensor: Damping factor, 0-d, matching ``matrix``'s dtype/device
+            (an explicit ``override`` is wrapped to match rather than left a
+            bare Python float, so callers never have to branch on which case
+            they got - see ``strategies/convergence.py``'s
+            ``has_converged_from_norm`` for the same mixed tensor/float
+            dtype-matching fix applied to the solver's own convergence check).
     """
-    return override if override is not None else nominal / jacobi_spectral_radius(matrix)
+    if override is not None:
+        return torch.as_tensor(override, dtype=matrix.dtype, device=matrix.device)
+    return nominal / jacobi_spectral_radius(matrix)

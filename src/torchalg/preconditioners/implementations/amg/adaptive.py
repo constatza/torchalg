@@ -93,14 +93,14 @@ class _Params:
     max_coarse: int
     draw: Callable[[int], torch.Tensor]
 
-    def spectral_radius(self, matrix: torch.Tensor) -> float:
+    def spectral_radius(self, matrix: torch.Tensor) -> torch.Tensor:
         """Arnoldi estimate of ``rho`` drawing from the shared random stream.
 
         Args:
             matrix (torch.Tensor): Square matrix.
 
         Returns:
-            float: Estimated spectral radius.
+            torch.Tensor: Estimated spectral radius, 0-d.
         """
         return approximate_spectral_radius(matrix, self.draw)
 
