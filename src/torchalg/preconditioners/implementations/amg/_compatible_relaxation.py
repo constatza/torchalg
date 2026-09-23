@@ -177,16 +177,27 @@ def _independent_set_of(
         subset of ``candidates``.
     """
     n = matrix.shape[0]
+    device = matrix.device
     adjacency = guidance_graph if guidance_graph is not None else depth_neighborhood(matrix, 1)
-    eligible = candidates.clone()
-    selected = torch.zeros(n, dtype=torch.bool, device=matrix.device)
-    for i in torch.argsort(priority, descending=True).tolist():
+    # Greedy MIS is inherently sequential (each pick invalidates neighbors
+    # for every later pick), so it can't be batched the way `fit_candidates`
+    # batches independent aggregates - it's one long dependent chain. Every
+    # iteration below previously touched CUDA tensors (`eligible[i]` alone
+    # forces a device sync via the `if not eligible[i]:` bool conversion),
+    # i.e. one host<->device round trip per candidate node. Doing the whole
+    # loop CPU-resident removes that entirely; only `adjacency`/`eligible`
+    # need one one-time transfer instead of n syncs.
+    order = torch.argsort(priority, descending=True).cpu().tolist()
+    eligible = candidates.cpu().clone()
+    adjacency_cpu = adjacency.cpu()
+    selected = torch.zeros(n, dtype=torch.bool)
+    for i in order:
         if not eligible[i]:
             continue
         selected[i] = True
         eligible[i] = False
-        eligible &= ~adjacency[i]
-    return selected
+        eligible &= ~adjacency_cpu[i]
+    return selected.to(device)
 
 
 def compatible_relaxation_coarsening(

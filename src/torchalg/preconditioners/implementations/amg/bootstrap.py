@@ -458,18 +458,17 @@ class BAMGCoarsening:
             torch.Tensor: Prolongation matrix, shape ``(n, n_c)``.
         """
         n = A.shape[0]
+        device = A.device
         coarse_points = torch.nonzero(coarse_mask).flatten()
         fine_points = torch.nonzero(~coarse_mask).flatten()
         n_coarse = coarse_points.numel()
-        coarse_index = torch.full((n,), -1, dtype=torch.long, device=A.device)
-        coarse_index[coarse_points] = torch.arange(n_coarse, device=A.device)
+        coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
+        coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
 
         weights = test_vector_weights(test_vectors, A)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = depth_neighborhood(A, self._depth + 2)
 
-        prolongation = torch.zeros(n, n_coarse, dtype=A.dtype, device=A.device)
-        prolongation[coarse_points, torch.arange(n_coarse, device=A.device)] = 1.0
         # One nonzero() + tolist() for every fine row's coarse-neighbor set
         # up front, instead of one `torch.nonzero(...)` (a device sync) per
         # fine point inside the loop below - same grouping the aggregation
@@ -481,23 +480,48 @@ class BAMGCoarsening:
         candidate_lists: list[list[int]] = [[] for _ in range(fine_points.numel())]
         for local_row, col in torch.nonzero(coarse_neighborhood, as_tuple=False).tolist():
             candidate_lists[local_row].append(col)
+
+        # `select_interpolatory_set`/`ls_interpolation_row` run once per
+        # fine point (thousands, for a real mesh), each a greedy loop with
+        # data-dependent stopping that does several `.item()`-synced tiny
+        # linear solves. That's thousands of host<->device round trips for
+        # genuinely tiny (caliber-sized) work if left on CUDA - each row's
+        # stopping point depends on the previous row's chosen set only
+        # through shared `fit_vectors`/`weights`/`A`, not through any
+        # cross-row state, so unlike `fit_candidates`' aggregate loop
+        # (batched in `_tentative.py`, all aggregates fit in lockstep) this
+        # loop's per-row variable trip count doesn't reduce to a fixed
+        # small number of batched steps without padding every row to the
+        # worst-case caliber-growth trajectory - not worth the complexity
+        # here. Running it CPU-resident instead removes the sync cost
+        # entirely (CPU `.item()` needs no device round trip), paying one
+        # one-time transfer of the row-loop's working tensors up front.
+        fit_vectors_cpu = fit_vectors.cpu()
+        A_cpu = A.cpu()
+        weights_cpu = weights.cpu()
+        distance_cpu = distance.cpu()
+        coarse_index_cpu = coarse_index.cpu()
+        coarse_points_cpu = coarse_points.cpu()
+
+        prolongation = torch.zeros(n, n_coarse, dtype=A.dtype)
+        prolongation[coarse_points_cpu, torch.arange(n_coarse)] = 1.0
         for local_row, i in enumerate(fine_points.tolist()):
             candidate_columns = candidate_lists[local_row]
             candidates = (
-                torch.tensor(candidate_columns, dtype=torch.long, device=A.device)
+                torch.tensor(candidate_columns, dtype=torch.long)
                 if candidate_columns
-                else coarse_points
+                else coarse_points_cpu
             )
             interp_set = select_interpolatory_set(
-                candidates, fit_vectors, A, i, weights, self._caliber, gamma=self._gamma
+                candidates, fit_vectors_cpu, A_cpu, i, weights_cpu, self._caliber, gamma=self._gamma
             )
             if interp_set.numel() == 0 and candidates.numel() > 0:
-                interp_set = self._strongest_candidate(candidates, distance[i])
+                interp_set = self._strongest_candidate(candidates, distance_cpu[i])
             if interp_set.numel() == 0:
                 continue
-            row = ls_interpolation_row(fit_vectors, i, interp_set, weights)
-            prolongation[i, coarse_index[interp_set]] = row
-        return prolongation
+            row = ls_interpolation_row(fit_vectors_cpu, i, interp_set, weights_cpu)
+            prolongation[i, coarse_index_cpu[interp_set]] = row
+        return prolongation.to(device)
 
 
 @dataclass(frozen=True)
