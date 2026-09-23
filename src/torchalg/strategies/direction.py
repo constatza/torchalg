@@ -70,12 +70,18 @@ class TwoTermRecurrenceStrategy(DirectionStrategy):
         self, w: torch.Tensor, state: CGState
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute ``d_k = w_k + beta_k d_{k-1}``. Never orthogonalizes."""
+        # `torch.zeros((), dtype=torch.bool, device=w.device)`, not a bare
+        # `torch.tensor(False)` (always CPU): this breakdown flag gets
+        # stacked with every other iteration's in CGState.breakdown_history
+        # (see conjugate_gradient.py::_build_result) — a CPU entry mixed
+        # into a GPU solve's stack would fail with a device-mismatch error.
+        no_breakdown = torch.zeros((), dtype=torch.bool, device=w.device)
         if state.iteration == 0:
-            return w.clone(), torch.tensor(False)
+            return w.clone(), no_breakdown
 
         rw_curr = stable_dot_product(state.r, w)
         beta = rw_curr / state.rw_prev
-        return w + beta * state.d, torch.tensor(False)
+        return w + beta * state.d, no_breakdown
 
 
 class OrthogonalizationDirectionStrategy(DirectionStrategy):

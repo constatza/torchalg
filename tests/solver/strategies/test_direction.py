@@ -101,3 +101,30 @@ def test_orthogonalization_direction_strategy_uses_direction_history(
 
     assert torch.allclose(direction, torch.tensor([0.0, 1.0], dtype=direction.dtype))
     assert bool(ortho_breakdown) is False
+
+
+def test_two_term_recurrence_breakdown_matches_input_device() -> None:
+    """The no-breakdown flag must not hardcode a CPU tensor.
+
+    ``TwoTermRecurrenceStrategy.compute_direction`` backs every plain PCG
+    iteration (not just FCG's orthogonalization path), so a hardcoded
+    ``torch.tensor(False)`` here would break ``torch.stack`` on
+    ``CGState.breakdown_history`` (see ``conjugate_gradient.py::_build_result``)
+    for essentially every GPU solve. Uses the ``"meta"`` device rather than a
+    real CPU tensor since a hardcoded CPU flag and a correctly device-matched
+    one are indistinguishable when the input is already on CPU.
+    """
+    w = torch.ones(5, dtype=torch.float64, device="meta")
+    state = CGState.create_initial(
+        u=torch.zeros_like(w),
+        r=w,
+        w=w,
+        d=torch.zeros_like(w),
+        q=torch.zeros_like(w),
+        residual_norm=torch.linalg.norm(w),
+        rhs_norm=1.0,
+    )
+
+    _, ortho_breakdown = TwoTermRecurrenceStrategy().compute_direction(w, state)
+
+    assert ortho_breakdown.device == w.device

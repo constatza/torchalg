@@ -87,3 +87,38 @@ def test_periodic_restart_window_follows_notay_sawtooth(
 
     # Coefficients are now stored as 0-d tensors, but still indexable by length
     assert window_sizes == [1, 2, 3, 1, 2, 3, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        PeriodicRestartOrthogonalization(m_max=3.0),
+        TruncatedGramSchmidt(window_size=3),
+        ModifiedGramSchmidt(),
+    ],
+)
+def test_empty_history_breakdown_matches_vector_device(
+    strategy: PeriodicRestartOrthogonalization | TruncatedGramSchmidt | ModifiedGramSchmidt,
+    torch_dtype: torch.dtype,
+) -> None:
+    """The empty-history early return must not hardcode a CPU breakdown flag.
+
+    ``OrthogonalizationReport.breakdown``'s dataclass default is a bare
+    ``torch.tensor(False)`` (always CPU, since no device was specified) —
+    the empty-history branch in each strategy must construct its own
+    device-matched flag explicitly instead of relying on that default,
+    since ``CGState.breakdown_history`` later stacks every iteration's flag
+    together (see ``conjugate_gradient.py::_build_result``); a stray CPU
+    entry mixed into a GPU solve's stack would fail with a device-mismatch
+    error that only surfaces on GPU, never on CPU-only test runs — which is
+    exactly why this test uses the ``"meta"`` device rather than comparing
+    against a real CPU vector: on CPU alone, a hardcoded
+    ``torch.tensor(False)`` and a correctly device-matched one are both
+    ``"cpu"`` and indistinguishable, so the bug this guards against would
+    slip past a same-device comparison in a GPU-less environment.
+    """
+    vector = torch.ones(5, dtype=torch_dtype, device="meta")
+
+    _, report = strategy.orthogonalize(vector, d_vectors=(), q_vectors=())
+
+    assert report.breakdown.device == vector.device

@@ -30,6 +30,19 @@ class OrthogonalizationReport:
     very end of the solve (see CGState.breakdown_history / _build_result)."""
 
 
+def _no_breakdown(reference: torch.Tensor) -> torch.Tensor:
+    """A 0-d ``False`` tensor matching ``reference``'s device/dtype.
+
+    ``OrthogonalizationReport.breakdown``'s dataclass default is a bare
+    ``torch.tensor(False)`` (always CPU) — fine as a type-level default, but
+    the empty-history early returns below must not actually use it: mixing a
+    CPU tensor into ``CGState.breakdown_history`` alongside GPU-computed
+    entries from ``_build_report`` would make the batched ``torch.stack(...)``
+    in ``_build_result`` fail on any GPU solve (device mismatch).
+    """
+    return torch.zeros((), dtype=torch.bool, device=reference.device)
+
+
 class OrthogonalizationStrategy(ABC):
     """Interface for search-direction orthogonalization."""
 
@@ -92,7 +105,7 @@ class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
 
         if n_history == 0:
             self._iteration_count += 1
-            return result, OrthogonalizationReport(coefficients=())
+            return result, OrthogonalizationReport(coefficients=(), breakdown=_no_breakdown(vector))
 
         if math.isinf(self.m_max):
             m_i = n_history
@@ -141,7 +154,7 @@ class TruncatedGramSchmidt(OrthogonalizationStrategy):
         result = vector.clone()
         m = min(len(d_vectors), self._window_size)
         if m == 0:
-            return result, OrthogonalizationReport(coefficients=())
+            return result, OrthogonalizationReport(coefficients=(), breakdown=_no_breakdown(vector))
 
         return _orthogonalize_classical(
             vector=vector,
@@ -175,7 +188,7 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
         """Orthogonalize using the updated vector for each numerator."""
         result = vector.clone()
         if len(d_vectors) == 0:
-            return result, OrthogonalizationReport(coefficients=())
+            return result, OrthogonalizationReport(coefficients=(), breakdown=_no_breakdown(vector))
 
         coefficients: list[torch.Tensor] = []
         for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
