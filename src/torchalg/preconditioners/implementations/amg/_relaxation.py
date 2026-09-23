@@ -17,28 +17,39 @@ References:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 
-def _sweep(
-    matrix: torch.Tensor,
-    x: torch.Tensor,
-    rhs: torch.Tensor,
-    *,
-    forward: bool,
-    active: torch.Tensor,
-) -> torch.Tensor:
-    """One Gauss-Seidel sweep as a triangular solve, freezing inactive/zero-diagonal rows.
+@dataclass(frozen=True)
+class _PreparedSweep:
+    """A direction's fixed triangular system, reusable across every sweep of a call.
+
+    ``frozen``/``triangle``/``other`` depend only on ``matrix`` and
+    ``active`` - never on the iterate ``x`` or ``rhs`` - so building them
+    once per direction and reusing across ``iterations`` sweeps (instead of
+    reconstructing these dense ``(n, n)`` tensors on every single sweep, as
+    a naive per-sweep implementation would) turns ``iterations`` redundant
+    O(n^2) rebuilds into one.
+    """
+
+    frozen: torch.Tensor
+    triangle: torch.Tensor
+    other: torch.Tensor
+    upper: bool
+
+
+def _prepare_sweep(matrix: torch.Tensor, *, forward: bool, active: torch.Tensor) -> _PreparedSweep:
+    """Build one direction's fixed triangular system, freezing inactive/zero-diagonal rows.
 
     Args:
         matrix (torch.Tensor): Dense matrix ``A``, shape ``(n, n)``.
-        x (torch.Tensor): Current iterate, shape ``(n,)``.
-        rhs (torch.Tensor): Right-hand side, shape ``(n,)``.
         forward (bool): Ascending (``True``) or descending row order.
         active (torch.Tensor): Boolean mask of rows allowed to change.
 
     Returns:
-        torch.Tensor: Iterate after the sweep.
+        _PreparedSweep: Reusable triangular system for this direction.
     """
     frozen = (torch.diagonal(matrix) == 0) | ~active
     triangle, other = (
@@ -49,10 +60,24 @@ def _sweep(
     triangle = triangle * (~frozen).to(matrix.dtype).unsqueeze(1) + torch.diag(
         frozen.to(matrix.dtype)
     )
-    target = torch.where(frozen, x, rhs - other @ x)
-    return torch.linalg.solve_triangular(triangle, target.unsqueeze(1), upper=not forward).squeeze(
-        1
-    )
+    return _PreparedSweep(frozen=frozen, triangle=triangle, other=other, upper=not forward)
+
+
+def _apply_sweep(prepared: _PreparedSweep, x: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+    """Solve one already-prepared triangular system for the current iterate.
+
+    Args:
+        prepared (_PreparedSweep): Direction's fixed triangular system.
+        x (torch.Tensor): Current iterate, shape ``(n,)``.
+        rhs (torch.Tensor): Right-hand side, shape ``(n,)``.
+
+    Returns:
+        torch.Tensor: Iterate after the sweep.
+    """
+    target = torch.where(prepared.frozen, x, rhs - prepared.other @ x)
+    return torch.linalg.solve_triangular(
+        prepared.triangle, target.unsqueeze(1), upper=prepared.upper
+    ).squeeze(1)
 
 
 def symmetric_gauss_seidel(
@@ -80,7 +105,9 @@ def symmetric_gauss_seidel(
     if rows is not None:
         active = torch.zeros_like(x, dtype=torch.bool)
         active[rows] = True
+    forward_sweep = _prepare_sweep(matrix, forward=True, active=active)
+    backward_sweep = _prepare_sweep(matrix, forward=False, active=active)
     for _ in range(iterations):
-        x = _sweep(matrix, x, rhs, forward=True, active=active)
-        x = _sweep(matrix, x, rhs, forward=False, active=active)
+        x = _apply_sweep(forward_sweep, x, rhs)
+        x = _apply_sweep(backward_sweep, x, rhs)
     return x
