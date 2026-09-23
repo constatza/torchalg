@@ -117,10 +117,20 @@ class IConvergenceCriterion(ABC):
         threshold = self.threshold(rhs_norm)
         # If either input is a tensor, use tensor arithmetic for combined expression
         if isinstance(residual_norm, torch.Tensor) or isinstance(rhs_norm, torch.Tensor):
-            finite = (
-                torch.as_tensor(residual_norm).isfinite() & torch.as_tensor(rhs_norm).isfinite()
+            # `torch.as_tensor(a_float)` with no dtype/device falls back to the
+            # ambient default (float32, CPU) — this repo never sets a global
+            # default dtype, so converting the non-tensor operand blind would
+            # silently downcast precision (or mismatch device) against the
+            # other, genuinely-tensor operand. Match the real tensor's
+            # dtype/device instead.
+            reference = residual_norm if isinstance(residual_norm, torch.Tensor) else rhs_norm
+            assert isinstance(reference, torch.Tensor)
+            residual_norm_t = torch.as_tensor(
+                residual_norm, dtype=reference.dtype, device=reference.device
             )
-            converged = finite & (torch.as_tensor(residual_norm) <= threshold)
+            rhs_norm_t = torch.as_tensor(rhs_norm, dtype=reference.dtype, device=reference.device)
+            finite = residual_norm_t.isfinite() & rhs_norm_t.isfinite()
+            converged = finite & (residual_norm_t <= threshold)
             return bool(converged)  # The one irreducible sync to Python bool
         # Both are Python floats: use native float arithmetic
         if not (math.isfinite(residual_norm) and math.isfinite(rhs_norm)):

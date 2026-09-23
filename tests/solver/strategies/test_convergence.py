@@ -124,6 +124,24 @@ class TestHasConvergedFromNorm:
         # float residual, tensor rhs
         assert criterion.has_converged_from_norm(1e-8, torch.tensor(1.0)) is True
 
+    def test_mixed_inputs_do_not_downcast_to_torchs_float32_default(self) -> None:
+        """A mixed float/tensor call must not silently lose precision.
+
+        ``torch.as_tensor(a_python_float)`` with no explicit dtype falls back
+        to torch's ambient default dtype (float32) unless the caller matches
+        it to the other, genuinely-tensor operand's dtype — this repo never
+        sets a global default dtype, so a naive conversion would blur exactly
+        the boundary this comparison depends on. ``1e-10`` relative
+        difference is far below float32's ~1.19e-7 relative precision (would
+        round away to equality, reporting ``True``) but easily representable
+        in float64 (correctly ``False``).
+        """
+        criterion = CombinedToleranceCriterion(rtol=1.0, atol=0.0)
+        rhs_norm = torch.tensor(1.0, dtype=torch.float64)
+        residual_norm = 1.0 * (1.0 + 1e-10)  # strictly above threshold=1.0 in float64
+
+        assert criterion.has_converged_from_norm(residual_norm, rhs_norm) is False
+
     def test_exactly_one_bool_sync_with_tensor_inputs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
