@@ -20,10 +20,18 @@ def _to_cpu_copy(vector: torch.Tensor) -> torch.Tensor:
 
 @dataclass(frozen=True, slots=True)
 class ScalarHistory:
-    """Immutable history of scalar values over iterations."""
+    """Immutable history of scalar values over iterations, stored as 0-d tensors.
 
-    values: tuple[float, ...] = ()
-    """Scalar values over iterations."""
+    No conversion logic lives here — the "materialize to Python floats" step
+    belongs entirely to whichever code already owns building the final public
+    result (see ``_extract_histories_from_iteration_history`` in base.py), not
+    to this container. Converting on every ``.add()`` would force a device sync
+    per iteration for a value that's only ever needed once, in bulk, at the
+    very end of the solve.
+    """
+
+    values: tuple[torch.Tensor, ...] = ()
+    """Scalar values over iterations, stored as 0-d tensors."""
 
     @classmethod
     def empty(cls) -> ScalarHistory:
@@ -31,23 +39,27 @@ class ScalarHistory:
         return cls(values=())
 
     def add(self, value: torch.Tensor | float) -> ScalarHistory:
-        """Return a new history with ``value`` appended (cast to float here)."""
-        return ScalarHistory(values=self.values + (float(value),))
+        """Return a new history with ``value`` appended (as a 0-d tensor, no conversion)."""
+        tensor_value = torch.as_tensor(value, dtype=torch.float64)
+        return ScalarHistory(values=self.values + (tensor_value,))
 
     def prepend(self, value: torch.Tensor | float) -> ScalarHistory:
-        """Return a new history with ``value`` prepended (cast to float here)."""
-        return ScalarHistory(values=(float(value),) + self.values)
+        """Return a new history with ``value`` prepended (as a 0-d tensor, no conversion)."""
+        tensor_value = torch.as_tensor(value, dtype=torch.float64)
+        return ScalarHistory(values=(tensor_value,) + self.values)
 
     def to_list(self) -> list[float]:
-        """Return values as a list."""
-        return list(self.values)
+        """Materialize the whole history to floats in ONE batched conversion."""
+        if not self.values:
+            return []
+        return torch.stack(self.values).tolist()
 
     def __len__(self) -> int:
         """Return the number of stored values."""
         return len(self.values)
 
-    def __getitem__(self, index: int) -> float:
-        """Return the scalar value at ``index``."""
+    def __getitem__(self, index: int) -> torch.Tensor:
+        """Return the scalar value at ``index`` as a 0-d tensor."""
         return self.values[index]
 
 

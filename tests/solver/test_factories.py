@@ -431,16 +431,15 @@ def test_float_conversion_count_after_deduplication(
     to_torch: Callable[[NDArray], torch.Tensor],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify that redundant CGState.residual_history tracking is eliminated.
+    """Verify float() conversions are deferred to a single batched call.
 
-    With only one tracking mechanism (IterationHistory), float() conversions
-    are reduced by ~2 per iteration compared to the previous dual-tracking
-    implementation. Fixed tolerances below machine precision force exactly
-    ``maxiter`` iterations (never converges early), making the call count
-    fully deterministic.
+    With ScalarHistory storing 0-d tensors and deferring conversion to
+    .to_list(), float() conversions should be negligible per-iteration.
+    All scalar-to-float conversions happen in one batched torch.stack().tolist()
+    call at result building time, not spread across per-iteration .add() calls.
 
-    This test empirically measures the actual float()-call reduction to ensure
-    the refactor achieved its goal of eliminating redundant conversions.
+    Measured: ~0.3 float()-calls per iteration (mostly fixed overhead, not
+    iteration-dependent). This is a massive reduction from prior ~3/iter costs.
     """
     matrix = to_torch(tridiagonal_spd_medium)
     rhs = to_torch(rhs_ones_medium)
@@ -458,14 +457,11 @@ def test_float_conversion_count_after_deduplication(
     _, result = pcg(matrix, rhs, rtol=1e-300, atol=1e-300, maxiter=maxiter)
 
     assert result.iterations == maxiter
-    # After eliminating CGState.residual_history tracking:
-    # - Convergence check: ~1/iter
-    # - IterationHistory's residual_norms.add() and energy_decrements.add(): 2/iter (MINIMAL mode)
-    # - Misc per-solve overhead: ~10 calls
-    # Total should be well under pre-refactor levels of ~5.6/iter = 56 calls for 10 iterations
-    # The new implementation should be ~3/iter = 30 calls + overhead
+    # With batched conversion, the actual per-iteration cost should be negligible.
+    # Most float() calls (if any) come from fixed overhead, not iteration-dependent
+    # work like ScalarHistory.add() conversions.
     actual_per_iter = call_count / maxiter if maxiter > 0 else 0
-    assert actual_per_iter < 4.0, (
-        f"float() calls per iteration should be ~3, got {actual_per_iter:.2f} "
-        f"(total {call_count} for {maxiter} iterations)"
+    assert actual_per_iter < 1.0, (
+        f"float() calls per iteration should be <1.0 (fixed overhead only), "
+        f"got {actual_per_iter:.2f} (total {call_count} for {maxiter} iterations)"
     )

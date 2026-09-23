@@ -31,17 +31,58 @@ class TestScalarHistory:
         assert appended is not history
         assert prepended is not appended
 
-    def test_getitem_returns_float(self) -> None:
-        """Indexing exposes the stored scalar value."""
-        history = ScalarHistory(values=(1.0, 2.0))
-        assert history[0] == 1.0
-        assert history[-1] == 2.0
+    def test_add_and_prepend_store_tensors_internally(self) -> None:
+        """Internally, values are stored as 0-d tensors, not Python floats."""
+        history = ScalarHistory.empty()
+        appended = history.add(2.0)
+        prepended = appended.prepend(1.0)
+
+        # Stored values are tensors, not floats
+        assert isinstance(prepended.values[0], torch.Tensor)
+        assert isinstance(prepended.values[1], torch.Tensor)
+        assert prepended.values[0].ndim == 0  # 0-d tensor
+        assert prepended.values[1].ndim == 0
+        assert prepended.values[0].item() == 1.0
+        assert prepended.values[1].item() == 2.0
+
+    def test_getitem_returns_tensor(self) -> None:
+        """Indexing exposes the stored scalar as a 0-d tensor."""
+        v0 = torch.tensor(1.0)
+        v1 = torch.tensor(2.0)
+        history = ScalarHistory(values=(v0, v1))
+        assert isinstance(history[0], torch.Tensor)
+        assert isinstance(history[-1], torch.Tensor)
+        assert history[0].item() == 1.0
+        assert history[-1].item() == 2.0
 
     def test_history_is_frozen(self) -> None:
         """Mutating a field after construction raises."""
         history = ScalarHistory.empty()
         with pytest.raises(dataclasses.FrozenInstanceError):
-            history.values = (1.0,)  # ty: ignore[invalid-assignment]
+            history.values = (torch.tensor(1.0),)  # ty: ignore[invalid-assignment]
+
+    def test_empty_to_list_returns_empty_list(self) -> None:
+        """to_list() on an empty history returns an empty list."""
+        history = ScalarHistory.empty()
+        assert history.to_list() == []
+
+    def test_add_with_tensor_input(self) -> None:
+        """add() accepts both float and torch.Tensor inputs."""
+        history = ScalarHistory.empty()
+        history = history.add(1.0)
+        history = history.add(torch.tensor(2.0))
+        history = history.add(3.0)
+
+        assert history.to_list() == [1.0, 2.0, 3.0]
+
+    def test_prepend_with_tensor_input(self) -> None:
+        """prepend() accepts both float and torch.Tensor inputs."""
+        history = ScalarHistory.empty()
+        history = history.add(torch.tensor(3.0))
+        history = history.prepend(2.0)
+        history = history.prepend(torch.tensor(1.0))
+
+        assert history.to_list() == [1.0, 2.0, 3.0]
 
 
 class TestVectorHistory:

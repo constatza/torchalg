@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 
 from torchalg.monitoring.storage import ScalarHistory, VectorHistory
@@ -13,7 +11,7 @@ from torchalg.utils.numerics import stable_dot_product
 
 def _a_norm_error(
     *, x_exact: torch.Tensor, residual: torch.Tensor, solution: torch.Tensor
-) -> float:
+) -> torch.Tensor:
     """Compute ``||u_k - x_exact||_A`` via ``(x_exact - u_k)-r_k`` (no matvec).
 
     Exact for SPD ``A``: since ``A@x_exact = b`` and ``r_k = b - A@u_k``,
@@ -27,11 +25,11 @@ def _a_norm_error(
         solution: Current iterate ``u_k``.
 
     Returns:
-        float: ``||u_k - x_exact||_A``, clamped to ``0`` before the square
-            root to absorb floating-point noise.
+        torch.Tensor: 0-d tensor ``||u_k - x_exact||_A``, clamped to ``0``
+            before the square root to absorb floating-point noise.
     """
     quadratic_form = stable_dot_product(x_exact - solution, residual)
-    return math.sqrt(max(quadratic_form, 0.0))
+    return torch.sqrt(torch.clamp_min(quadratic_form, 0.0))
 
 
 class IterationHistory:
