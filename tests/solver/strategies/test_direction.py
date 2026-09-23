@@ -37,7 +37,7 @@ def test_two_term_recurrence_first_iteration_returns_preconditioned_residual(
 
     assert torch.equal(direction, two_term_preconditioned_residual)
     assert direction is not two_term_preconditioned_residual
-    assert ortho_breakdown is False
+    assert bool(ortho_breakdown) is False
 
 
 def test_two_term_recurrence_uses_fletcher_reeves_beta(
@@ -64,7 +64,7 @@ def test_two_term_recurrence_uses_fletcher_reeves_beta(
 
     expected = two_term_preconditioned_residual + 0.5 * two_term_previous_direction
     assert torch.allclose(direction, expected)
-    assert ortho_breakdown is False
+    assert bool(ortho_breakdown) is False
 
 
 def test_orthogonalization_direction_strategy_uses_direction_history(
@@ -100,4 +100,4 @@ def test_orthogonalization_direction_strategy_uses_direction_history(
     ).compute_direction(orthogonalization_probe, state)
 
     assert torch.allclose(direction, torch.tensor([0.0, 1.0], dtype=direction.dtype))
-    assert ortho_breakdown is False
+    assert bool(ortho_breakdown) is False

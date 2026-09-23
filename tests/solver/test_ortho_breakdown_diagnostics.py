@@ -43,7 +43,7 @@ class _AlwaysBreaksDown(OrthogonalizationStrategy):
         q_vectors: Sequence[torch.Tensor],
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Pass ``vector`` through unchanged, always flagged as breakdown."""
-        return vector, OrthogonalizationReport(coefficients=(), breakdown=True)
+        return vector, OrthogonalizationReport(coefficients=(), breakdown=torch.tensor(True))
 
 
 class _NeverBreaksDown(OrthogonalizationStrategy):
@@ -61,7 +61,7 @@ class _NeverBreaksDown(OrthogonalizationStrategy):
         q_vectors: Sequence[torch.Tensor],
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Pass ``vector`` through unchanged, never flagged as breakdown."""
-        return vector, OrthogonalizationReport(coefficients=(), breakdown=False)
+        return vector, OrthogonalizationReport(coefficients=(), breakdown=torch.tensor(False))
 
 
 def test_ortho_breakdown_reaches_termination_diagnostics(

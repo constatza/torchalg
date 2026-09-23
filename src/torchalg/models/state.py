@@ -252,6 +252,11 @@ class CGState(KrylovState):
     ortho_breakdown_at: int | None = None
     """Iteration of first-detected orthogonalization breakdown, or None."""
 
+    breakdown_history: tuple[torch.Tensor, ...] = ()
+    """Per-iteration orthogonalization-breakdown flags (0-d bool tensors), batched
+    into a single extraction in _build_result rather than resolved to bool per
+    iteration — see conjugate_gradient.py::_build_result."""
+
     energy_decrement: torch.Tensor | float | None = None
     """This step's exact alpha_k * rho_k (decrease in ||e_k||_A^2, 0-d tensor or float), or None initially."""
 

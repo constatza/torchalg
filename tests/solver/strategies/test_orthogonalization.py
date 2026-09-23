@@ -26,8 +26,9 @@ def test_truncated_gram_schmidt_removes_a_conjugate_component(
     )
 
     assert torch.allclose(result, torch.tensor([0.0, 1.0], dtype=result.dtype))
-    assert report.coefficients == (2.0,)
-    assert report.breakdown is False
+    assert len(report.coefficients) == 1
+    assert report.coefficients[0].item() == 2.0
+    assert bool(report.breakdown) is False
 
 
 def test_modified_gram_schmidt_uses_all_history(
@@ -45,7 +46,7 @@ def test_modified_gram_schmidt_uses_all_history(
 
     assert strategy.window_size is None
     assert torch.allclose(result, torch.tensor([0.0, 1.0], dtype=result.dtype))
-    assert report.breakdown is False
+    assert bool(report.breakdown) is False
 
 
 def test_create_fcg_orthogonalization_handles_full_window_sentinel() -> None:
@@ -84,4 +85,5 @@ def test_periodic_restart_window_follows_notay_sawtooth(
         len(strategy.orthogonalize(probe, d_vectors, q_vectors)[1].coefficients) for _ in range(8)
     ]
 
+    # Coefficients are now stored as 0-d tensors, but still indexable by length
     assert window_sizes == [1, 2, 3, 1, 2, 3, 1, 2]

@@ -132,9 +132,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         residual_norm_new = torch.linalg.norm(r_new)
         direction_history = self._updated_direction_history(state, d, q)
         new_iteration = state.iteration + 1
-        ortho_breakdown_at = state.ortho_breakdown_at
-        if ortho_breakdown_at is None and ortho_breakdown:
-            ortho_breakdown_at = new_iteration
+        breakdown_history = state.breakdown_history + (ortho_breakdown,)
 
         return replace(
             state,
@@ -149,7 +147,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             w_prev=w.clone(),
             r_prev=state.r.clone(),
             rw_prev=rw_curr,
-            ortho_breakdown_at=ortho_breakdown_at,
+            breakdown_history=breakdown_history,
             energy_decrement=energy_decrement,
         )
 
@@ -194,11 +192,14 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             energy_decrements,
         ) = self._extract_histories_from_iteration_history(rhs_norm_for_history)
 
+        # Batch-extract ortho_breakdown_at from breakdown_history (deferred from per-iteration)
+        ortho_breakdown_at = self._extract_ortho_breakdown_at(state.breakdown_history)
+
         breakdown = state.breakdown or not solution_valid
-        diagnostics = self._diagnostics(state, converged, breakdown)
+        diagnostics = self._diagnostics(state, converged, breakdown, ortho_breakdown_at)
         stopping_criterion = self._stopping_criterion(state, converged, breakdown, maxiter)
 
-        # Convert tensor-or-float norms to float for SolverResult (Phase 3 will handle this conversion internally)
+        # Convert tensor-or-float norms to float for SolverResult
         residual_norm_float = (
             float(state.residual_norm)
             if isinstance(state.residual_norm, torch.Tensor)
@@ -266,11 +267,30 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         """
         return abs_residual / rhs_norm if rhs_norm > 1e-14 else abs_residual  # type: ignore[return-value]
 
+    def _extract_ortho_breakdown_at(
+        self,
+        breakdown_history: tuple[torch.Tensor, ...],
+    ) -> int | None:
+        """Extract the first iteration where orthogonalization breakdown occurred.
+
+        Performs one batched extraction from the accumulated breakdown_history
+        instead of checking per-iteration in _iterate_step.
+        """
+        if not breakdown_history:
+            return None
+        breakdown_flags = torch.stack(breakdown_history)
+        first_breakdown_indices = torch.nonzero(breakdown_flags, as_tuple=True)[0]
+        if first_breakdown_indices.numel() > 0:
+            # Add 1 because breakdown_history[i] corresponds to iteration i+1
+            return int(first_breakdown_indices[0]) + 1
+        return None
+
     def _diagnostics(
         self,
         state: CGState,
         converged: bool,
         breakdown: bool,
+        ortho_breakdown_at: int | None,
     ) -> TerminationDiagnostics:
         """Build one-shot termination diagnostics."""
         reason = None
@@ -280,7 +300,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             converged_at=state.iteration if converged else None,
             breakdown_at=state.iteration if breakdown else None,
             breakdown_reason=reason,
-            ortho_breakdown_at=state.ortho_breakdown_at,
+            ortho_breakdown_at=ortho_breakdown_at,
         )
 
     def _stopping_criterion(

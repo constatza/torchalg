@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -19,11 +19,15 @@ REORTHOG_ZERO_NORM_TOL = 1e-14
 class OrthogonalizationReport:
     """Diagnostic report returned by an orthogonalization step."""
 
-    coefficients: tuple[float, ...]
-    """Orthogonalization coefficients used in order."""
+    coefficients: tuple[torch.Tensor, ...]
+    """Orthogonalization coefficients used in order (0-d tensors; no production
+    consumer needs these as floats — only tests inspect them, via .item())."""
 
-    breakdown: bool = False
-    """Whether the orthogonalized vector became near-zero."""
+    breakdown: torch.Tensor = field(default_factory=lambda: torch.tensor(False))
+    """0-d bool tensor: whether the orthogonalized vector became near-zero.
+    Deferred to a tensor rather than resolved to bool here, since nothing
+    reads this per-iteration — it's batched into a single extraction at the
+    very end of the solve (see CGState.breakdown_history / _build_result)."""
 
 
 class OrthogonalizationStrategy(ABC):
@@ -173,7 +177,7 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
         if len(d_vectors) == 0:
             return result, OrthogonalizationReport(coefficients=())
 
-        coefficients: list[torch.Tensor | float] = []
+        coefficients: list[torch.Tensor] = []
         for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
             numerator = stable_dot_product(result, q_j)
             denominator = stable_dot_product(d_j, q_j)
@@ -205,7 +209,7 @@ def _orthogonalize_classical(
     q_vectors: Sequence[torch.Tensor],
 ) -> tuple[torch.Tensor, OrthogonalizationReport]:
     """Apply classical A-conjugacy Gram-Schmidt to selected history."""
-    coefficients: list[torch.Tensor | float] = []
+    coefficients: list[torch.Tensor] = []
 
     for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
         numerator = stable_dot_product(vector, q_j)
@@ -220,18 +224,16 @@ def _orthogonalize_classical(
 def _build_report(
     vector: torch.Tensor,
     result: torch.Tensor,
-    coefficients: list[float | torch.Tensor],
+    coefficients: list[torch.Tensor],
 ) -> OrthogonalizationReport:
     """Build an orthogonalization report with breakdown classification.
 
-    Coefficients may be floats or 0-d tensors; converted to float for the report.
+    Both `breakdown` and `coefficients` stay tensors — nothing here needs a
+    Python scalar. `breakdown`'s combined comparison uses one tensor
+    expression instead of two separate float() conversions; `coefficients`
+    aren't converted at all, since nothing downstream reads them as floats.
     """
-    result_norm = float(torch.linalg.norm(result))
-    vector_norm = float(torch.linalg.norm(vector))
-    breakdown = result_norm < REORTHOG_ZERO_NORM_TOL * max(vector_norm, 1.0)
-    # Convert any tensor coefficients to float for the report
-    coeff_floats = tuple(float(c) if isinstance(c, torch.Tensor) else c for c in coefficients)
-    return OrthogonalizationReport(
-        coefficients=coeff_floats,
-        breakdown=breakdown,
-    )
+    result_norm = torch.linalg.norm(result)
+    vector_norm = torch.linalg.norm(vector)
+    breakdown = result_norm < REORTHOG_ZERO_NORM_TOL * torch.clamp_min(vector_norm, 1.0)
+    return OrthogonalizationReport(coefficients=tuple(coefficients), breakdown=breakdown)
