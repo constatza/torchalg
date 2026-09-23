@@ -99,6 +99,7 @@ import pytest
 import torch
 
 from torchalg.preconditioners.implementations.amg.bootstrap import BootstrapAMGPreconditioner
+from torchalg.preconditioners.implementations.amg.smoothers import GaussSeidelSmoother
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -206,6 +207,14 @@ def bootstrap_amg_factory() -> Callable[[torch.Tensor, bool], BootstrapAMGPrecon
     LSR-vs-LS comparison below is reproducible against that precedent, not
     a value hand-picked for this benchmark.
 
+    ``smoother=GaussSeidelSmoother()`` is pinned explicitly rather than
+    left to the class default: this benchmark validates against [BAMG11]'s
+    own published Table 4.2/4.3 numbers, which are for the paper's
+    algorithm specifically (symmetric GS smoothing) - it needs to keep
+    measuring that claim regardless of what ``BootstrapAMGPreconditioner``
+    defaults to for everyday PCG use, which is a separate, orthogonal
+    decision (currently weighted Jacobi, for solve-time performance).
+
     A factory, not a plain fixture, since it is built once per (matrix,
     ``use_lsr``) pair across several problem sizes/variants within a single
     test.
@@ -213,7 +222,13 @@ def bootstrap_amg_factory() -> Callable[[torch.Tensor, bool], BootstrapAMGPrecon
 
     def _factory(matrix: torch.Tensor, use_lsr: bool) -> BootstrapAMGPreconditioner:
         return BootstrapAMGPreconditioner(
-            matrix, k_r=8, eta=4, n_bootstrap_cycles=2, use_lsr=use_lsr, seed=5
+            matrix,
+            k_r=8,
+            eta=4,
+            n_bootstrap_cycles=2,
+            use_lsr=use_lsr,
+            seed=5,
+            smoother=GaussSeidelSmoother(),
         )
 
     return _factory
