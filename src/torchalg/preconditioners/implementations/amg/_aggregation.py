@@ -110,7 +110,15 @@ def standard_aggregation(strength: torch.Tensor) -> torch.Tensor:
     """
     n = strength.shape[0]
     device = strength.device
-    neighbor_lists = [torch.nonzero(strength[i], as_tuple=True)[0].tolist() for i in range(n)]
+    # A single nonzero() + tolist() for the whole matrix, not one per row:
+    # torch.nonzero already returns (row, col) pairs in row-major order, so
+    # grouping them below reproduces the exact per-row neighbor order a
+    # row-by-row `torch.nonzero(strength[i])` would - but with one device
+    # sync instead of n (n rows of separate host<->device round trips
+    # otherwise stall setup on CUDA once n is more than a few hundred).
+    neighbor_lists: list[list[int]] = [[] for _ in range(n)]
+    for i, j in torch.nonzero(strength, as_tuple=False).tolist():
+        neighbor_lists[i].append(j)
 
     isolated_marker = -n
     state = [0] * n  # 0 = unmarked

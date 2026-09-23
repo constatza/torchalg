@@ -238,6 +238,40 @@ class TestStandardAggregation:
         )  # isolated node: all-zero row, not a wrapped -1 index into the last column
         torch.testing.assert_close(prolongation[1], prolongation[2])
 
+    def test_uses_a_bounded_number_of_host_syncs_not_one_per_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neighbor-list construction must not block once per row.
+
+        The regression this guards against: building `neighbor_lists` via
+        `torch.nonzero(strength[i], ...).tolist()` inside a `for i in
+        range(n)` loop forces one device->host sync per row - on CUDA, `n`
+        blocking round trips before the (inherently sequential) three-pass
+        algorithm even starts, which is what made AMG setup with a dense,
+        low-`theta` strength graph stall in practice. `.tolist()` calls
+        must stay bounded independent of `n`, not scale with it.
+        """
+        n = 50
+        strength = torch.zeros((n, n), dtype=torch.bool)
+        for i in range(n - 1):
+            strength[i, i + 1] = strength[i + 1, i] = True
+
+        call_count = 0
+        original_tolist = torch.Tensor.tolist
+
+        def counting_tolist(tensor: torch.Tensor) -> list:
+            nonlocal call_count
+            call_count += 1
+            return original_tolist(tensor)
+
+        monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
+        standard_aggregation(strength)
+
+        assert call_count <= 2, (
+            f"expected O(1) host syncs building neighbor lists, got {call_count} "
+            f"for n={n} nodes - one-per-row indicates the O(n) sync regression"
+        )
+
 
 # ---------------------------------------------------------------------------
 # AggregationCoarsening
