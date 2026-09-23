@@ -837,10 +837,10 @@ class TestAMGPresets:
         poisson_1d: torch.Tensor,
         poisson_rhs: torch.Tensor,
     ) -> None:
-        """FCG preconditioned with either preset must converge on 1D Poisson."""
+        """FCG with three-level AMG must handle inference-created coarse matrices."""
         from torchalg import flexible_cg
 
-        precond = amg_preset_class(poisson_1d, n_levels=2)
+        precond = amg_preset_class(poisson_1d, n_levels=3)
         x, info = flexible_cg(poisson_1d, poisson_rhs, preconditioner=precond, rtol=1e-8)
         assert info.converged, f"{amg_preset_class.__name__}+FCG did not converge: {info}"
         torch.testing.assert_close(poisson_1d @ x, poisson_rhs, rtol=1e-6, atol=1e-6)

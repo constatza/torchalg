@@ -46,6 +46,13 @@ def exact_radius(poisson_matrix: torch.Tensor) -> float:
 
 
 @pytest.fixture
+def inference_poisson_matrix(poisson_matrix: torch.Tensor) -> torch.Tensor:
+    """Poisson matrix created under inference mode, without a version counter."""
+    with torch.inference_mode():
+        return poisson_matrix.clone()
+
+
+@pytest.fixture
 def high_radius_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
     """SPD ``0.1 I + 0.9 ones``: rho(D^-1 A) ~ 9, far above 3, so a fixed omega=0.67 diverges."""
     n = 10
@@ -91,14 +98,12 @@ class TestSpectralRadius:
         jacobi_spectral_radius(fresh)
         assert len(estimator_calls) == 1
 
-    def test_in_place_modification_invalidates_the_cache(
-        self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
+    def test_is_cached_for_inference_tensor(
+        self, inference_poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
-        fresh = poisson_matrix.clone()
-        first = jacobi_spectral_radius(fresh)
-        fresh.diagonal().mul_(2.0)
-        assert jacobi_spectral_radius(fresh) != first
-        assert len(estimator_calls) == 2
+        jacobi_spectral_radius(inference_poisson_matrix)
+        jacobi_spectral_radius(inference_poisson_matrix)
+        assert len(estimator_calls) == 1
 
 
 class TestRules:

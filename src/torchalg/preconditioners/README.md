@@ -83,8 +83,10 @@ step on the tentative prolongator at setup) uses `omega = (4/3) / rho`
 (Vanek, Mandel & Brezina 1996). `None` selects the rule, a float fixes the
 value. `rho` is a seeded, hence deterministic, Arnoldi estimate
 (`_spectral.approximate_spectral_radius`), cached per matrix object and
-invalidated on in-place modification, so the smoother and the prolongation
-smoothing of the same level, and every `apply`, share one estimate per level.
+held only for that tensor object's lifetime. Matrices are treated as immutable;
+callers that need different matrix values must use a different tensor object.
+The smoother and prolongation smoothing of the same level, and every `apply`,
+therefore share one estimate per level.
 For `rho ~= 2` the rules give about 0.5 and 0.67; unlike a fixed 0.67 they keep
 the smoother convergent when `rho > 3` (`omega` must stay below `2 / rho`).
 The POD helpers `apply_jacobi_damping[_trajectory]` and

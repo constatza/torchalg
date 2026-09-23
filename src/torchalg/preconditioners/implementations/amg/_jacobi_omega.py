@@ -9,11 +9,11 @@ divided by its spectral radius ``rho`` (PyAMG's rules):
 
 ``rho`` is estimated with the restarted-Arnoldi routine of ``_spectral.py``,
 started from a fixed seed so it is deterministic, and cached per matrix
-object (invalidated if the tensor is modified in place), so the smoother and
-the prolongator smoothing of the same level - and every ``apply`` - share a
-single estimate. An explicit float always overrides the rule. Unlike a fixed
-0.67, the rule keeps the iteration convergent when ``rho`` is well above 2
-(``omega`` must stay below ``2 / rho``).
+object, so the smoother and the prolongator smoothing of the same level - and
+every ``apply`` - share a single estimate. Matrices are treated as immutable:
+the entry lives only as long as that exact tensor object. An explicit float
+always overrides the rule. Unlike a fixed 0.67, the rule keeps the iteration
+convergent when ``rho`` is well above 2 (``omega`` must stay below ``2 / rho``).
 
 References:
     - PyAMG 5.3.0, ``relaxation/smoothing.py`` (``rho_D_inv_A``) and
@@ -36,7 +36,7 @@ PROLONGATION_NOMINAL = 4.0 / 3.0
 """Nominal Jacobi damping for prolongator smoothing: ``omega = (4/3) / rho``."""
 
 _SEED = 0
-_cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], int, float]] = {}
+_cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], float]] = {}
 
 
 def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
@@ -77,10 +77,10 @@ def jacobi_spectral_radius(matrix: torch.Tensor) -> float:
     """
     key = id(matrix)
     entry = _cache.get(key)
-    if entry is not None and entry[0]() is matrix and entry[1] == matrix._version:
-        return entry[2]
+    if entry is not None and entry[0]() is matrix:
+        return entry[1]
     rho = approximate_spectral_radius(scaled_by_inverse_diagonal(matrix), _seeded_draw)
-    _cache[key] = (weakref.ref(matrix, lambda _: _cache.pop(key, None)), matrix._version, rho)
+    _cache[key] = (weakref.ref(matrix, lambda _: _cache.pop(key, None)), rho)
     return rho
 
 
