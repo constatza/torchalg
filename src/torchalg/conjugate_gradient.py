@@ -89,7 +89,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         """Create iteration-zero CG state."""
         u = torch.zeros_like(b) if x0 is None else x0.clone()
         r = b - linear_op(u)
-        residual_norm = float(torch.linalg.norm(r))
+        residual_norm = torch.linalg.norm(r)
         rhs_norm = self.convergence_criterion.norm(b)
         initial_state = SolverState(
             iteration=0,
@@ -129,10 +129,11 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         energy_decrement = alpha * rw_curr
         u_new = state.u + alpha * d
         r_new = state.r - alpha * q
-        residual_norm_new = float(torch.linalg.norm(r_new))
+        residual_norm_new = torch.linalg.norm(r_new)
+        rhs_norm_float = float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
         residual_history = state.residual_history.add(
             norm_abs=residual_norm_new,
-            norm_rel=self._compute_relative_residual(residual_norm_new, state.rhs_norm),
+            norm_rel=self._compute_relative_residual(residual_norm_new, rhs_norm_float),
         )
         direction_history = self._updated_direction_history(state, d, q)
         new_iteration = state.iteration + 1
@@ -185,6 +186,8 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             state,
             self.convergence_criterion,
         )
+        # Convert rhs_norm to float if needed for history extraction
+        rhs_norm_for_history = float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
         (
             residual_abs_hist,
             residual_rel_hist,
@@ -193,7 +196,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             direction_vectors,
             error_history_a_norm,
             energy_decrements,
-        ) = self._extract_histories_from_iteration_history(state.rhs_norm)
+        ) = self._extract_histories_from_iteration_history(rhs_norm_for_history)
         if residual_abs_hist is None and self.iteration_history is not None:
             residual_abs_hist = tuple(state.residual_history.norms_abs)
             residual_rel_hist = tuple(state.residual_history.norms_rel)
@@ -202,12 +205,16 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         diagnostics = self._diagnostics(state, converged, breakdown)
         stopping_criterion = self._stopping_criterion(state, converged, breakdown, maxiter)
 
+        # Convert tensor-or-float norms to float for SolverResult (Phase 3 will handle this conversion internally)
+        residual_norm_float = float(state.residual_norm) if isinstance(state.residual_norm, torch.Tensor) else state.residual_norm
+        rhs_norm_float = float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+
         return SolverResult(
             converged=converged,
             iterations=state.iteration,
-            residual=self._compute_relative_residual(state.residual_norm, state.rhs_norm),
-            residual_abs=state.residual_norm,
-            rhs_norm=state.rhs_norm,
+            residual=self._compute_relative_residual(residual_norm_float, rhs_norm_float),
+            residual_abs=residual_norm_float,
+            rhs_norm=rhs_norm_float,
             breakdown=breakdown,
             info=self._info_code(converged, breakdown, state, maxiter),
             residual_history_rel=residual_rel_hist,
@@ -243,9 +250,22 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             return state.direction_history
         return state.direction_history.add(direction, matrix_product)
 
-    def _compute_relative_residual(self, abs_residual: float, rhs_norm: float) -> float:
-        """Compute relative residual with zero-RHS fallback."""
-        return abs_residual / rhs_norm if rhs_norm > 1e-14 else abs_residual
+    def _compute_relative_residual[T: (float, torch.Tensor)](
+        self, abs_residual: T, rhs_norm: float
+    ) -> T:
+        """Compute relative residual with zero-RHS fallback.
+
+        Generic over the type of abs_residual (float or 0-d tensor).
+        Preserves the input type in the output.
+
+        Args:
+            abs_residual: The absolute residual (float or 0-d tensor).
+            rhs_norm: The RHS norm (float).
+
+        Returns:
+            The relative residual, same type as abs_residual.
+        """
+        return abs_residual / rhs_norm if rhs_norm > 1e-14 else abs_residual  # type: ignore[return-value]
 
     def _diagnostics(
         self,

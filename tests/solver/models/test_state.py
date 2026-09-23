@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Any, cast
 
 import pytest
 import torch
@@ -178,3 +179,53 @@ class TestCGState:
         """Mutating a field after construction raises."""
         with pytest.raises(dataclasses.FrozenInstanceError):
             cg_state.rw_prev = 1.0  # ty: ignore[invalid-assignment]
+
+    def test_tensor_residual_norm_construction_no_sync(self) -> None:
+        """Constructing SolverState with tensor residual_norm doesn't force bool conversion."""
+        bool_call_count = 0
+        original_bool = torch.Tensor.__bool__
+
+        def counting_bool(self: Any) -> bool:
+            nonlocal bool_call_count
+            bool_call_count += 1
+            return original_bool(self)
+
+        torch.Tensor.__bool__ = cast(Any, counting_bool)
+        try:
+            state = SolverState(
+                iteration=0,
+                converged=False,
+                breakdown=False,
+                divergence=False,
+                residual_norm=torch.tensor(1.0),
+                rhs_norm=1.0,
+            )
+            assert bool_call_count == 0, f"Expected 0 bool() calls, got {bool_call_count}"
+            assert isinstance(state.residual_norm, torch.Tensor)
+        finally:
+            torch.Tensor.__bool__ = original_bool
+
+    def test_tensor_rhs_norm_construction_no_sync(self) -> None:
+        """Constructing SolverState with tensor rhs_norm doesn't force bool conversion."""
+        bool_call_count = 0
+        original_bool = torch.Tensor.__bool__
+
+        def counting_bool(self: Any) -> bool:
+            nonlocal bool_call_count
+            bool_call_count += 1
+            return original_bool(self)
+
+        torch.Tensor.__bool__ = cast(Any, counting_bool)
+        try:
+            state = SolverState(
+                iteration=0,
+                converged=False,
+                breakdown=False,
+                divergence=False,
+                residual_norm=1.0,
+                rhs_norm=torch.tensor(1.0),
+            )
+            assert bool_call_count == 0, f"Expected 0 bool() calls, got {bool_call_count}"
+            assert isinstance(state.rhs_norm, torch.Tensor)
+        finally:
+            torch.Tensor.__bool__ = original_bool

@@ -61,13 +61,20 @@ class PreconditionerContext:
 
     Attributes:
         iteration (int): Current solver iteration number (0-indexed).
-        residual_norm (float): ``||r_k||`` at the current iteration.
-        rhs_norm (float): ``||b||`` (constant throughout the solve).
+        residual_norm (torch.Tensor | float): ``||r_k||`` at the current
+            iteration. A 0-d tensor or float; may be a tensor to avoid
+            forced device syncs. Preconditioners reading the VALUE of this
+            field (not just passing it through) will incur a sync cost at
+            that point — that cost belongs to whichever preconditioner
+            author actually needs the value, not to every solve.
+        rhs_norm (torch.Tensor | float): ``||b||`` (constant throughout the
+            solve; 0-d tensor or float). Same sync considerations as
+            ``residual_norm``.
     """
 
     iteration: int
-    residual_norm: float
-    rhs_norm: float
+    residual_norm: torch.Tensor | float
+    rhs_norm: torch.Tensor | float
 
 
 class Preconditioner(ABC):

@@ -173,7 +173,7 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
         if len(d_vectors) == 0:
             return result, OrthogonalizationReport(coefficients=())
 
-        coefficients: list[float] = []
+        coefficients: list[torch.Tensor | float] = []
         for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
             numerator = stable_dot_product(result, q_j)
             denominator = stable_dot_product(d_j, q_j)
@@ -205,7 +205,7 @@ def _orthogonalize_classical(
     q_vectors: Sequence[torch.Tensor],
 ) -> tuple[torch.Tensor, OrthogonalizationReport]:
     """Apply classical A-conjugacy Gram-Schmidt to selected history."""
-    coefficients: list[float] = []
+    coefficients: list[torch.Tensor | float] = []
 
     for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
         numerator = stable_dot_product(vector, q_j)
@@ -220,13 +220,21 @@ def _orthogonalize_classical(
 def _build_report(
     vector: torch.Tensor,
     result: torch.Tensor,
-    coefficients: list[float],
+    coefficients: list[float | torch.Tensor],
 ) -> OrthogonalizationReport:
-    """Build an orthogonalization report with breakdown classification."""
+    """Build an orthogonalization report with breakdown classification.
+
+    Coefficients may be floats or 0-d tensors; converted to float for the report.
+    """
     result_norm = float(torch.linalg.norm(result))
     vector_norm = float(torch.linalg.norm(vector))
     breakdown = result_norm < REORTHOG_ZERO_NORM_TOL * max(vector_norm, 1.0)
+    # Convert any tensor coefficients to float for the report
+    coeff_floats = tuple(
+        float(c) if isinstance(c, torch.Tensor) else c
+        for c in coefficients
+    )
     return OrthogonalizationReport(
-        coefficients=tuple(coefficients),
+        coefficients=coeff_floats,
         breakdown=breakdown,
     )

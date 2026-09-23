@@ -16,6 +16,7 @@ systems.
 - [Quickstart](#quickstart)
 - [Capabilities](#capabilities)
   - [`pcg` vs `flexible_cg`](#pcg-vs-flexible_cg)
+  - [Autograd and `differentiable`](#autograd-and-differentiable)
   - [Using a preconditioner](#using-a-preconditioner)
   - [Moving a preconditioner to a device or dtype](#moving-a-preconditioner-to-a-device-or-dtype)
   - [Running on GPU](#running-on-gpu)
@@ -141,6 +142,20 @@ Output:
 ```text
 pcg: True 14
 fcg: True 14
+```
+
+### Autograd and `differentiable`
+
+Both solvers run under `torch.inference_mode()` by default: most callers use
+an already-trained, frozen preconditioner and never backpropagate through
+the solve itself, so tracking autograd by default would only build a graph
+every call and immediately discard it. Pass `differentiable=True` to opt
+back into normal gradient tracking, e.g. to unroll the iteration and train a
+preconditioner end-to-end:
+
+```python
+x, info = pcg(A, b, preconditioner=precond, differentiable=True)
+x.sum().backward()
 ```
 
 ### Using a preconditioner

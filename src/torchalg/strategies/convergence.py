@@ -81,6 +81,28 @@ class IConvergenceCriterion(ABC):
             bool: True if converged, False otherwise.
         """
 
+    def has_converged_from_norm(self, residual_norm: float, rhs_norm: float) -> bool:
+        """Same check as ``has_converged``, given an already-computed residual norm.
+
+        Skips recomputing ``self.norm(residual)`` — and, for a CUDA residual,
+        the blocking device sync that recompute would force — when the
+        caller already has the value from elsewhere (e.g. a solver's
+        per-iteration state). Callers must only pass a ``residual_norm``
+        that was computed with this criterion's own ``norm`` function;
+        otherwise the comparison is against the wrong quantity.
+
+        Args:
+            residual_norm (float): ``self.norm(residual)``, already computed.
+            rhs_norm (float): Norm of the right-hand side ``||b||``.
+
+        Returns:
+            bool: True if ``residual_norm <= threshold(rhs_norm)``, False
+                otherwise (including when either input is non-finite).
+        """
+        if not math.isfinite(residual_norm) or not math.isfinite(rhs_norm):
+            return False
+        return bool(residual_norm <= self.threshold(rhs_norm))
+
 
 @dataclass(frozen=True, slots=True)
 class CombinedToleranceCriterion(IConvergenceCriterion):
@@ -133,9 +155,4 @@ class CombinedToleranceCriterion(IConvergenceCriterion):
                 otherwise. Returns False if residual norm or rhs_norm is
                 non-finite (NaN/Inf).
         """
-        residual_norm = self.norm(residual)
-
-        if not math.isfinite(residual_norm) or not math.isfinite(rhs_norm):
-            return False
-
-        return bool(residual_norm <= self.threshold(rhs_norm))
+        return self.has_converged_from_norm(self.norm(residual), rhs_norm)

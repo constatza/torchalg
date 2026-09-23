@@ -178,8 +178,8 @@ class HasEnergyDecrement(Protocol):
           conjugate gradient method. ETNA 13, 56-80.
     """
 
-    energy_decrement: float | None
-    """This iteration's ``alpha_k * rho_k``, or ``None`` before the first step."""
+    energy_decrement: torch.Tensor | float | None
+    """This iteration's ``alpha_k * rho_k`` (0-d tensor or float), or ``None`` before the first step."""
 
 
 @runtime_checkable

@@ -57,7 +57,7 @@ def _overflow_scale_threshold(dtype: torch.dtype) -> float:
     return math.sqrt(overflow_threshold)
 
 
-def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> float:
+def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Compute a dot product with overflow prevention via balanced scaling.
 
     Mathematically equivalent to ``torch.dot(a, b)`` but scales both vectors
@@ -76,25 +76,26 @@ def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> float:
         b (torch.Tensor): Second vector for dot product, shape ``(n,)``.
 
     Returns:
-        float: Dot product ``a^T b``, computed stably to avoid overflow.
+        torch.Tensor: A 0-d tensor containing dot product ``a^T b``,
+            computed stably to avoid overflow.
 
     Example:
         >>> import torch
         >>> stable_dot_product(torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0]))
-        11.0
+        tensor(11.)
     """
     max_a = a.abs().max()
     max_b = b.abs().max()
 
     sqrt_threshold = _overflow_scale_threshold(torch.result_type(a, b))
+    target = math.sqrt(sqrt_threshold)
 
-    if max_a > sqrt_threshold or max_b > sqrt_threshold:
-        # At least one value is large - need to scale both vectors by the
-        # same factor to keep the product safe:
-        # dot(a, b) = (1 / scale^2) * dot(a * scale, b * scale)
-        max_val = torch.maximum(max_a, max_b)
-        target = math.sqrt(sqrt_threshold)
-        scale = target / max_val
-        return float(torch.dot(a * scale, b * scale) / (scale * scale))
+    max_val = torch.maximum(max_a, max_b)
+    needs_scaling = max_val > sqrt_threshold
 
-    return float(torch.dot(a, b))
+    # Guard the denominator to avoid NaN in untaken torch.where branch
+    ones = torch.ones_like(max_val)
+    safe_max_val = torch.where(needs_scaling, max_val, ones)
+    scale = torch.where(needs_scaling, target / safe_max_val, ones)
+
+    return torch.dot(a * scale, b * scale) / (scale * scale)

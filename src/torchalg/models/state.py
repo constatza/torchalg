@@ -75,23 +75,28 @@ class SolverState:
     divergence: bool
     """Whether divergence detected. Triggers residual recomputation."""
 
-    residual_norm: float
-    """Current residual norm ||r_k||_2."""
+    residual_norm: torch.Tensor | float
+    """Current residual norm ||r_k||_2 (0-d tensor or float)."""
 
-    rhs_norm: float
-    """Right-hand side norm ||b||_2 (constant throughout solve)."""
+    rhs_norm: torch.Tensor | float
+    """Right-hand side norm ||b||_2 (constant throughout solve; 0-d tensor or float)."""
 
     def __post_init__(self) -> None:
         """Validate state invariants.
+
+        Tensor-valued fields skip comparison checks since they would force
+        device syncs; only float-literal misuse from direct construction is
+        validated. ``torch.linalg.norm`` structurally guarantees non-negative
+        results, so tensor-valued norms are always valid.
 
         Raises:
             ValueError: If state has inconsistent fields.
         """
         if self.iteration < 0:
             raise ValueError(f"iteration must be >= 0, got {self.iteration}")
-        if self.residual_norm < 0:
+        if not isinstance(self.residual_norm, torch.Tensor) and self.residual_norm < 0:
             raise ValueError(f"residual_norm must be >= 0, got {self.residual_norm}")
-        if self.rhs_norm < 0:
+        if not isinstance(self.rhs_norm, torch.Tensor) and self.rhs_norm < 0:
             raise ValueError(f"rhs_norm must be >= 0, got {self.rhs_norm}")
 
 
@@ -179,9 +184,10 @@ class CGState(KrylovState):
         r_prev (torch.Tensor | None): Previous residual r_{k-1} (for
             two-term recurrence). Used by ``TwoTermRecurrenceStrategy`` to
             compute the beta coefficient.
-        rw_prev (float): Previous inner product (r_{k-1}, w_{k-1}) (for
-            two-term recurrence). Used by ``TwoTermRecurrenceStrategy`` to
-            compute the beta coefficient.
+        rw_prev (torch.Tensor | float): Previous inner product
+            (r_{k-1}, w_{k-1}) (for two-term recurrence; 0-d tensor or
+            float). Used by ``TwoTermRecurrenceStrategy`` to compute the beta
+            coefficient.
         ortho_breakdown_at (int | None): Iteration at which FCG's
             orthogonalization first reported breakdown (near-zero result,
             loss of A-conjugacy), or ``None`` if it never occurred so far.
@@ -190,10 +196,11 @@ class CGState(KrylovState):
             ``_check_stopping`` (Notay 2000 treats truncated-orthogonalization
             quality loss as a convergence-rate signal, not a hard breakdown
             requiring termination).
-        energy_decrement (float | None): This step's exact
+        energy_decrement (torch.Tensor | float | None): This step's exact
             ``alpha_k * rho_k``, the decrease in ``||e_k||_A^2`` (Golub &
-            Meurant 1994). ``None`` for the initial state, before any step.
-            See ``torchalg.models.protocols.HasEnergyDecrement``.
+            Meurant 1994; 0-d tensor or float). ``None`` for the initial
+            state, before any step. See
+            ``torchalg.models.protocols.HasEnergyDecrement``.
 
     Theory (Notay 2000):
         FCG maintains a window of previous search directions to
@@ -245,14 +252,14 @@ class CGState(KrylovState):
     r_prev: torch.Tensor | None
     """Previous residual r_{k-1} (for two-term recurrence)."""
 
-    rw_prev: float
-    """Previous inner product (r_{k-1}, w_{k-1}) (for two-term recurrence)."""
+    rw_prev: torch.Tensor | float
+    """Previous inner product (r_{k-1}, w_{k-1}) (for two-term recurrence; 0-d tensor or float)."""
 
     ortho_breakdown_at: int | None = None
     """Iteration of first-detected orthogonalization breakdown, or None."""
 
-    energy_decrement: float | None = None
-    """This step's exact alpha_k * rho_k (decrease in ||e_k||_A^2), or None initially."""
+    energy_decrement: torch.Tensor | float | None = None
+    """This step's exact alpha_k * rho_k (decrease in ||e_k||_A^2, 0-d tensor or float), or None initially."""
 
     @classmethod
     def create_initial(

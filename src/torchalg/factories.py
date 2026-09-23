@@ -52,6 +52,8 @@ def flexible_cg(
     maxiter: int | None = None,
     trace_mode: TraceMode | str = TraceMode.MINIMAL,
     x_exact: torch.Tensor | None = None,
+    differentiable: bool = False,
+    device: torch.device | None = None,
 ) -> tuple[torch.Tensor, SolverResult]:
     """Solve ``A x = b`` with Flexible Conjugate Gradient (Notay 2000).
 
@@ -99,6 +101,13 @@ def flexible_cg(
             exact ``||u_k - x_exact||_A`` per iteration, regardless of
             ``trace_mode`` - this is a single cheap dot product per
             iteration, not a stored vector history.
+        differentiable (bool): When ``False`` (default), the solve runs
+            under ``torch.inference_mode()`` since most callers use a
+            frozen preconditioner and never backpropagate through the
+            solve. Set ``True`` to keep normal autograd tracking, e.g. to
+            train a preconditioner by unrolling the iteration.
+        device (torch.device | None): Overrides automatic CUDA/CPU
+            resolution when given. See ``IterativeSolverBase.solve``.
 
     Returns:
         tuple[torch.Tensor, SolverResult]: Final solution and diagnostics.
@@ -113,7 +122,16 @@ def flexible_cg(
         iteration_history=_iteration_history(trace_mode_enum, x_exact=x_exact),
         trace_mode=trace_mode_enum,
     )
-    return solver.solve(A, b, x0, rtol=rtol, atol=atol, maxiter=maxiter)
+    return solver.solve(
+        A,
+        b,
+        x0,
+        rtol=rtol,
+        atol=atol,
+        maxiter=maxiter,
+        differentiable=differentiable,
+        device=device,
+    )
 
 
 def pcg(
@@ -131,6 +149,8 @@ def pcg(
     beta_formula: str = "fletcher_reeves",
     trace_mode: TraceMode | str = TraceMode.MINIMAL,
     x_exact: torch.Tensor | None = None,
+    differentiable: bool = False,
+    device: torch.device | None = None,
 ) -> tuple[torch.Tensor, SolverResult]:
     """Solve ``A x = b`` with Preconditioned Conjugate Gradient.
 
@@ -182,6 +202,13 @@ def pcg(
             exact ``||u_k - x_exact||_A`` per iteration, regardless of
             ``trace_mode`` - this is a single cheap dot product per
             iteration, not a stored vector history.
+        differentiable (bool): When ``False`` (default), the solve runs
+            under ``torch.inference_mode()`` since most callers use a
+            frozen preconditioner and never backpropagate through the
+            solve. Set ``True`` to keep normal autograd tracking, e.g. to
+            train a preconditioner by unrolling the iteration.
+        device (torch.device | None): Overrides automatic CUDA/CPU
+            resolution when given. See ``IterativeSolverBase.solve``.
 
     Returns:
         tuple[torch.Tensor, SolverResult]: Final solution and diagnostics.
@@ -202,7 +229,16 @@ def pcg(
         iteration_history=_iteration_history(trace_mode_enum, x_exact=x_exact),
         trace_mode=trace_mode_enum,
     )
-    return solver.solve(A, b, x0, rtol=rtol_value, atol=atol, maxiter=maxiter)
+    return solver.solve(
+        A,
+        b,
+        x0,
+        rtol=rtol_value,
+        atol=atol,
+        maxiter=maxiter,
+        differentiable=differentiable,
+        device=device,
+    )
 
 
 def _coerce_preconditioner(

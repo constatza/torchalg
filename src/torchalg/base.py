@@ -14,7 +14,9 @@ from torchalg.models.state import SolverState
 from torchalg.monitoring import IterationHistory, TraceMode
 from torchalg.preconditioners.base import Preconditioner, PreconditionerContext
 from torchalg.strategies.convergence import IConvergenceCriterion
+from torchalg.strategies.norms import euclidean_norm
 from torchalg.utils.device import resolve_device
+from torchalg.utils.grad_mode import inference_unless_differentiable
 from torchalg.utils.validation import validate_matrix, validate_rhs_vector
 
 DEFAULT_RTOL = 1e-6
@@ -45,6 +47,8 @@ class IterativeSolverBase[S: SolverState](ABC):
         rtol: float | None = None,
         atol: float | None = None,
         maxiter: int | None = None,
+        differentiable: bool = False,
+        device: torch.device | None = None,
     ) -> tuple[torch.Tensor, SolverResult]:
         """Solve ``A x = b`` using the concrete iterative method.
 
@@ -56,29 +60,55 @@ class IterativeSolverBase[S: SolverState](ABC):
         explicitly (``.detach().cpu().numpy()``), and forcing a transfer
         here would be a wasted round-trip for callers chaining further GPU
         work.
+
+        Args:
+            A: System matrix, or a callable computing ``A @ v``.
+            b: Right-hand side, shape ``(n,)``.
+            x0: Initial guess; defaults to the zero vector.
+            rtol: Relative residual tolerance; defaults to
+                :data:`DEFAULT_RTOL`.
+            atol: Absolute residual tolerance; defaults to
+                :data:`DEFAULT_ATOL`.
+            maxiter: Maximum iterations; defaults to ``10 * n``.
+            differentiable: When ``False`` (default), the whole solve runs
+                under ``torch.inference_mode()`` — most callers use a
+                frozen preconditioner and never need gradients through the
+                solve, so tracking autograd by default only builds graphs
+                nobody uses. Set ``True`` to keep normal autograd tracking,
+                e.g. to backpropagate through an unrolled solve.
+            device: Overrides automatic CUDA/CPU resolution when given. The
+                convergence check pulls a Python float off the residual
+                every iteration, which forces a blocking device sync — for
+                many small, short solves (e.g. per-sample dataset
+                generation) that sync cost dwarfs the matvec it guards, so
+                auto-placing onto CUDA there is actively slower than CPU.
+                Callers who know their system is small should pin
+                ``torch.device("cpu")`` explicitly instead of relying on
+                automatic resolution.
         """
-        self._validate_system(A, b, x0)
-        A, b, x0 = self._place_on_device(A, b, x0)
+        with inference_unless_differentiable(differentiable):
+            self._validate_system(A, b, x0)
+            A, b, x0 = self._place_on_device(A, b, x0, device=device)
 
-        rtol_eff = DEFAULT_RTOL if rtol is None else rtol
-        atol_eff = DEFAULT_ATOL if atol is None else atol
-        maxiter_eff = 10 * b.numel() if maxiter is None else maxiter
-        linear_op = self._prepare_operator(A)
+            rtol_eff = DEFAULT_RTOL if rtol is None else rtol
+            atol_eff = DEFAULT_ATOL if atol is None else atol
+            maxiter_eff = 10 * b.numel() if maxiter is None else maxiter
+            linear_op = self._prepare_operator(A)
 
-        state = self._initialize_state(linear_op, b, x0, maxiter=maxiter_eff)
-        self._log_state(state)
-
-        while not self._check_stopping(state, rtol_eff, atol_eff, maxiter_eff):
-            state = self._iterate_step(linear_op, state)
+            state = self._initialize_state(linear_op, b, x0, maxiter=maxiter_eff)
             self._log_state(state)
 
-        if not isinstance(state, HasVectors):
-            # Internal invariant check, not caller input validation - the loop
-            # above must always leave state satisfying HasVectors; RuntimeError
-            # is correct here, not TypeError (TRY004 doesn't distinguish the two).
-            raise RuntimeError("Final solution not found in state")  # noqa: TRY004
+            while not self._check_stopping(state, rtol_eff, atol_eff, maxiter_eff):
+                state = self._iterate_step(linear_op, state)
+                self._log_state(state)
 
-        return state.u, self._build_result(state, rtol_eff, atol_eff, maxiter=maxiter_eff)
+            if not isinstance(state, HasVectors):
+                # Internal invariant check, not caller input validation - the loop
+                # above must always leave state satisfying HasVectors; RuntimeError
+                # is correct here, not TypeError (TRY004 doesn't distinguish the two).
+                raise RuntimeError("Final solution not found in state")  # noqa: TRY004
+
+            return state.u, self._build_result(state, rtol_eff, atol_eff, maxiter=maxiter_eff)
 
     def check_convergence(
         self,
@@ -94,10 +124,31 @@ class IterativeSolverBase[S: SolverState](ABC):
         state: S,
         criterion: IConvergenceCriterion,
     ) -> bool:
-        """Check convergence for states that expose residual vectors."""
-        if isinstance(state, HasVectors):
-            return self.check_convergence(state.r, state.rhs_norm, criterion)
-        return False
+        """Check convergence for states that expose residual vectors.
+
+        ``state.residual_norm`` is always the Euclidean norm of ``state.r``
+        (``_iterate_step`` computes it that way unconditionally). When the
+        criterion's own norm is that same default, its convergence check is
+        answered directly from the already-known value instead of calling
+        ``criterion.has_converged(state.r, ...)``, which would recompute
+        ``||state.r||`` from the tensor — a second, redundant pass that on a
+        CUDA residual is a second blocking device sync for a number this
+        method already has. A criterion using any other norm (e.g. the
+        A-norm) still takes the tensor path, since only the Euclidean case
+        matches what ``state.residual_norm`` holds.
+        """
+        if not isinstance(state, HasVectors):
+            return False
+        # Convert tensor-valued norms to float if needed
+        residual_norm = state.residual_norm
+        if isinstance(residual_norm, torch.Tensor):
+            residual_norm = float(residual_norm)
+        rhs_norm = state.rhs_norm
+        if isinstance(rhs_norm, torch.Tensor):
+            rhs_norm = float(rhs_norm)
+        if criterion.norm is euclidean_norm:
+            return criterion.has_converged_from_norm(residual_norm, rhs_norm)
+        return self.check_convergence(state.r, rhs_norm, criterion)
 
     def _validate_system(
         self,
@@ -125,29 +176,37 @@ class IterativeSolverBase[S: SolverState](ABC):
         A: LinearSystemOperator,
         b: torch.Tensor,
         x0: torch.Tensor | None,
+        *,
+        device: torch.device | None = None,
     ) -> tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
-        """Move the system and preconditioner onto the autodetected device.
+        """Move the system and preconditioner onto the given or autodetected device.
 
-        Mirrors Lightning-style automatic GPU placement: callers never
-        choose a device explicitly, this always picks CUDA when available.
-        ``A``/``b``/``x0`` are moved first since a failed ``.to()`` on a
-        local variable leaves nothing mutated; ``self.preconditioner`` is
-        moved last since ``nn.Module.to()`` mutates its buffers in place and
-        could otherwise be left half-moved by a failure moving the (usually
-        larger) system tensors. A matvec callable for ``A`` is left
-        untouched — its device is the caller's responsibility, since
-        torchalg cannot reach inside an opaque closure.
+        Mirrors Lightning-style automatic GPU placement by default: callers
+        who pass no ``device`` get CUDA whenever it's available. Passing an
+        explicit ``device`` opts out of that resolution entirely instead of
+        merely overriding its result, since a caller who already knows a
+        small solve is faster kept on CPU should not pay for a CUDA check it
+        doesn't need. ``A``/``b``/``x0`` are moved first since a failed
+        ``.to()`` on a local variable leaves nothing mutated;
+        ``self.preconditioner`` is moved last since ``nn.Module.to()``
+        mutates its buffers in place and could otherwise be left half-moved
+        by a failure moving the (usually larger) system tensors. A matvec
+        callable for ``A`` is left untouched — its device is the caller's
+        responsibility, since torchalg cannot reach inside an opaque
+        closure.
 
         Args:
             A (LinearSystemOperator): System matrix or matvec callable.
             b (torch.Tensor): RHS vector.
             x0 (torch.Tensor | None): Optional initial guess.
+            device (torch.device | None): Explicit target device; ``None``
+                auto-resolves via :func:`torchalg.utils.device.resolve_device`.
 
         Returns:
             tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
                 ``A``, ``b``, ``x0`` moved onto the resolved device.
         """
-        device = resolve_device()
+        device = device if device is not None else resolve_device()
         if isinstance(A, torch.Tensor):
             A = A.to(device)
         b = b.to(device)
@@ -228,9 +287,17 @@ class IterativeSolverBase[S: SolverState](ABC):
         energy_decrement = None
         if isinstance(state, HasEnergyDecrement):
             energy_decrement = state.energy_decrement
+            # Convert tensor-valued energy_decrement to float if needed
+            if isinstance(energy_decrement, torch.Tensor):
+                energy_decrement = float(energy_decrement)
+
+        # Convert tensor-valued residual_norm to float if needed
+        residual_norm = state.residual_norm
+        if isinstance(residual_norm, torch.Tensor):
+            residual_norm = float(residual_norm)
 
         self.iteration_history.log_iteration(
-            residual_norm=state.residual_norm,
+            residual_norm=residual_norm,
             residual=residual,
             solution=solution,
             direction=direction,
