@@ -487,17 +487,22 @@ class BAMGCoarsening:
         # linear solves. That's thousands of host<->device round trips for
         # genuinely tiny (caliber-sized) work if left on CUDA - each row's
         # stopping point depends on the previous row's chosen set only
-        # through shared `fit_vectors`/`weights`/`A`, not through any
-        # cross-row state, so unlike `fit_candidates`' aggregate loop
-        # (batched in `_tentative.py`, all aggregates fit in lockstep) this
-        # loop's per-row variable trip count doesn't reduce to a fixed
-        # small number of batched steps without padding every row to the
+        # through shared `fit_vectors`/`weights`, not through any cross-row
+        # state, so unlike `fit_candidates`' aggregate loop (batched in
+        # `_tentative.py`, all aggregates fit in lockstep) this loop's
+        # per-row variable trip count doesn't reduce to a fixed small
+        # number of batched steps without padding every row to the
         # worst-case caliber-growth trajectory - not worth the complexity
         # here. Running it CPU-resident instead removes the sync cost
         # entirely (CPU `.item()` needs no device round trip), paying one
-        # one-time transfer of the row-loop's working tensors up front.
+        # one-time transfer of the row-loop's working tensors up front. `A`
+        # itself is NOT among those transfers: `select_interpolatory_set`
+        # accepts a `matrix` argument only for call-signature parity with
+        # every other per-row AMG kernel and never reads it (see its
+        # docstring), so shipping the whole dense (n, n) `A` to host on
+        # every call here would be a pure-waste PCIe transfer, dwarfing
+        # everything this loop actually saves. Pass `A` through unchanged.
         fit_vectors_cpu = fit_vectors.cpu()
-        A_cpu = A.cpu()
         weights_cpu = weights.cpu()
         distance_cpu = distance.cpu()
         coarse_index_cpu = coarse_index.cpu()
@@ -513,7 +518,7 @@ class BAMGCoarsening:
                 else coarse_points_cpu
             )
             interp_set = select_interpolatory_set(
-                candidates, fit_vectors_cpu, A_cpu, i, weights_cpu, self._caliber, gamma=self._gamma
+                candidates, fit_vectors_cpu, A, i, weights_cpu, self._caliber, gamma=self._gamma
             )
             if interp_set.numel() == 0 and candidates.numel() > 0:
                 interp_set = self._strongest_candidate(candidates, distance_cpu[i])
