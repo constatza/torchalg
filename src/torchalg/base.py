@@ -287,17 +287,13 @@ class IterativeSolverBase[S: SolverState](ABC):
         energy_decrement = None
         if isinstance(state, HasEnergyDecrement):
             energy_decrement = state.energy_decrement
-            # Convert tensor-valued energy_decrement to float if needed
-            if isinstance(energy_decrement, torch.Tensor):
-                energy_decrement = float(energy_decrement)
 
-        # Convert tensor-valued residual_norm to float if needed
-        residual_norm = state.residual_norm
-        if isinstance(residual_norm, torch.Tensor):
-            residual_norm = float(residual_norm)
-
+        # residual_norm/energy_decrement may be 0-d tensors here; passed through
+        # unconverted since ScalarHistory.add() already casts to float internally
+        # (monitoring/storage.py) — converting here too would be a second,
+        # redundant device sync for the same value.
         self.iteration_history.log_iteration(
-            residual_norm=residual_norm,
+            residual_norm=state.residual_norm,
             residual=residual,
             solution=solution,
             direction=direction,

@@ -230,10 +230,7 @@ def _build_report(
     vector_norm = float(torch.linalg.norm(vector))
     breakdown = result_norm < REORTHOG_ZERO_NORM_TOL * max(vector_norm, 1.0)
     # Convert any tensor coefficients to float for the report
-    coeff_floats = tuple(
-        float(c) if isinstance(c, torch.Tensor) else c
-        for c in coefficients
-    )
+    coeff_floats = tuple(float(c) if isinstance(c, torch.Tensor) else c for c in coefficients)
     return OrthogonalizationReport(
         coefficients=coeff_floats,
         breakdown=breakdown,

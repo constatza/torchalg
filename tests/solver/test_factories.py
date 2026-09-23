@@ -390,3 +390,47 @@ def test_preconditioner_context_no_forced_syncs_with_tensor_norms(
         # Note: we can't control the convergence check's calls since it's needed anyway.
     finally:
         torch.Tensor.__bool__ = original_bool
+
+
+def test_pcg_skips_wasted_residual_history_when_iteration_history_tracks_it(
+    tridiagonal_spd_medium: NDArray,
+    rhs_ones_medium: NDArray,
+    to_torch: Callable[[NDArray], torch.Tensor],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``CGState.residual_history`` must not be updated when it can't be read back.
+
+    ``_build_result`` only ever falls back to ``state.residual_history`` when
+    ``self.iteration_history is None`` (``TraceMode.DISABLED``) — for any other
+    trace mode, ``IterationHistory.residual_norms`` is always already populated
+    by ``_log_state``, so the fallback branch never fires. Updating
+    ``residual_history`` every iteration regardless was pure waste: two
+    ``float()`` conversions per iteration (``norm_abs``, ``norm_rel``) for data
+    nobody ever reads under the default (``MINIMAL``) trace mode.
+
+    Fixed tolerances below machine precision force exactly ``maxiter``
+    iterations (never converges early), making the call count fully
+    deterministic: measured 5.6 ``float()`` calls/iteration before this fix,
+    3.6 after — a reduction of exactly 2/iteration, matching the two
+    conversions removed.
+    """
+    matrix = to_torch(tridiagonal_spd_medium)
+    rhs = to_torch(rhs_ones_medium)
+    maxiter = 10
+    real_float = torch.Tensor.__float__
+    call_count = 0
+
+    def _counting_float(self: torch.Tensor) -> float:
+        nonlocal call_count
+        call_count += 1
+        return real_float(self)
+
+    monkeypatch.setattr(torch.Tensor, "__float__", cast(Any, _counting_float))
+
+    _, result = pcg(matrix, rhs, rtol=1e-300, atol=1e-300, maxiter=maxiter)
+
+    assert result.iterations == maxiter
+    # Convergence check (~1/iter) + IterationHistory's residual_norms and
+    # energy_decrements tracking (2/iter, MINIMAL mode default) + a handful of
+    # one-time per-solve costs. Must stay well under the pre-fix ~5.6/iter.
+    assert call_count <= 4 * maxiter

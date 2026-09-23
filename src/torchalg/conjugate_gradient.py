@@ -130,11 +130,24 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         u_new = state.u + alpha * d
         r_new = state.r - alpha * q
         residual_norm_new = torch.linalg.norm(r_new)
-        rhs_norm_float = float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
-        residual_history = state.residual_history.add(
-            norm_abs=residual_norm_new,
-            norm_rel=self._compute_relative_residual(residual_norm_new, rhs_norm_float),
-        )
+        # `state.residual_history` is only ever read back in `_build_result` as a
+        # fallback when `self.iteration_history is None` (TraceMode.DISABLED) —
+        # whenever an IterationHistory is configured (MINIMAL/FULL), that object's
+        # own `residual_norms` is always already populated by `_log_state`, so this
+        # branch's data is provably never read. Skipping `.add()` there avoids two
+        # wasted tensor->float conversions per iteration for the common case.
+        if self.iteration_history is None:
+            rhs_norm_float = (
+                float(state.rhs_norm)
+                if isinstance(state.rhs_norm, torch.Tensor)
+                else state.rhs_norm
+            )
+            residual_history = state.residual_history.add(
+                norm_abs=residual_norm_new,
+                norm_rel=self._compute_relative_residual(residual_norm_new, rhs_norm_float),
+            )
+        else:
+            residual_history = state.residual_history
         direction_history = self._updated_direction_history(state, d, q)
         new_iteration = state.iteration + 1
         ortho_breakdown_at = state.ortho_breakdown_at
@@ -187,7 +200,9 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             self.convergence_criterion,
         )
         # Convert rhs_norm to float if needed for history extraction
-        rhs_norm_for_history = float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+        rhs_norm_for_history = (
+            float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+        )
         (
             residual_abs_hist,
             residual_rel_hist,
@@ -206,8 +221,14 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         stopping_criterion = self._stopping_criterion(state, converged, breakdown, maxiter)
 
         # Convert tensor-or-float norms to float for SolverResult (Phase 3 will handle this conversion internally)
-        residual_norm_float = float(state.residual_norm) if isinstance(state.residual_norm, torch.Tensor) else state.residual_norm
-        rhs_norm_float = float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+        residual_norm_float = (
+            float(state.residual_norm)
+            if isinstance(state.residual_norm, torch.Tensor)
+            else state.residual_norm
+        )
+        rhs_norm_float = (
+            float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+        )
 
         return SolverResult(
             converged=converged,

@@ -197,13 +197,17 @@ class ResidualHistory:
         """
         return cls(norms_abs=(), norms_rel=())
 
-    def add(self, norm_abs: float, norm_rel: float) -> ResidualHistory:
+    def add(
+        self, norm_abs: torch.Tensor | float, norm_rel: torch.Tensor | float
+    ) -> ResidualHistory:
         """Return new history with norms added (immutable update).
 
         Args:
-            norm_abs (float): Absolute residual norm ``||r_k||_2``.
-            norm_rel (float): Relative residual norm
-                ``||r_k||_2 / ||b||_2``.
+            norm_abs (torch.Tensor | float): Absolute residual norm
+                ``||r_k||_2``. May be a 0-d tensor; cast to float here.
+            norm_rel (torch.Tensor | float): Relative residual norm
+                ``||r_k||_2 / ||b||_2``. May be a 0-d tensor; cast to float
+                here.
 
         Returns:
             ResidualHistory: New history with norms appended.

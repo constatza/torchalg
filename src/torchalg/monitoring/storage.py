@@ -30,12 +30,12 @@ class ScalarHistory:
         """Create an empty scalar history."""
         return cls(values=())
 
-    def add(self, value: float) -> ScalarHistory:
-        """Return a new history with ``value`` appended."""
+    def add(self, value: torch.Tensor | float) -> ScalarHistory:
+        """Return a new history with ``value`` appended (cast to float here)."""
         return ScalarHistory(values=self.values + (float(value),))
 
-    def prepend(self, value: float) -> ScalarHistory:
-        """Return a new history with ``value`` prepended."""
+    def prepend(self, value: torch.Tensor | float) -> ScalarHistory:
+        """Return a new history with ``value`` prepended (cast to float here)."""
         return ScalarHistory(values=(float(value),) + self.values)
 
     def to_list(self) -> list[float]:

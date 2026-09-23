@@ -78,16 +78,19 @@ class IterationHistory:
 
     def log_iteration(
         self,
-        residual_norm: float,
+        residual_norm: torch.Tensor | float,
         residual: torch.Tensor | None = None,
         solution: torch.Tensor | None = None,
         direction: torch.Tensor | None = None,
-        energy_decrement: float | None = None,
+        energy_decrement: torch.Tensor | float | None = None,
     ) -> None:
         """Log data for one iteration.
 
         Args:
-            residual_norm: Absolute residual norm for this iteration.
+            residual_norm: Absolute residual norm for this iteration. May be
+                a 0-d tensor; ``ScalarHistory.add()`` casts to float itself,
+                so callers should not pre-convert (that would be a second,
+                redundant device sync for the same value).
             residual: Residual vector. Stored in ``FULL`` mode; also used
                 (without being stored) to compute ``error_norms`` when
                 ``x_exact`` is set.
