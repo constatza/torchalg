@@ -269,8 +269,8 @@ class CGState(KrylovState):
         w: torch.Tensor,
         d: torch.Tensor,
         q: torch.Tensor,
-        residual_norm: float,
-        rhs_norm: float,
+        residual_norm: torch.Tensor | float,
+        rhs_norm: torch.Tensor | float,
         max_history: int = 10,
     ) -> CGState:
         """Create initial CG state with empty histories.
@@ -283,8 +283,10 @@ class CGState(KrylovState):
             d (torch.Tensor): Initial search direction d_0 = w_0
                 (Notay 2000).
             q (torch.Tensor): Initial matrix-vector product q_0 = A d_0.
-            residual_norm (float): Initial residual norm ``||r_0||_2``.
-            rhs_norm (float): RHS norm ``||b||_2``.
+            residual_norm (torch.Tensor | float): Initial residual norm ``||r_0||_2``
+                (0-d tensor or Python float).
+            rhs_norm (torch.Tensor | float): RHS norm ``||b||_2``
+                (0-d tensor or Python float).
             max_history (int): Maximum direction history size.
 
         Returns:

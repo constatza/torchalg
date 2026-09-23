@@ -17,13 +17,13 @@ Example:
     >>>
     >>> # L2 norm (default)
     >>> v = torch.tensor([3.0, 4.0])
-    >>> euclidean_norm(v)
+    >>> euclidean_norm(v).item()
     5.0
     >>>
     >>> # A-norm for diagonal matrix
     >>> a_diag = torch.tensor([2.0, 8.0])
     >>> anorm = energy_norm(a_diag)
-    >>> anorm(torch.tensor([1.0, 1.0]))
+    >>> anorm(torch.tensor([1.0, 1.0])).item()
     3.16...  # sqrt(2*1 + 8*1)
 """
 
@@ -35,11 +35,11 @@ import torch
 
 from torchalg.utils.energy import energy_dot
 
-# Type alias: norm takes vector, returns scalar.
-type Norm = Callable[[torch.Tensor], float]
+# Type alias: norm takes vector, returns tensor (0-d scalar tensor).
+type Norm = Callable[[torch.Tensor], torch.Tensor]
 
 
-def euclidean_norm(v: torch.Tensor) -> float:
+def euclidean_norm(v: torch.Tensor) -> torch.Tensor:
     """Compute L2 (Euclidean) norm of a vector.
 
     Formula: ``||v||_2 = sqrt(v^T v)``.
@@ -48,13 +48,13 @@ def euclidean_norm(v: torch.Tensor) -> float:
         v (torch.Tensor): Input vector of shape ``(n,)``.
 
     Returns:
-        float: Euclidean norm of ``v``.
+        torch.Tensor: Euclidean norm of ``v`` as a 0-d tensor (scalar tensor).
 
     Example:
-        >>> euclidean_norm(torch.tensor([3.0, 4.0]))
+        >>> euclidean_norm(torch.tensor([3.0, 4.0])).item()
         5.0
     """
-    return float(torch.linalg.norm(v))
+    return torch.linalg.norm(v)
 
 
 def energy_norm(A: torch.Tensor) -> Norm:
@@ -73,19 +73,20 @@ def energy_norm(A: torch.Tensor) -> Norm:
             - 1D tensor of shape ``(n,)``: Diagonal entries only.
 
     Returns:
-        Norm: Norm function that computes ``||v||_A`` for any vector v.
+        Norm: Norm function that computes ``||v||_A`` for any vector v,
+            returning a 0-d tensor (scalar tensor).
 
     Example:
         >>> # Full matrix
         >>> A = torch.diag(torch.tensor([2.0, 8.0]))
         >>> anorm = energy_norm(A)
-        >>> anorm(torch.tensor([1.0, 1.0]))
+        >>> anorm(torch.tensor([1.0, 1.0])).item()
         3.16...
         >>>
         >>> # Diagonal entries only (more efficient)
         >>> d = torch.tensor([2.0, 8.0])
         >>> anorm_diag = energy_norm(d)
-        >>> anorm_diag(torch.tensor([1.0, 1.0]))
+        >>> anorm_diag(torch.tensor([1.0, 1.0])).item()
         3.16...
 
     Theory:
@@ -95,8 +96,8 @@ def energy_norm(A: torch.Tensor) -> Norm:
             ||x* - x_k||_A = min_{y in x_0 + K_k} ||x* - y||_A
     """
 
-    def _energy_norm(v: torch.Tensor) -> float:
+    def _energy_norm(v: torch.Tensor) -> torch.Tensor:
         """Energy norm via the shared ``energy_dot`` A-inner-product primitive."""
-        return float(energy_dot(v, v, A).clamp_min(0.0).sqrt())
+        return energy_dot(v, v, A).clamp_min(0.0).sqrt()
 
     return _energy_norm

@@ -85,6 +85,68 @@ class TestCombinedToleranceCriterion:
             criterion.rtol = 1e-3  # ty: ignore[invalid-assignment]
 
 
+class TestHasConvergedFromNorm:
+    """Tests for ``has_converged_from_norm`` with tensor inputs."""
+
+    def test_converged_with_tensor_residual_norm(self) -> None:
+        """Tensor residual norm within tolerance reports converged."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        residual_norm = torch.tensor(1e-8)
+        rhs_norm = torch.tensor(1.0)
+        assert criterion.has_converged_from_norm(residual_norm, rhs_norm) is True
+
+    def test_not_converged_with_tensor_residual_norm(self) -> None:
+        """Tensor residual norm outside tolerance reports not converged."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        residual_norm = torch.tensor(1e-4)
+        rhs_norm = torch.tensor(1.0)
+        assert criterion.has_converged_from_norm(residual_norm, rhs_norm) is False
+
+    def test_nan_residual_with_tensors_never_converges(self) -> None:
+        """Non-finite tensor residual norm never converges."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        residual_norm = torch.tensor(float("nan"))
+        rhs_norm = torch.tensor(1.0)
+        assert criterion.has_converged_from_norm(residual_norm, rhs_norm) is False
+
+    def test_nan_rhs_norm_with_tensors_never_converges(self) -> None:
+        """Non-finite tensor rhs_norm never converges."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        residual_norm = torch.tensor(1e-8)
+        rhs_norm = torch.tensor(float("nan"))
+        assert criterion.has_converged_from_norm(residual_norm, rhs_norm) is False
+
+    def test_mixed_tensor_and_float_inputs(self) -> None:
+        """Mixed tensor and float inputs work correctly."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        # tensor residual, float rhs
+        assert criterion.has_converged_from_norm(torch.tensor(1e-8), 1.0) is True
+        # float residual, tensor rhs
+        assert criterion.has_converged_from_norm(1e-8, torch.tensor(1.0)) is True
+
+    def test_exactly_one_bool_sync_with_tensor_inputs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exactly one bool() call when both inputs are tensors."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        residual_norm = torch.tensor(1e-8)
+        rhs_norm = torch.tensor(1.0)
+
+        bool_call_count = 0
+        original_bool = torch.Tensor.__bool__
+
+        def counting_bool(self: torch.Tensor) -> bool:  # type: ignore[no-untyped-def]
+            nonlocal bool_call_count
+            bool_call_count += 1
+            return original_bool(self)  # type: ignore[return-value]
+
+        monkeypatch.setattr(torch.Tensor, "__bool__", counting_bool)
+
+        result = criterion.has_converged_from_norm(residual_norm, rhs_norm)
+        assert result is True
+        assert bool_call_count == 1
+
+
 class TestConvergenceParityWithScipyReference:
     """Cross-checks the torch criterion against the frozen numpy reference.
 

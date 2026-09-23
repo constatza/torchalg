@@ -113,10 +113,19 @@ class IterativeSolverBase[S: SolverState](ABC):
     def check_convergence(
         self,
         residual: torch.Tensor,
-        rhs_norm: float,
+        rhs_norm: torch.Tensor | float,
         criterion: IConvergenceCriterion,
     ) -> bool:
-        """Delegate convergence checking to the injected criterion."""
+        """Delegate convergence checking to the injected criterion.
+
+        Args:
+            residual (torch.Tensor): Current residual vector.
+            rhs_norm (torch.Tensor | float): Norm of the RHS vector (0-d tensor or float).
+            criterion (IConvergenceCriterion): Convergence criterion.
+
+        Returns:
+            bool: True if converged, False otherwise.
+        """
         return criterion.has_converged(residual, rhs_norm)
 
     def _check_convergence_with_criterion(
@@ -131,24 +140,20 @@ class IterativeSolverBase[S: SolverState](ABC):
         criterion's own norm is that same default, its convergence check is
         answered directly from the already-known value instead of calling
         ``criterion.has_converged(state.r, ...)``, which would recompute
-        ``||state.r||`` from the tensor — a second, redundant pass that on a
-        CUDA residual is a second blocking device sync for a number this
-        method already has. A criterion using any other norm (e.g. the
-        A-norm) still takes the tensor path, since only the Euclidean case
-        matches what ``state.residual_norm`` holds.
+        ``||state.r||`` from the tensor. While both paths now cost one device
+        sync (since norms return tensors natively), the fast path still avoids
+        computing ``torch.linalg.norm`` on the same residual vector twice
+        (once in ``_iterate_step`` to populate ``state.residual_norm``, and
+        again via ``criterion.norm(state.r)`` in the slow path), saving real
+        compute even though the sync cost is identical. A criterion using any
+        other norm (e.g. the A-norm) still takes the tensor path, since only
+        the Euclidean case matches what ``state.residual_norm`` holds.
         """
         if not isinstance(state, HasVectors):
             return False
-        # Convert tensor-valued norms to float if needed
-        residual_norm = state.residual_norm
-        if isinstance(residual_norm, torch.Tensor):
-            residual_norm = float(residual_norm)
-        rhs_norm = state.rhs_norm
-        if isinstance(rhs_norm, torch.Tensor):
-            rhs_norm = float(rhs_norm)
         if criterion.norm is euclidean_norm:
-            return criterion.has_converged_from_norm(residual_norm, rhs_norm)
-        return self.check_convergence(state.r, rhs_norm, criterion)
+            return criterion.has_converged_from_norm(state.residual_norm, state.rhs_norm)
+        return self.check_convergence(state.r, state.rhs_norm, criterion)
 
     def _validate_system(
         self,

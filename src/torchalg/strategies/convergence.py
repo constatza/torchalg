@@ -57,31 +57,38 @@ class IConvergenceCriterion(ABC):
     norm: Norm
 
     @abstractmethod
-    def threshold(self, rhs_norm: float) -> float:
+    def threshold(self, rhs_norm: torch.Tensor | float) -> torch.Tensor | float:
         """Return the stopping threshold for a given RHS norm.
 
+        When rhs_norm is a tensor (e.g. from solver state), may return a
+        tensor to avoid forced device syncs. When rhs_norm is a Python float,
+        returns a float.
+
         Args:
-            rhs_norm (float): Norm of the right-hand side ``||b||``.
+            rhs_norm (torch.Tensor | float): Norm of the right-hand side ``||b||``.
 
         Returns:
-            float: Convergence threshold value.
+            torch.Tensor | float: Convergence threshold value (same type as input).
         """
 
     @abstractmethod
-    def has_converged(self, residual: torch.Tensor, rhs_norm: float) -> bool:
+    def has_converged(self, residual: torch.Tensor, rhs_norm: torch.Tensor | float) -> bool:
         """Determine convergence given residual and RHS norm.
 
         Uses the injected norm function - criterion doesn't know which norm.
 
         Args:
             residual (torch.Tensor): Current residual vector r_k.
-            rhs_norm (float): Norm of the right-hand side ``||b||``.
+            rhs_norm (torch.Tensor | float): Norm of the right-hand side ``||b||``
+                (0-d tensor or Python float).
 
         Returns:
             bool: True if converged, False otherwise.
         """
 
-    def has_converged_from_norm(self, residual_norm: float, rhs_norm: float) -> bool:
+    def has_converged_from_norm(
+        self, residual_norm: torch.Tensor | float, rhs_norm: torch.Tensor | float
+    ) -> bool:
         """Same check as ``has_converged``, given an already-computed residual norm.
 
         Skips recomputing ``self.norm(residual)`` — and, for a CUDA residual,
@@ -91,17 +98,34 @@ class IConvergenceCriterion(ABC):
         that was computed with this criterion's own ``norm`` function;
         otherwise the comparison is against the wrong quantity.
 
+        When both inputs are tensors (e.g., from a solver's tensor-valued state),
+        this method avoids redundant device syncs by performing a single combined
+        tensor comparison and converting to bool only once at the very end —
+        the irreducible cost of bridging tensor-land to Python's boolean value
+        required by the calling loop's stopping condition.
+
         Args:
-            residual_norm (float): ``self.norm(residual)``, already computed.
-            rhs_norm (float): Norm of the right-hand side ``||b||``.
+            residual_norm (torch.Tensor | float): ``self.norm(residual)``,
+                already computed (0-d tensor or Python float).
+            rhs_norm (torch.Tensor | float): Norm of the right-hand side ``||b||``
+                (0-d tensor or Python float).
 
         Returns:
             bool: True if ``residual_norm <= threshold(rhs_norm)``, False
                 otherwise (including when either input is non-finite).
         """
-        if not math.isfinite(residual_norm) or not math.isfinite(rhs_norm):
+        threshold = self.threshold(rhs_norm)
+        # If either input is a tensor, use tensor arithmetic for combined expression
+        if isinstance(residual_norm, torch.Tensor) or isinstance(rhs_norm, torch.Tensor):
+            finite = (
+                torch.as_tensor(residual_norm).isfinite() & torch.as_tensor(rhs_norm).isfinite()
+            )
+            converged = finite & (torch.as_tensor(residual_norm) <= threshold)
+            return bool(converged)  # The one irreducible sync to Python bool
+        # Both are Python floats: use native float arithmetic
+        if not (math.isfinite(residual_norm) and math.isfinite(rhs_norm)):
             return False
-        return bool(residual_norm <= self.threshold(rhs_norm))
+        return bool(residual_norm <= threshold)
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,25 +154,33 @@ class CombinedToleranceCriterion(IConvergenceCriterion):
     atol: float
     norm: Norm = field(default=euclidean_norm)
 
-    def threshold(self, rhs_norm: float) -> float:
-        """Compute threshold: ``max(rtol * ||b||, atol)``.
+    def threshold(self, rhs_norm: torch.Tensor | float) -> torch.Tensor | float:
+        """Compute threshold: ``max(rtol * ||b||, atol)`` or tensor equivalent.
+
+        Handles both float and tensor inputs without forced syncs. When
+        rhs_norm is a tensor, uses torch.clamp_min for a single vectorized
+        operation instead of Python's max() with implicit comparisons.
 
         Args:
-            rhs_norm (float): Norm of the right-hand side ``||b||``.
+            rhs_norm (torch.Tensor | float): Norm of the right-hand side ``||b||``.
 
         Returns:
-            float: Convergence threshold value.
+            torch.Tensor | float: Convergence threshold value (tensor if input
+                is tensor, float if input is float).
         """
+        if isinstance(rhs_norm, torch.Tensor):
+            return torch.clamp_min(self.rtol * rhs_norm, self.atol)
         return max(self.rtol * rhs_norm, self.atol)
 
-    def has_converged(self, residual: torch.Tensor, rhs_norm: float) -> bool:
+    def has_converged(self, residual: torch.Tensor, rhs_norm: torch.Tensor | float) -> bool:
         """Check: ``||r||_norm <= threshold``.
 
         Uses injected norm - criterion is agnostic to norm type.
 
         Args:
             residual (torch.Tensor): Current residual vector r_k.
-            rhs_norm (float): Norm of the right-hand side ``||b||``.
+            rhs_norm (torch.Tensor | float): Norm of the right-hand side ``||b||``
+                (0-d tensor or Python float).
 
         Returns:
             bool: True if ``||r||_norm <= max(rtol * ||b||, atol)``, False
