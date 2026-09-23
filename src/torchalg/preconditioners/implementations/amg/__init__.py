@@ -14,12 +14,13 @@ Public API:
         - WCycleAMG: SA-AMG with W-cycle; more robust, higher cost per cycle.
         - AdaptiveSAPreconditioner: alpha-SA, a port of PyAMG's
           ``adaptive_sa_solver``; learns the near-null-space candidates from A
-          (``adaptive_sa_hierarchy``) instead of assuming constants.
+          (``adaptive_sa_hierarchy``) instead of assuming constants. Setup
+          retains symmetric GS while the solve-time cycle defaults to Jacobi.
         - BootstrapAMGPreconditioner: Bootstrap AMG (BAMG); derives the C/F
           split, strength measure and interpolation weights from test
           vectors via compatible relaxation, algebraic distance and
           weighted least squares (``bootstrap.py``), instead of assuming an
-          M-matrix sign structure.
+          M-matrix sign structure. Its paper-aligned solve default remains GS.
 
     Core (for custom wiring):
         - AMGPreconditioner: Top-level preconditioner; implements Preconditioner + BindableInputs.

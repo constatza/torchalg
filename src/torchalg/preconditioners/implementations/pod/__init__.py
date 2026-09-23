@@ -19,7 +19,9 @@ already anticipated this reuse.
 
 Public API:
     Preset (recommended entry point):
-        - POD2GPreconditioner: POD-2G bundled with VCycle + JacobiSmoother.
+        - POD2GPreconditioner: POD-2G bundled with VCycle + JacobiSmoother by
+          default; accepts any MultigridSmoother for paper-aligned GS or other
+          solve-time relaxation strategies.
 
     Core (for custom wiring, e.g. via AMGPreconditioner directly):
         - PODCoarseningStrategy: Builds a POD-reduced coarse level from a

@@ -56,15 +56,20 @@ strength uses block Frobenius norms), `_prolongation.py` (Jacobi prolongator
 smoothing with `omega / rho(D^-1 A)` and the bridging prolongator),
 `_spectral.py` (restarted-Arnoldi estimate of `rho`, random start, ~1 %
 tolerance), and `_relaxation.py` (symmetric Gauss-Seidel as triangular solves;
-PyAMG's block GS is point-wise, hence identical). The hierarchy is applied
-with a V(1,1)-cycle, `GaussSeidelSmoother` and a pseudo-inverse coarse solve
-(`cycle.pseudo_inverse_solve`), PyAMG's defaults. Defaults follow PyAMG
-(`theta=0`, `omega=4/3`, `candidate_iters=5`, `max_levels=max_coarse=10`).
+PyAMG's block GS is point-wise, hence identical). Candidate construction
+applies the hierarchy with PyAMG's symmetric-GS V(1,1)-cycle and a
+pseudo-inverse coarse solve (`cycle.pseudo_inverse_solve`), so setup remains
+faithful to PyAMG. The public preconditioner's solve-time V(1,1)-cycle instead
+defaults to `JacobiSmoother` for parallel performance; its `smoother` argument
+can restore GS or inject another strategy without changing setup, and
+`smoother_omega` controls only the Jacobi default. Other setup defaults follow
+PyAMG (`theta=0`, `omega=4/3`, `candidate_iters=5`,
+`max_levels=max_coarse=10`).
 All random vectors (including the spectral-radius starts) come from one
 injectable `draw` source, so a run can replay NumPy's stream and be compared
 with PyAMG number for number. Not ported: `improvement_iters`,
 `eliminate_local`, `epsilon`/`pdef` (only used by a branch PyAMG disables),
-non-default smoothers/strength/aggregation/coarse solvers, complex and
+non-default setup smoothers/strength/aggregation/coarse solvers, complex and
 nonsymmetric matrices, and the `work` counter. One documented difference:
 `standard_aggregation`'s second pass depends on the stored column order of
 the sparse coarse matrices in PyAMG (unsorted after sparse products); this
@@ -92,6 +97,22 @@ the smoother convergent when `rho > 3` (`omega` must stay below `2 / rho`).
 The POD helpers `apply_jacobi_damping[_trajectory]` and
 `smoother_persistence_scales` default to the relaxation rule as well.
 Gauss-Seidel has no damping parameter.
+
+All preset solve cycles accept a `smoother` strategy. `VCycleAMG`,
+`WCycleAMG`, `AdaptiveSAPreconditioner`, `BootstrapAMGPreconditioner`, and
+`POD2GPreconditioner` all default to weighted Jacobi for solve-time
+performance; supplying both a custom smoother and `smoother_omega` is
+rejected because the damping belongs only to the Jacobi default. In both
+adaptive SA and BAMG, this solve-time choice is deliberately isolated from
+the setup relaxation used to construct or improve test vectors: BAMG's
+compatible-relaxation coarsening keeps symmetric Gauss-Seidel
+unconditionally, since CR's relaxation *is* the coarsening criterion
+([BAMG11] Sec. 2.1) rather than a smoothing style - passing `smoother`
+changes only the applied V-cycle, never which nodes CR marks coarse.
+Preset instances still declare themselves linear; a custom smoother therefore
+must be a fixed linear map. Plain PCG additionally requires a symmetric
+positive-definite cycle, so nonsymmetric or stateful custom relaxation belongs
+in a manually wired `AMGPreconditioner(linear=False)` used with flexible CG.
 
 AMG hierarchy depth is counted as total levels, including the finest matrix.
 `n_levels=2` is the minimum valid multigrid hierarchy and means one fine level
@@ -139,9 +160,13 @@ scratch during that rebuild, by restriction plus `eta` relaxation sweeps,
 rather than improved in place; a documented simplification of Sec. 5, which
 improves every level), and
 `BootstrapAMGPreconditioner` is the `AdaptiveSAPreconditioner`-shaped preset
-around it — both presets share `amg/_presets.py`'s `PRESET_CYCLE`,
-`seeded_draw` and `PrebuiltCoarsening` (a placeholder `CoarseningStrategy`
-that always raises, since `_make_hierarchy` is overridden). Not built in
+around it — both presets share `amg/_presets.py`'s GS-only
+`GS_SETUP_CYCLE`, solve-cycle factory, `seeded_draw`, and
+`PrebuiltCoarsening` (a placeholder `CoarseningStrategy` that always raises,
+since `_make_hierarchy` is overridden). BAMG's solve-time cycle defaults to
+weighted Jacobi like the rest of the preset family; CR's own relaxation
+(`BootstrapSetup.run`'s `relaxation`) stays symmetric GS unconditionally,
+since it defines the coarsening rather than merely smoothing it. Not built in
 v1: the multigrid eigensolver (MGE, Sec. 4.2) - bootstrap cycles improve
 test vectors by relaxation/cycling alone. `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default

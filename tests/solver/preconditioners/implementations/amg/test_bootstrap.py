@@ -21,7 +21,11 @@ from torchalg.preconditioners.implementations.amg.bootstrap import (
     BootstrapAMGResult,
     BootstrapSetup,
 )
-from torchalg.preconditioners.implementations.amg.smoothers import GaussSeidelSmoother
+from torchalg.preconditioners.implementations.amg.protocols import MultigridSmoother
+from torchalg.preconditioners.implementations.amg.smoothers import (
+    GaussSeidelSmoother,
+    JacobiSmoother,
+)
 
 
 @pytest.fixture
@@ -320,8 +324,36 @@ def test_bootstrap_amg_preconditioner_reduces_pcg_iterations(
 def test_bootstrap_amg_preconditioner_is_linear_and_does_not_require_flexible_cg(
     bootstrap_amg_preconditioner_64: BootstrapAMGPreconditioner,
 ) -> None:
-    """A fixed hierarchy + fixed symmetric-GS ``VCycle`` is a linear operator: plain PCG is valid."""
+    """A fixed hierarchy + fixed symmetric ``VCycle`` is a linear operator: plain PCG is valid."""
     assert bootstrap_amg_preconditioner_64.requires_flexible_cg is False
+
+
+def test_bootstrap_amg_preconditioner_defaults_to_jacobi_at_solve_time(
+    bootstrap_amg_preconditioner_64: BootstrapAMGPreconditioner,
+) -> None:
+    """The quick solve path defaults to Jacobi without changing GS-based CR/setup."""
+    assert isinstance(
+        bootstrap_amg_preconditioner_64._cycle._smoother,  # ty: ignore[unresolved-attribute]
+        JacobiSmoother,
+    )
+
+
+def test_bootstrap_amg_preconditioner_uses_configured_solve_smoother(
+    anisotropic_2d_matrix_64: torch.Tensor,
+    pcg_rhs_64: torch.Tensor,
+    raising_smoother: MultigridSmoother,
+) -> None:
+    """BAMG setup stays internal, while its solve-time cycle uses the injected smoother."""
+    preconditioner = BootstrapAMGPreconditioner(
+        anisotropic_2d_matrix_64,
+        k_r=4,
+        eta=2,
+        n_bootstrap_cycles=1,
+        seed=5,
+        smoother=raising_smoother,
+    )
+    with pytest.raises(RuntimeError, match="configured smoother used"):
+        preconditioner.apply(pcg_rhs_64)
 
 
 def test_bootstrap_amg_preconditioner_raises_when_setup_yields_a_single_level(

@@ -41,6 +41,7 @@ from torchalg.preconditioners.implementations.amg import (
     DenseTransferOperator,
     JacobiSmoother,
     MultigridHierarchy,
+    MultigridSmoother,
     NeuralCoarseningStrategy,
     NeuralTransferOperator,
     SmootherBase,
@@ -830,6 +831,18 @@ class TestAMGPresets:
         """apply() output dtype must match the working dtype for both preset classes."""
         precond = amg_preset_class(poisson_1d, n_levels=2)
         assert precond.apply(poisson_rhs).dtype == poisson_1d.dtype
+
+    def test_uses_configured_smoother(
+        self,
+        amg_preset_class: type[VCycleAMG | WCycleAMG],
+        poisson_1d: torch.Tensor,
+        poisson_rhs: torch.Tensor,
+        raising_smoother: MultigridSmoother,
+    ) -> None:
+        """Every SA-AMG preset must delegate solve-time smoothing to the injected strategy."""
+        precond = amg_preset_class(poisson_1d, n_levels=2, smoother=raising_smoother)
+        with pytest.raises(RuntimeError, match="configured smoother used"):
+            precond.apply(poisson_rhs)
 
     def test_fcg_converges(
         self,

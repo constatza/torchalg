@@ -62,6 +62,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -73,11 +74,14 @@ from ._algebraic_distance import (
 )
 from ._compatible_relaxation import compatible_relaxation_coarsening
 from ._least_squares import ls_interpolation_row, lsr_correction, select_interpolatory_set
-from ._presets import PRESET_CYCLE, PrebuiltCoarsening, seeded_draw
+from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
 from .amg import AMGPreconditioner
 from .hierarchy import MultigridHierarchy, MultigridLevel
-from .smoothers import GaussSeidelSmoother
+from .smoothers import GaussSeidelSmoother, resolve_jacobi_default
 from .transfer import DenseTransferOperator
+
+if TYPE_CHECKING:
+    from .protocols import MultigridSmoother
 
 _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
 """Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
@@ -149,7 +153,7 @@ def _improve_test_vectors(
     for k in range(vectors.shape[1]):
         x = vectors[:, k]
         for _ in range(iterations):
-            x = x - PRESET_CYCLE.apply(hierarchy, matrix @ x)
+            x = x - GS_SETUP_CYCLE.apply(hierarchy, matrix @ x)
         columns.append(x)
     return torch.stack(columns, dim=1)
 
@@ -632,11 +636,17 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     """Bootstrap AMG preconditioner (BAMG), ``docs/bootstrap-amg.md``.
 
     Runs ``BootstrapSetup.run`` at construction, then applies one
-    V(1,1)-cycle with symmetric Gauss-Seidel smoothing and a pseudo-inverse
-    coarse solve - a fixed symmetric linear operator, so plain PCG is valid
-    (same reasoning as ``AdaptiveSAPreconditioner``). Setup cost is several
-    multiples of a classical-AMG setup (Sec. 8), so it pays off when one
-    matrix is reused across many solves.
+    V(1,1)-cycle with weighted-Jacobi smoothing by default and a
+    pseudo-inverse coarse solve - a fixed symmetric linear operator, so plain
+    PCG is valid (same reasoning as ``AdaptiveSAPreconditioner``). Setup cost
+    is several multiples of a classical-AMG setup (Sec. 8), so it pays off
+    when one matrix is reused across many solves. Compatible-relaxation
+    coarsening keeps symmetric Gauss-Seidel unconditionally: CR's relaxation
+    *is* the coarsening criterion ([BAMG11] Sec. 2.1's F-relaxation
+    convergence test), not a smoothing style, so swapping it would change
+    which nodes are marked coarse rather than merely change speed;
+    ``smoother`` affects only the solve-time cycle, exactly like
+    ``AdaptiveSAPreconditioner``.
 
     Args:
         matrix (torch.Tensor): SPD system matrix A (n x n).
@@ -654,6 +664,12 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         seed (int): Seed of the random test-vector source.
         draw (Callable[[int], torch.Tensor] | None): Explicit uniform
             ``[0, 1)`` source overriding ``seed``.
+        smoother_omega (float | None): Damping for the default
+            weighted-Jacobi solve smoother; ``None`` selects
+            ``1 / rho(D^-1 A)`` per level.
+        smoother (MultigridSmoother | None): Explicit solve-time smoother.
+            ``None`` selects weighted Jacobi. When supplied,
+            ``smoother_omega`` must remain ``None``.
 
     Note (DIP):
         Preset/factory leaf class, same pattern as ``AdaptiveSAPreconditioner``.
@@ -678,6 +694,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         max_coarse: int = 10,
         seed: int = 0,
         draw: Callable[[int], torch.Tensor] | None = None,
+        smoother_omega: float | None = None,
+        smoother: MultigridSmoother | None = None,
     ) -> None:
         """Run the Bootstrap AMG setup and wrap the resulting hierarchy.
 
@@ -697,6 +715,11 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             seed (int): Seed of the random test-vector source.
             draw (Callable[[int], torch.Tensor] | None): Explicit uniform
                 ``[0, 1)`` source overriding ``seed``.
+            smoother_omega (float | None): Damping for the default
+                weighted-Jacobi solve smoother; ``None`` selects the
+                per-level spectral rule.
+            smoother (MultigridSmoother | None): Explicit solve-time
+                smoother, or ``None`` for weighted Jacobi.
 
         Raises:
             ValueError: If the setup produced a single level (nothing to
@@ -721,7 +744,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         super().__init__(
             matrix=matrix,
             coarsening=PrebuiltCoarsening("bootstrap AMG"),
-            cycle=PRESET_CYCLE,
+            cycle=prebuilt_cycle(resolve_jacobi_default(smoother, smoother_omega)),
             n_levels=len(result.matrices),
             linear=True,
         )

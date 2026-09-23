@@ -28,7 +28,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.preconditioners.implementations.amg import DenseTransferOperator
+from torchalg.preconditioners.implementations.amg import DenseTransferOperator, MultigridSmoother
 from torchalg.preconditioners.implementations.pod import (
     POD2GPreconditioner,
     PODCoarseningStrategy,
@@ -360,6 +360,23 @@ class TestPOD2GPreconditioner:
         """apply() output dtype must match the working dtype (no float64 hardcode)."""
         precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
         assert precond.apply(poisson_rhs).dtype == poisson_1d.dtype
+
+    def test_uses_configured_smoother(
+        self,
+        poisson_1d: torch.Tensor,
+        poisson_rhs: torch.Tensor,
+        poisson_snapshots: torch.Tensor,
+        raising_smoother: MultigridSmoother,
+    ) -> None:
+        """POD-2G must delegate solve-time smoothing to the injected strategy."""
+        precond = POD2GPreconditioner(
+            poisson_1d,
+            snapshots=poisson_snapshots,
+            rank=10,
+            smoother=raising_smoother,
+        )
+        with pytest.raises(RuntimeError, match="configured smoother used"):
+            precond.apply(poisson_rhs)
 
     def test_requires_flexible_cg_false(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor

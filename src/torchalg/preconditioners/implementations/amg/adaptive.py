@@ -22,8 +22,9 @@ above), and aggregation/strength act on the node graph.
 
 Not ported (PyAMG options outside the default algorithm): ``improvement_iters``,
 ``eliminate_local``, ``epsilon``/``pdef`` (only used by a branch PyAMG
-disables), non-default smoothers/strength/aggregation/coarse solvers, complex
-and nonsymmetric matrices, and the ``work`` complexity counter.
+disables), non-default *setup* smoothers/strength/aggregation/coarse solvers,
+complex and nonsymmetric matrices, and the ``work`` complexity counter. The
+public preconditioner's solve-time smoother is independently configurable.
 
 References:
     - Brezina, M., Falgout, R., MacLachlan, S., Manteuffel, T., McCormick,
@@ -36,12 +37,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from ._aggregation import standard_aggregation
 from ._node_strength import node_strength
-from ._presets import PRESET_CYCLE, PrebuiltCoarsening, seeded_draw
+from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
 from ._prolongation import jacobi_prolongation, make_bridge
 from ._relaxation import symmetric_gauss_seidel
 from ._spectral import approximate_spectral_radius
@@ -49,7 +51,11 @@ from ._tentative import fit_candidates
 from .amg import AMGPreconditioner
 from .cycle import pseudo_inverse_solve
 from .hierarchy import MultigridHierarchy, MultigridLevel
+from .smoothers import resolve_jacobi_default
 from .transfer import DenseTransferOperator
+
+if TYPE_CHECKING:
+    from .protocols import MultigridSmoother
 
 _SOLVE_TOLERANCE = 1e-20
 """Absolute residual tolerance of the trial cycles (``ml.solve(..., tol=1e-20)``)."""
@@ -224,7 +230,7 @@ def _solve(levels: list[_Level], x: torch.Tensor, iterations: int) -> torch.Tens
         return pseudo_inverse_solve(levels[0].A, torch.zeros_like(x))
     hierarchy, matrix = _hierarchy_of(levels), levels[0].A
     for _ in range(iterations):
-        x = x - PRESET_CYCLE.apply(hierarchy, matrix @ x)
+        x = x - GS_SETUP_CYCLE.apply(hierarchy, matrix @ x)
         if torch.linalg.norm(matrix @ x) < _SOLVE_TOLERANCE:
             break
     return x
@@ -450,8 +456,10 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
     """Adaptive smoothed-aggregation AMG preconditioner (alpha-SA), PyAMG-faithful.
 
     Runs ``adaptive_sa_hierarchy`` at construction, then applies one
-    V(1,1)-cycle with symmetric Gauss-Seidel smoothing and a pseudo-inverse
+    V(1,1)-cycle with weighted-Jacobi smoothing by default and a pseudo-inverse
     coarse solve - a fixed symmetric linear operator, so plain PCG is valid.
+    Adaptive candidate construction remains symmetric Gauss-Seidel to preserve
+    the alpha-SA setup algorithm; ``smoother`` affects only solve-time cycles.
     Setup costs about ``num_candidates`` hierarchy builds, so it pays off when
     one matrix is reused across many solves.
 
@@ -467,6 +475,11 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         seed (int): Seed of the random start vectors.
         draw (Callable[[int], torch.Tensor] | None): Explicit uniform ``[0, 1)``
             source overriding ``seed``.
+        smoother_omega (float | None): Damping for the default weighted-Jacobi
+            solve smoother; ``None`` selects ``1 / rho(D^-1 A)`` per level.
+        smoother (MultigridSmoother | None): Explicit solve-time smoother.
+            ``None`` selects weighted Jacobi. When supplied,
+            ``smoother_omega`` must remain ``None``.
 
     Note (DIP):
         Preset/factory leaf class, same pattern as ``VCycleAMG`` and
@@ -488,6 +501,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         initial_candidates: torch.Tensor | None = None,
         seed: int = 0,
         draw: Callable[[int], torch.Tensor] | None = None,
+        smoother_omega: float | None = None,
+        smoother: MultigridSmoother | None = None,
     ) -> None:
         """Run the adaptive setup and wrap the resulting hierarchy.
 
@@ -503,6 +518,11 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
             seed (int): Seed of the random start vectors.
             draw (Callable[[int], torch.Tensor] | None): Explicit uniform
                 ``[0, 1)`` source overriding ``seed``.
+            smoother_omega (float | None): Damping for the default
+                weighted-Jacobi solve smoother; ``None`` selects the
+                per-level spectral rule.
+            smoother (MultigridSmoother | None): Explicit solve-time
+                smoother, or ``None`` for weighted Jacobi.
 
         Raises:
             ValueError: If the setup produced a single level (nothing to coarsen).
@@ -524,7 +544,7 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         super().__init__(
             matrix=matrix,
             coarsening=PrebuiltCoarsening("adaptive SA"),
-            cycle=PRESET_CYCLE,
+            cycle=prebuilt_cycle(resolve_jacobi_default(smoother, smoother_omega)),
             n_levels=len(result.matrices),
             linear=True,
         )

@@ -29,6 +29,28 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
+    from torchalg.preconditioners.implementations.amg import MultigridSmoother
+
+
+class _RaisingSmoother:
+    """Test double proving that a preset delegates solve-time smoothing."""
+
+    def smooth(
+        self,
+        A: torch.Tensor,
+        rhs: torch.Tensor,
+        x: torch.Tensor,
+        steps: int,
+    ) -> torch.Tensor:
+        """Raise whenever a cycle invokes the configured smoother."""
+        raise RuntimeError("configured smoother used")
+
+
+@pytest.fixture
+def raising_smoother() -> MultigridSmoother:
+    """Smoother test double that raises when a solve-time cycle uses it."""
+    return _RaisingSmoother()
+
 
 @pytest.fixture
 def small_diagonal_matrix(torch_dtype: torch.dtype) -> torch.Tensor:

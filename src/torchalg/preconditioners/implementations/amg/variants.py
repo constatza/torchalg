@@ -2,8 +2,8 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.variants``
 (see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``. Each
-class bundles a fixed multigrid cycle, smoothed-aggregation coarsening, and
-weighted-Jacobi smoother into a single, parametrizable object. Use these
+class bundles a fixed multigrid cycle and smoothed-aggregation coarsening with
+a weighted-Jacobi smoother by default. Use these parametrizable presets
 instead of wiring ``AMGPreconditioner`` manually when the standard SA-AMG
 configuration suffices.
 
@@ -30,10 +30,12 @@ from typing import TYPE_CHECKING
 from .amg import AMGPreconditioner
 from .coarsening import AggregationCoarsening
 from .cycle import VCycle, WCycle
-from .smoothers import JacobiSmoother
+from .smoothers import resolve_jacobi_default
 
 if TYPE_CHECKING:
     import torch
+
+    from .protocols import MultigridSmoother
 
 
 class VCycleAMG(AMGPreconditioner):
@@ -64,6 +66,9 @@ class VCycleAMG(AMGPreconditioner):
             hypre BoomerAMG's ``strong_threshold``, PyAMG's
             ``smoothed_aggregation_solver``), not from Stuben (2001) - see
             ``strength_of_connection``'s docstring in ``_aggregation.py``.
+        smoother (MultigridSmoother | None): Explicit solve-time smoother.
+            ``None`` selects weighted Jacobi. When supplied,
+            ``smoother_omega`` must remain ``None``.
 
     References:
         - Vanek, Mandel & Brezina (1996), Sections 3-4 (SA-AMG, V-cycle
@@ -80,6 +85,7 @@ class VCycleAMG(AMGPreconditioner):
         n_pre: int = 2,
         n_post: int = 2,
         theta: float = 0.25,
+        smoother: MultigridSmoother | None = None,
     ) -> None:
         """Wire smoothed-aggregation coarsening and a V-cycle into an AMGPreconditioner.
 
@@ -93,11 +99,17 @@ class VCycleAMG(AMGPreconditioner):
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
             theta (float): Strength-of-connection threshold theta in (0, 1).
+            smoother (MultigridSmoother | None): Explicit solve-time
+                smoother, or ``None`` for weighted Jacobi.
         """
         super().__init__(
             matrix=matrix,
             coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
-            cycle=VCycle(JacobiSmoother(omega=smoother_omega), n_pre=n_pre, n_post=n_post),
+            cycle=VCycle(
+                resolve_jacobi_default(smoother, smoother_omega),
+                n_pre=n_pre,
+                n_post=n_post,
+            ),
             n_levels=n_levels,
             linear=True,
         )
@@ -122,6 +134,9 @@ class WCycleAMG(AMGPreconditioner):
         n_pre (int): Pre-smoothing steps.
         n_post (int): Post-smoothing steps.
         theta (float): Strength-of-connection threshold theta in (0, 1).
+        smoother (MultigridSmoother | None): Explicit solve-time smoother.
+            ``None`` selects weighted Jacobi. When supplied,
+            ``smoother_omega`` must remain ``None``.
 
     References:
         - Briggs, Henson & McCormick (2000), Section 3.3 (W-cycle /
@@ -146,6 +161,7 @@ class WCycleAMG(AMGPreconditioner):
         n_pre: int = 2,
         n_post: int = 2,
         theta: float = 0.25,
+        smoother: MultigridSmoother | None = None,
     ) -> None:
         """Wire smoothed-aggregation coarsening and a W-cycle into an AMGPreconditioner.
 
@@ -159,11 +175,17 @@ class WCycleAMG(AMGPreconditioner):
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
             theta (float): Strength-of-connection threshold theta in (0, 1).
+            smoother (MultigridSmoother | None): Explicit solve-time
+                smoother, or ``None`` for weighted Jacobi.
         """
         super().__init__(
             matrix=matrix,
             coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
-            cycle=WCycle(JacobiSmoother(omega=smoother_omega), n_pre=n_pre, n_post=n_post),
+            cycle=WCycle(
+                resolve_jacobi_default(smoother, smoother_omega),
+                n_pre=n_pre,
+                n_post=n_post,
+            ),
             n_levels=n_levels,
             linear=True,
         )

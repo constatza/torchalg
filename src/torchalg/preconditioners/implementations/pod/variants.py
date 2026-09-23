@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..amg import AMGPreconditioner, JacobiSmoother, VCycle
+from ..amg import AMGPreconditioner, VCycle
+from ..amg.smoothers import resolve_jacobi_default
 from .coarsening import PODCoarseningStrategy
 
 if TYPE_CHECKING:
     import torch
+
+    from ..amg import MultigridSmoother
 
 
 class POD2GPreconditioner(AMGPreconditioner):
@@ -35,8 +38,8 @@ class POD2GPreconditioner(AMGPreconditioner):
       default damping ``1 / rho(D^-1 A)`` (PyAMG's relaxation rule, see
       ``JacobiSmoother``) is not derived from - or needed by - the
       Nikolopoulos et al. paper.
-      Swap in a Gauss-Seidel smoother via ``AMGPreconditioner`` directly if
-      matching the paper's exact relaxer matters for a given comparison.
+      Pass ``smoother=GaussSeidelSmoother()`` if matching the paper's exact
+      relaxer matters for a given comparison.
     - **Snapshot source**: the paper collects snapshots as fully converged
       FEM solutions for sampled parameter values (§3.2). The ``snapshots``
       passed in here may instead be CG solve trajectories (intermediate
@@ -70,6 +73,9 @@ class POD2GPreconditioner(AMGPreconditioner):
             relaxation; ``None`` is ``1 / rho(D^-1 A)``.
         n_pre (int): Pre-smoothing steps.
         n_post (int): Post-smoothing steps.
+        smoother (MultigridSmoother | None): Explicit solve-time smoother.
+            ``None`` selects weighted Jacobi. When supplied,
+            ``smoother_omega`` must remain ``None``.
 
     References:
         - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos,
@@ -86,6 +92,7 @@ class POD2GPreconditioner(AMGPreconditioner):
         smoother_omega: float | None = None,
         n_pre: int = 2,
         n_post: int = 2,
+        smoother: MultigridSmoother | None = None,
     ) -> None:
         """Wire POD coarsening and a V-cycle into an AMGPreconditioner.
 
@@ -100,13 +107,19 @@ class POD2GPreconditioner(AMGPreconditioner):
                 relaxation; ``None`` is ``1 / rho(D^-1 A)``.
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
+            smoother (MultigridSmoother | None): Explicit solve-time
+                smoother, or ``None`` for weighted Jacobi.
         """
         coarsening = PODCoarseningStrategy(rank=rank)
         coarsening.fit(snapshots)
         super().__init__(
             matrix=matrix,
             coarsening=coarsening,
-            cycle=VCycle(JacobiSmoother(omega=smoother_omega), n_pre=n_pre, n_post=n_post),
+            cycle=VCycle(
+                resolve_jacobi_default(smoother, smoother_omega),
+                n_pre=n_pre,
+                n_post=n_post,
+            ),
             n_levels=n_levels,
             linear=True,
         )

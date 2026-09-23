@@ -22,6 +22,7 @@ from pyamg.aggregation.smooth import jacobi_prolongation_smoother as pyamg_jacob
 from pyamg.aggregation.tentative import fit_candidates as pyamg_fit_candidates
 from pyamg.relaxation.relaxation import gauss_seidel as pyamg_gauss_seidel
 from pyamg.relaxation.relaxation import gauss_seidel_indexed as pyamg_gauss_seidel_indexed
+from pyamg.relaxation.smoothing import change_smoothers
 from pyamg.strength import symmetric_strength_of_connection as pyamg_strength
 from pyamg.util.linalg import approximate_spectral_radius as pyamg_spectral_radius
 
@@ -32,7 +33,7 @@ from tests.support.pyamg_reference import (
     to_csr,
 )
 from torchalg.preconditioners.implementations.amg._node_strength import node_strength
-from torchalg.preconditioners.implementations.amg._presets import PRESET_CYCLE
+from torchalg.preconditioners.implementations.amg._presets import prebuilt_cycle
 from torchalg.preconditioners.implementations.amg._prolongation import (
     jacobi_prolongation,
     make_bridge,
@@ -41,8 +42,10 @@ from torchalg.preconditioners.implementations.amg._relaxation import symmetric_g
 from torchalg.preconditioners.implementations.amg._spectral import approximate_spectral_radius
 from torchalg.preconditioners.implementations.amg._tentative import fit_candidates
 from torchalg.preconditioners.implementations.amg.adaptive import adaptive_sa_hierarchy
+from torchalg.preconditioners.implementations.amg.smoothers import JacobiSmoother
 
 ATOL = 1e-11
+SOLVE_OMEGA = 0.67
 
 
 @pytest.fixture
@@ -273,8 +276,10 @@ class TestAdaptiveSolverAgainstPyAMG:
         residual = torch.randn(
             matrix.shape[0], generator=torch.Generator().manual_seed(31), dtype=torch_dtype
         )
+        smoother = ("jacobi", {"omega": SOLVE_OMEGA, "iterations": 1, "withrho": False})
+        change_smoothers(reference, smoother, smoother)
         oracle = reference.aspreconditioner(cycle="V").matvec(residual.numpy())
-        ours = PRESET_CYCLE.apply(result.hierarchy, residual)
+        ours = prebuilt_cycle(JacobiSmoother(SOLVE_OMEGA)).apply(result.hierarchy, residual)
         np.testing.assert_allclose(ours.numpy(), oracle, atol=1e-8)
 
     def test_aggregation_matches_pyamg_on_sorted_graph(self, aniso_matrix: torch.Tensor) -> None:

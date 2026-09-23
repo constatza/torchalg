@@ -15,6 +15,7 @@ import numpy as np
 import pyamg
 import pytest
 import torch
+from pyamg.relaxation.smoothing import change_smoothers
 
 from tests.support.pyamg_reference import (
     as_torch_preconditioner,
@@ -26,6 +27,7 @@ from torchalg import pcg
 from torchalg.preconditioners.implementations.amg import (
     AggregationCoarsening,
     JacobiSmoother,
+    MultigridSmoother,
     VCycle,
     WCycle,
 )
@@ -84,7 +86,15 @@ class TestResidualHistoryAgainstPyAMG:
         reference, _ = pyamg.aggregation.adaptive_sa_solver(
             to_csr(aniso_matrix), strength=("symmetric", {"theta": 0.25}), **options
         )
-        ours = AdaptiveSAPreconditioner(aniso_matrix, theta=0.25, draw=replay_draw(41), **options)
+        smoother = ("jacobi", {"omega": OMEGA, "iterations": 1, "withrho": False})
+        change_smoothers(reference, smoother, smoother)
+        ours = AdaptiveSAPreconditioner(
+            aniso_matrix,
+            theta=0.25,
+            draw=replay_draw(41),
+            smoother_omega=OMEGA,
+            **options,
+        )
         oracle = as_torch_preconditioner(reference, "V", torch_dtype)
         _, ours_info = pcg(aniso_matrix, rhs, preconditioner=ours, rtol=1e-10, trace_mode="minimal")
         _, oracle_info = pcg(
@@ -96,4 +106,37 @@ class TestResidualHistoryAgainstPyAMG:
         assert len(ours_info.residual_history_abs) == len(oracle_info.residual_history_abs)
         np.testing.assert_allclose(
             ours_info.residual_history_abs, oracle_info.residual_history_abs, rtol=1e-6
+        )
+
+    def test_adaptive_sa_uses_configured_solve_smoother(
+        self,
+        aniso_matrix: torch.Tensor,
+        rhs: torch.Tensor,
+        raising_smoother: MultigridSmoother,
+    ) -> None:
+        """Adaptive setup remains GS-faithful while its solve-time smoother is injectable."""
+        preconditioner = AdaptiveSAPreconditioner(
+            aniso_matrix,
+            num_candidates=1,
+            max_levels=2,
+            max_coarse=5,
+            smoother=raising_smoother,
+        )
+        with pytest.raises(RuntimeError, match="configured smoother used"):
+            preconditioner.apply(rhs)
+
+    def test_adaptive_sa_defaults_to_jacobi_at_solve_time(
+        self,
+        aniso_matrix: torch.Tensor,
+    ) -> None:
+        """The quick solve path defaults to Jacobi without changing GS-based setup."""
+        preconditioner = AdaptiveSAPreconditioner(
+            aniso_matrix,
+            num_candidates=1,
+            max_levels=2,
+            max_coarse=5,
+        )
+        assert isinstance(
+            preconditioner._cycle._smoother,  # ty: ignore[unresolved-attribute]
+            JacobiSmoother,
         )

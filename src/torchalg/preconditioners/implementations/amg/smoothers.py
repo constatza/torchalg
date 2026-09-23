@@ -14,11 +14,15 @@ tensor buffers to move under ``.to(device/dtype)``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import torch
 
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 from ._relaxation import symmetric_gauss_seidel
+
+if TYPE_CHECKING:
+    from .protocols import MultigridSmoother
 
 _NEAR_ZERO_DIAGONAL_TOL = 1e-14
 """Diagonal entries with magnitude below this are excluded from the Jacobi
@@ -150,3 +154,28 @@ class GaussSeidelSmoother(SmootherBase):
             torch.Tensor: Updated iterate.
         """
         return symmetric_gauss_seidel(A, x, rhs, steps)
+
+
+def resolve_jacobi_default(
+    smoother: MultigridSmoother | None,
+    smoother_omega: float | None,
+) -> MultigridSmoother:
+    """Select an injected smoother or construct the preset's Jacobi default.
+
+    ``smoother_omega`` belongs specifically to the default Jacobi strategy;
+    accepting it alongside an injected smoother would silently ignore user
+    configuration.
+
+    Args:
+        smoother (MultigridSmoother | None): Explicit smoother strategy.
+        smoother_omega (float | None): Damping for the Jacobi default.
+
+    Returns:
+        MultigridSmoother: The explicit strategy or a weighted-Jacobi smoother.
+
+    Raises:
+        ValueError: If both an explicit smoother and Jacobi damping are supplied.
+    """
+    if smoother is not None and smoother_omega is not None:
+        raise ValueError("smoother_omega only applies when smoother is not provided")
+    return smoother if smoother is not None else JacobiSmoother(omega=smoother_omega)
