@@ -470,10 +470,24 @@ class BAMGCoarsening:
 
         prolongation = torch.zeros(n, n_coarse, dtype=A.dtype, device=A.device)
         prolongation[coarse_points, torch.arange(n_coarse, device=A.device)] = 1.0
-        for i in fine_points.tolist():
-            candidates = torch.nonzero(neighborhood[i] & coarse_mask).flatten()
-            if candidates.numel() == 0:
-                candidates = coarse_points
+        # One nonzero() + tolist() for every fine row's coarse-neighbor set
+        # up front, instead of one `torch.nonzero(...)` (a device sync) per
+        # fine point inside the loop below - same grouping the aggregation
+        # fix in `_aggregation.py::standard_aggregation` uses, for the same
+        # reason: nonzero() already returns (row, col) pairs in row-major
+        # order, so grouping them reproduces each row's original candidate
+        # order with one sync total instead of one per row.
+        coarse_neighborhood = neighborhood[fine_points] & coarse_mask
+        candidate_lists: list[list[int]] = [[] for _ in range(fine_points.numel())]
+        for local_row, col in torch.nonzero(coarse_neighborhood, as_tuple=False).tolist():
+            candidate_lists[local_row].append(col)
+        for local_row, i in enumerate(fine_points.tolist()):
+            candidate_columns = candidate_lists[local_row]
+            candidates = (
+                torch.tensor(candidate_columns, dtype=torch.long, device=A.device)
+                if candidate_columns
+                else coarse_points
+            )
             interp_set = select_interpolatory_set(
                 candidates, fit_vectors, A, i, weights, self._caliber, gamma=self._gamma
             )
@@ -749,6 +763,32 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             linear=True,
         )
         self._result = result
+
+    @property
+    def result(self) -> BootstrapAMGResult:
+        """The realized Bootstrap AMG hierarchy.
+
+        Returns:
+            BootstrapAMGResult: Levels, prolongations, and relaxation-derived
+                test vectors from the setup that ran at construction.
+        """
+        return self._result
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        Overrides ``AMGPreconditioner.__str__`` — see
+        ``AdaptiveSAPreconditioner.__str__``'s docstring for why (same
+        prebuilt-coarsening-placeholder reasoning applies here).
+
+        Returns:
+            str: e.g. ``"BAMG(n_levels=3, k_r=8, coarse_dim=5)"``.
+        """
+        return (
+            f"BAMG(n_levels={len(self._result.matrices)}, "
+            f"k_r={self._result.candidates.shape[1]}, "
+            f"coarse_dim={int(self._result.matrices[-1].shape[0])})"
+        )
 
     def _make_hierarchy(self) -> MultigridHierarchy:
         """Prebuilt levels moved to the current device/dtype of the system matrix.

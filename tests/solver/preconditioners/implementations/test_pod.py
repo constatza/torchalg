@@ -235,6 +235,17 @@ class TestPODCoarseningStrategy:
         assert isinstance(coarsening, PODCoarseningStrategy)
         assert coarsening._basis.dtype == torch.float32
 
+    def test_str_before_fit_says_not_yet_fit(self) -> None:
+        """`str()` before `fit()` reports the unfit state, doesn't raise."""
+        strategy = PODCoarseningStrategy(rank=10)
+        assert str(strategy) == "POD-2G(not yet fit)"
+
+    def test_str_after_fit_reports_resolved_rank(self, poisson_snapshots: torch.Tensor) -> None:
+        """`str()` after `fit()` reports the actual resolved rank."""
+        strategy = PODCoarseningStrategy(rank=10)
+        strategy.fit(poisson_snapshots)
+        assert str(strategy) == f"POD-2G(rank={strategy.rank})"
+
 
 # ---------------------------------------------------------------------------
 # PODCoarseningStrategy construct/fit lifecycle

@@ -298,6 +298,28 @@ class TestAggregationCoarsening:
         assert transfer.prolongate(torch.ones(n_coarse, dtype=poisson_1d.dtype)).shape == (n_fine,)
         assert transfer.restrict(torch.ones(n_fine, dtype=poisson_1d.dtype)).shape == (n_coarse,)
 
+    def test_theta_property_matches_constructor_arg(self) -> None:
+        """`theta` property returns exactly what was passed to `__init__`."""
+        coarsening = AggregationCoarsening(theta=0.37)
+        assert coarsening.theta == 0.37
+
+    def test_omega_property_is_none_when_left_to_auto_rule(self) -> None:
+        """`omega` property is None when left unset, not a guessed default."""
+        coarsening = AggregationCoarsening()
+        assert coarsening.omega is None
+
+    def test_str_includes_theta_and_omega(self) -> None:
+        """`str()` reports both theta and a resolved/auto omega, never crashes."""
+        coarsening = AggregationCoarsening(theta=0.25, omega=0.67)
+        text = str(coarsening)
+        assert "0.25" in text
+        assert "0.67" in text
+
+    def test_str_reports_auto_omega(self) -> None:
+        """`str()` says 'auto' rather than fabricating a numeric omega."""
+        coarsening = AggregationCoarsening()
+        assert "auto" in str(coarsening)
+
 
 # ---------------------------------------------------------------------------
 # adaptive_theta_scan
@@ -572,6 +594,47 @@ class TestTargetDimensionCoarsening:
         assert dim_at_theta_002 > dim_at_theta_001, (
             "expected a non-monotonic increase in realized dimension as theta grows"
         )
+
+    def test_target_coarse_dim_property_matches_constructor_arg(
+        self, poisson_1d: torch.Tensor
+    ) -> None:
+        """`target_coarse_dim` property returns exactly what was passed to `__init__`."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=3, theta_min=0.05, theta_max=0.5, step=0.05
+        )
+        assert coarsening.target_coarse_dim == 3
+
+    def test_realized_coarse_dim_matches_build_transfer(self, poisson_1d: torch.Tensor) -> None:
+        """`realized_coarse_dim(A)` matches what `build_transfer(A)` produced."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=3, theta_min=0.05, theta_max=0.5, step=0.05
+        )
+        a_coarse, _ = coarsening.build_transfer(poisson_1d)
+        assert coarsening.realized_coarse_dim(poisson_1d) == a_coarse.shape[0]
+
+    def test_realized_coarse_dim_triggers_lazy_build(self, poisson_1d: torch.Tensor) -> None:
+        """`realized_coarse_dim(A)` builds on demand if `build_transfer` was never called."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=3, theta_min=0.05, theta_max=0.5, step=0.05
+        )
+        dim = coarsening.realized_coarse_dim(poisson_1d)
+        assert isinstance(dim, int)
+        assert dim > 0
+
+    def test_str_before_build_says_not_yet_built(self) -> None:
+        """`str()` before any build reports the target without a realized dimension."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=3, theta_min=0.05, theta_max=0.5, step=0.05
+        )
+        assert "not yet built" in str(coarsening)
+
+    def test_str_after_build_reports_realized_dim(self, poisson_1d: torch.Tensor) -> None:
+        """`str()` after a build reports the realized coarse dimension."""
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=3, theta_min=0.05, theta_max=0.5, step=0.05
+        )
+        coarsening.build_transfer(poisson_1d)
+        assert str(coarsening.realized_coarse_dim(poisson_1d)) in str(coarsening)
 
 
 # ---------------------------------------------------------------------------

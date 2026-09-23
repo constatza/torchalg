@@ -71,6 +71,15 @@ class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
         self._start_iter = start_iter
 
     @property
+    def primary(self) -> Preconditioner:
+        """The main preconditioner applied while the schedule is active.
+
+        Returns:
+            Preconditioner: The value passed at construction.
+        """
+        return self._primary
+
+    @property
     def extra_input_names(self) -> tuple[str, ...]:
         """Aggregate extra input names from primary (and fallback if bindable).
 

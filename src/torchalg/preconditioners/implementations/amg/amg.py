@@ -159,6 +159,33 @@ class AMGPreconditioner(Preconditioner, nn.Module):
     # Preconditioner -----------------------------------------------------------
 
     @property
+    def coarsening(self) -> CoarseningStrategy:
+        """The coarsening strategy building each coarse level.
+
+        Returns:
+            CoarseningStrategy: The strategy passed at construction.
+        """
+        return self._coarsening
+
+    @property
+    def matrix(self) -> torch.Tensor:
+        """The finest-level system matrix A.
+
+        Returns:
+            torch.Tensor: The matrix passed at construction (n x n).
+        """
+        return self._matrix
+
+    @property
+    def n_levels(self) -> int:
+        """Total number of multigrid levels.
+
+        Returns:
+            int: The level count passed at construction.
+        """
+        return self._n_levels
+
+    @property
     def requires_flexible_cg(self) -> bool:
         """Whether Flexible CG is required.
 
@@ -197,5 +224,24 @@ class AMGPreconditioner(Preconditioner, nn.Module):
             MultigridHierarchy: Levels built by the coarsening strategy.
         """
         return build_hierarchy(self._matrix, self._coarsening, self._n_levels)
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        POD-2G coarsening (architecturally single-basis two-grid) delegates
+        entirely to the coarsening strategy's own ``__str__`` rather than
+        wrapping it in a level count that would always be constant noise.
+        Every other coarsening strategy is wrapped with this preconditioner's
+        own level count.
+
+        Returns:
+            str: e.g. ``"POD-2G(rank=10)"``, or ``"AMG(n_levels=2,
+                AggregationCoarsening(theta=0.25, omega=0.67))"``.
+        """
+        from ..pod.coarsening import PODCoarseningStrategy
+
+        if isinstance(self._coarsening, PODCoarseningStrategy):
+            return str(self._coarsening)
+        return f"AMG(n_levels={self._n_levels}, {self._coarsening})"
 
     # Private ------------------------------------------------------------------

@@ -189,3 +189,10 @@ def test_scheduled_preconditioner_rejects_negative_limit_iters() -> None:
     """Verify bounded schedules reject negative active windows."""
     with pytest.raises(ValueError, match="limit_iters"):
         ScheduledPreconditioner(Identity(), limit_iters=-1)
+
+
+def test_primary_property_matches_constructor_arg(diagonal_matrix: torch.Tensor) -> None:
+    """`primary` property returns exactly the preconditioner passed to `__init__`."""
+    primary = JacobiPreconditioner(diagonal_matrix)
+    scheduled = ScheduledPreconditioner(primary=primary, limit_iters=10, start_iter=0)
+    assert scheduled.primary is primary

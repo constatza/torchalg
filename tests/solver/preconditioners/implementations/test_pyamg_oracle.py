@@ -140,3 +140,22 @@ class TestResidualHistoryAgainstPyAMG:
             preconditioner._cycle._smoother,  # ty: ignore[unresolved-attribute]
             JacobiSmoother,
         )
+
+
+class TestAdaptiveSAResultAndStr:
+    def test_result_property_matches_private_attribute(self, aniso_matrix: torch.Tensor) -> None:
+        """`result` property exposes exactly the setup result stored at construction."""
+        preconditioner = AdaptiveSAPreconditioner(
+            aniso_matrix, num_candidates=1, max_levels=2, max_coarse=5
+        )
+        assert preconditioner.result is preconditioner._result
+
+    def test_str_reports_levels_candidates_and_coarse_dim(self, aniso_matrix: torch.Tensor) -> None:
+        """`str()` reports the realized hierarchy shape, not a generic repr."""
+        preconditioner = AdaptiveSAPreconditioner(
+            aniso_matrix, num_candidates=2, max_levels=2, max_coarse=5
+        )
+        text = str(preconditioner)
+        assert "alpha-SA" in text
+        assert f"n_levels={len(preconditioner.result.matrices)}" in text
+        assert f"num_candidates={preconditioner.result.candidates.shape[1]}" in text

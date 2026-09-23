@@ -170,3 +170,14 @@ class PODCoarseningStrategy(nn.Module):
             raise RuntimeError("PODCoarseningStrategy must be fit() before build_transfer().")
         A_coarse = self._basis.T @ A @ self._basis
         return A_coarse, DenseTransferOperator(self._basis)
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        Returns:
+            str: ``"POD-2G(rank=<n>)"`` once fit, or
+                ``"POD-2G(not yet fit)"`` before ``fit()`` has run.
+        """
+        if not self.is_fitted():
+            return "POD-2G(not yet fit)"
+        return f"POD-2G(rank={self.rank})"

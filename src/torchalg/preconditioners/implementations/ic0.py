@@ -100,6 +100,23 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """
         return dense_ic0(matrix, self._threshold)
 
+    @property
+    def threshold(self) -> float:
+        """Drop tolerance used to build the sparsity pattern.
+
+        Returns:
+            float: The value passed at construction.
+        """
+        return self._threshold
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        Returns:
+            str: e.g. ``"IC0(threshold=0e+00)"``.
+        """
+        return f"IC0(threshold={self._threshold:.0e})"
+
     def apply(
         self,
         residual: torch.Tensor,

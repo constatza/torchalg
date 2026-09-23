@@ -165,3 +165,18 @@ def test_ic0_compares_favorably_with_jacobi(
     assert result_jacobi.converged
     assert result_ic0.converged
     assert result_ic0.iterations <= result_jacobi.iterations
+
+
+class TestIC0PropertyAndStr:
+    def test_threshold_property_matches_constructor_arg(
+        self, tridiagonal_spd_small_torch: torch.Tensor
+    ) -> None:
+        """`threshold` property returns exactly what was passed to `__init__`."""
+        precond = IC0Preconditioner(tridiagonal_spd_small_torch, threshold=1e-6)
+        assert precond.threshold == 1e-6
+
+    def test_str_includes_threshold(self, tridiagonal_spd_small_torch: torch.Tensor) -> None:
+        """`str()` reports the threshold, never crashes."""
+        precond = IC0Preconditioner(tridiagonal_spd_small_torch, threshold=1e-6)
+        assert "IC0" in str(precond)
+        assert "1e-06" in str(precond)

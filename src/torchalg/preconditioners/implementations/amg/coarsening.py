@@ -14,6 +14,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+import torch
+
 from ._aggregation import (
     piecewise_constant_prolongation,
     smoothed_prolongation,
@@ -25,8 +27,6 @@ from ._theta_search import adaptive_theta_scan
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 
 if TYPE_CHECKING:
-    import torch
-
     from ...ports import ExtraInputPredictorPort
 
 
@@ -96,6 +96,44 @@ class AggregationCoarsening:
         """
         self._theta = theta
         self._omega = omega
+
+    @property
+    def theta(self) -> float:
+        """Strength-of-connection threshold.
+
+        Returns:
+            float: The value passed at construction.
+        """
+        return self._theta
+
+    @property
+    def omega(self) -> float | torch.Tensor | None:
+        """Prolongation-smoothing Jacobi damping.
+
+        Returns:
+            float | torch.Tensor | None: The value passed at construction;
+                ``None`` means torchalg's own per-matrix spectral-radius rule
+                is used instead of a fixed value.
+        """
+        return self._omega
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        Cannot include the realized coarse dimension: unlike
+        ``TargetDimensionCoarsening``, this class holds no matrix and caches
+        no dimension — the coarse dimension only exists transiently inside
+        ``build_transfer(A)``'s return value.
+
+        Returns:
+            str: e.g. ``"AggregationCoarsening(theta=0.25, omega=0.67)"``,
+                or ``"...omega=auto)"`` when omega is unset.
+        """
+        omega = self._omega
+        if isinstance(omega, torch.Tensor):
+            omega = omega.item()
+        omega_text = "auto" if omega is None else f"{omega:.3g}"
+        return f"AggregationCoarsening(theta={self._theta:.3g}, omega={omega_text})"
 
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
         """Build one coarse level from fine-grid matrix A.
@@ -242,6 +280,50 @@ class TargetDimensionCoarsening:
         self._cache_candidates = cache_candidates
         self._theta: float | None = None
         self._realized_coarse_dim: int | None = None
+
+    @property
+    def target_coarse_dim(self) -> int:
+        """The requested coarse dimension.
+
+        Returns:
+            int: The value passed at construction.
+        """
+        return self._target_coarse_dim
+
+    def realized_coarse_dim(self, A: torch.Tensor) -> int:
+        """The actual coarse dimension the closest-matching theta produced.
+
+        Triggers ``build_transfer(A)`` if the search hasn't run yet (lazy,
+        cached — a second call never repeats the search). Named to match
+        the ``A`` parameter name convention used throughout this module.
+
+        Args:
+            A (torch.Tensor): Fine-grid matrix, forwarded to
+                ``build_transfer`` only if not already built.
+
+        Returns:
+            int: The realized coarse dimension.
+        """
+        if self._realized_coarse_dim is None:
+            self.build_transfer(A)
+        assert self._realized_coarse_dim is not None
+        return self._realized_coarse_dim
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        Returns:
+            str: e.g. ``"TargetDimensionCoarsening(target_coarse_dim=3,
+                realized_coarse_dim=3)"``, or a "not yet built" variant
+                before the first ``build_transfer``/``realized_coarse_dim``
+                call.
+        """
+        if self._realized_coarse_dim is None:
+            return f"TargetDimensionCoarsening(target_coarse_dim={self._target_coarse_dim}, not yet built)"
+        return (
+            f"TargetDimensionCoarsening(target_coarse_dim={self._target_coarse_dim}, "
+            f"realized_coarse_dim={self._realized_coarse_dim})"
+        )
 
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
         """Search `theta`, then build the coarse level at the closest-matching value.

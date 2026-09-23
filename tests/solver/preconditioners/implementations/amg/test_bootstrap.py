@@ -80,6 +80,50 @@ def test_bamg_coarsening_produces_spd_galerkin_operator(
     assert transfer.prolongate(ones_vector_factory(coarse_matrix.shape[0])).shape == (16,)
 
 
+def test_prolongation_batches_neighbor_lookup_not_one_nonzero_per_fine_row(
+    poisson_16: torch.Tensor,
+    bamg_coarsening: BAMGCoarsening,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_prolongation`` must not call `torch.nonzero` once per fine row.
+
+    Regression guard: the previous implementation looked up each fine
+    row's coarse-neighbor candidates via `torch.nonzero(neighborhood[i] &
+    coarse_mask)` inside a `for i in fine_points.tolist():` loop.
+    `torch.nonzero` forces a device sync to learn its data-dependent
+    output size, so that was one blocking sync per fine row - the same
+    O(n) regression `standard_aggregation` had. `torch.nonzero` calls
+    inside `_prolongation` must stay bounded independent of how many fine
+    points there are, not scale with that count.
+    """
+    from torchalg.preconditioners.implementations.amg._algebraic_distance import (
+        algebraic_distance,
+    )
+
+    test_vectors = bamg_coarsening.test_vectors_for(poisson_16)
+    distance = algebraic_distance(test_vectors, poisson_16, depth=bamg_coarsening._depth)
+    coarse_mask = bamg_coarsening._coarse_mask(poisson_16, distance)
+    fine_count = int((~coarse_mask).sum())
+    assert fine_count >= 3, "fixture must have enough fine points to make this test meaningful"
+
+    call_count = 0
+    original_nonzero = torch.nonzero
+
+    def counting_nonzero(*args: object, **kwargs: object) -> torch.Tensor:
+        nonlocal call_count
+        call_count += 1
+        return original_nonzero(*args, **kwargs)  # ty: ignore[no-matching-overload]
+
+    monkeypatch.setattr(torch, "nonzero", counting_nonzero)
+    bamg_coarsening._prolongation(poisson_16, test_vectors, coarse_mask, distance)
+
+    assert call_count < fine_count, (
+        f"expected torch.nonzero() calls bounded independent of fine-point count, got "
+        f"{call_count} calls for {fine_count} fine points - one-per-row indicates the "
+        "O(n) sync regression"
+    )
+
+
 def test_bamg_coarsening_without_lsr_also_produces_psd_galerkin_operator(
     poisson_16: torch.Tensor, seeded_test_vectors_16_3: torch.Tensor
 ) -> None:
@@ -363,3 +407,20 @@ def test_bootstrap_amg_preconditioner_raises_when_setup_yields_a_single_level(
     matrix = poisson_1d_factory(8)
     with pytest.raises(ValueError, match="single level"):
         BootstrapAMGPreconditioner(matrix, k_r=4, eta=2, n_bootstrap_cycles=1, max_coarse=8, seed=1)
+
+
+class TestBootstrapAMGResultAndStr:
+    def test_result_property_matches_private_attribute(
+        self, bootstrap_amg_preconditioner_64: BootstrapAMGPreconditioner
+    ) -> None:
+        """`result` property exposes exactly the setup result stored at construction."""
+        assert bootstrap_amg_preconditioner_64.result is bootstrap_amg_preconditioner_64._result
+
+    def test_str_reports_levels_k_r_and_coarse_dim(
+        self, bootstrap_amg_preconditioner_64: BootstrapAMGPreconditioner
+    ) -> None:
+        """`str()` reports the realized hierarchy shape, not a generic repr."""
+        text = str(bootstrap_amg_preconditioner_64)
+        assert "BAMG" in text
+        assert f"n_levels={len(bootstrap_amg_preconditioner_64.result.matrices)}" in text
+        assert f"k_r={bootstrap_amg_preconditioner_64.result.candidates.shape[1]}" in text

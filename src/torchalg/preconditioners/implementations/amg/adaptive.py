@@ -550,6 +550,35 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         )
         self._result = result
 
+    @property
+    def result(self) -> AdaptiveSAResult:
+        """The realized adaptive-setup hierarchy.
+
+        Returns:
+            AdaptiveSAResult: Levels, prolongations, and near-null-space
+                candidates from the setup that ran at construction.
+        """
+        return self._result
+
+    def __str__(self) -> str:
+        """Human-readable structural summary.
+
+        Overrides ``AMGPreconditioner.__str__`` — this class stores a
+        ``PrebuiltCoarsening`` placeholder as its coarsening strategy (the
+        real per-level detail lives in ``self._result``, not something a
+        generic coarsening-strategy `str()` could describe), so the base
+        class's generic wrapping doesn't apply here.
+
+        Returns:
+            str: e.g. ``"alpha-SA(n_levels=3, num_candidates=3,
+                coarse_dim=5)"``.
+        """
+        return (
+            f"alpha-SA(n_levels={len(self._result.matrices)}, "
+            f"num_candidates={self._result.candidates.shape[1]}, "
+            f"coarse_dim={int(self._result.matrices[-1].shape[0])})"
+        )
+
     def _make_hierarchy(self) -> MultigridHierarchy:
         """Prebuilt levels moved to the current device/dtype of the system matrix.
 
