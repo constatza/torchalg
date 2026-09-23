@@ -392,27 +392,55 @@ def test_preconditioner_context_no_forced_syncs_with_tensor_norms(
         torch.Tensor.__bool__ = original_bool
 
 
-def test_pcg_skips_wasted_residual_history_when_iteration_history_tracks_it(
+def test_iteration_history_never_none(
+    identity_matrix_small: NDArray,
+    rhs_ones_small: NDArray,
+    to_torch: Callable[[NDArray], torch.Tensor],
+) -> None:
+    """``solver.iteration_history`` is always a real object, never None.
+
+    Even when ``TraceMode.DISABLED`` is used, the solver constructs a real
+    ``IterationHistory`` with mode set to DISABLED, which causes
+    ``log_iteration()`` to return early, making it a no-op. This eliminates
+    the need for fallback branches elsewhere that check for None.
+    """
+    from torchalg.conjugate_gradient import PCGSolver
+    from torchalg.monitoring import TraceMode
+
+    matrix = to_torch(identity_matrix_small)
+    rhs = to_torch(rhs_ones_small)
+
+    # Direct construction with no IterationHistory should auto-create one with DISABLED mode
+    solver = PCGSolver(iteration_history=None, trace_mode=TraceMode.DISABLED)
+    assert solver.iteration_history is not None
+    assert solver.iteration_history.mode == TraceMode.DISABLED
+
+    # Factory construction also produces a real object
+    from torchalg.factories import pcg
+
+    _, result = pcg(matrix, rhs, trace_mode=TraceMode.DISABLED, maxiter=5)
+
+    # DISABLED mode contract: no histories are stored
+    assert result.residual_history_abs is None
+    assert result.residual_history_rel is None
+
+
+def test_float_conversion_count_after_deduplication(
     tridiagonal_spd_medium: NDArray,
     rhs_ones_medium: NDArray,
     to_torch: Callable[[NDArray], torch.Tensor],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``CGState.residual_history`` must not be updated when it can't be read back.
+    """Verify that redundant CGState.residual_history tracking is eliminated.
 
-    ``_build_result`` only ever falls back to ``state.residual_history`` when
-    ``self.iteration_history is None`` (``TraceMode.DISABLED``) — for any other
-    trace mode, ``IterationHistory.residual_norms`` is always already populated
-    by ``_log_state``, so the fallback branch never fires. Updating
-    ``residual_history`` every iteration regardless was pure waste: two
-    ``float()`` conversions per iteration (``norm_abs``, ``norm_rel``) for data
-    nobody ever reads under the default (``MINIMAL``) trace mode.
+    With only one tracking mechanism (IterationHistory), float() conversions
+    are reduced by ~2 per iteration compared to the previous dual-tracking
+    implementation. Fixed tolerances below machine precision force exactly
+    ``maxiter`` iterations (never converges early), making the call count
+    fully deterministic.
 
-    Fixed tolerances below machine precision force exactly ``maxiter``
-    iterations (never converges early), making the call count fully
-    deterministic: measured 5.6 ``float()`` calls/iteration before this fix,
-    3.6 after — a reduction of exactly 2/iteration, matching the two
-    conversions removed.
+    This test empirically measures the actual float()-call reduction to ensure
+    the refactor achieved its goal of eliminating redundant conversions.
     """
     matrix = to_torch(tridiagonal_spd_medium)
     rhs = to_torch(rhs_ones_medium)
@@ -430,7 +458,14 @@ def test_pcg_skips_wasted_residual_history_when_iteration_history_tracks_it(
     _, result = pcg(matrix, rhs, rtol=1e-300, atol=1e-300, maxiter=maxiter)
 
     assert result.iterations == maxiter
-    # Convergence check (~1/iter) + IterationHistory's residual_norms and
-    # energy_decrements tracking (2/iter, MINIMAL mode default) + a handful of
-    # one-time per-solve costs. Must stay well under the pre-fix ~5.6/iter.
-    assert call_count <= 4 * maxiter
+    # After eliminating CGState.residual_history tracking:
+    # - Convergence check: ~1/iter
+    # - IterationHistory's residual_norms.add() and energy_decrements.add(): 2/iter (MINIMAL mode)
+    # - Misc per-solve overhead: ~10 calls
+    # Total should be well under pre-refactor levels of ~5.6/iter = 56 calls for 10 iterations
+    # The new implementation should be ~3/iter = 30 calls + overhead
+    actual_per_iter = call_count / maxiter if maxiter > 0 else 0
+    assert actual_per_iter < 4.0, (
+        f"float() calls per iteration should be ~3, got {actual_per_iter:.2f} "
+        f"(total {call_count} for {maxiter} iterations)"
+    )

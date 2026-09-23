@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 import torch
 
-from torchalg.models.history import DirectionHistory, ResidualHistory
+from torchalg.models.history import DirectionHistory
 from torchalg.models.state import CGState, KrylovState, SolverState
 
 
@@ -109,17 +109,6 @@ class TestCGState:
         assert cg_state.breakdown is False
         assert cg_state.divergence is False
 
-    def test_create_initial_seeds_residual_history_with_one_entry(
-        self,
-        cg_state: CGState,
-    ) -> None:
-        """``residual_history`` starts with exactly the initial residual norm."""
-        assert len(cg_state.residual_history) == 1
-        assert cg_state.residual_history.norms_abs[0] == cg_state.residual_norm
-        assert cg_state.residual_history.norms_rel[0] == pytest.approx(
-            cg_state.residual_norm / cg_state.rhs_norm
-        )
-
     def test_create_initial_direction_history_is_empty(self, cg_state: CGState) -> None:
         """``direction_history`` starts empty, with the requested window size."""
         assert len(cg_state.direction_history) == 0
@@ -131,14 +120,16 @@ class TestCGState:
         assert cg_state.r_prev is None
         assert cg_state.rw_prev == 0.0
 
-    def test_create_initial_zero_rhs_norm_uses_absolute_norm(
+    def test_create_initial_zero_rhs_norm_creates_valid_state(
         self,
         krylov_vectors: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
     ) -> None:
-        """A zero RHS norm falls back to the absolute residual norm (no division by zero)."""
+        """A zero RHS norm is handled gracefully during state creation."""
         u, r, w, d, q = krylov_vectors
         state = CGState.create_initial(u=u, r=r, w=w, d=d, q=q, residual_norm=2.0, rhs_norm=0.0)
-        assert state.residual_history.norms_rel[0] == 2.0
+        assert state.iteration == 0
+        assert state.residual_norm == 2.0
+        assert state.rhs_norm == 0.0
 
     def test_is_krylov_state_and_solver_state(self, cg_state: CGState) -> None:
         """``CGState`` extends the full ``SolverState`` -> ``KrylovState`` chain."""
@@ -169,7 +160,6 @@ class TestCGState:
                 d,
                 q,
                 DirectionHistory.empty(),
-                ResidualHistory.empty(),
                 None,
                 None,
                 0.0,

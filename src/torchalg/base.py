@@ -34,8 +34,19 @@ class IterativeSolverBase[S: SolverState](ABC):
         iteration_history: IterationHistory | None = None,
         trace_mode: TraceMode = TraceMode.MINIMAL,
     ) -> None:
-        """Initialize common solver monitoring configuration."""
-        self.iteration_history = iteration_history
+        """Initialize common solver monitoring configuration.
+
+        ``self.iteration_history`` is always a real ``IterationHistory`` object,
+        never ``None``. When ``None`` is passed (e.g., direct solver construction),
+        a new instance is created with ``mode=TraceMode.DISABLED`` to preserve
+        the no-op behavior that ``.log_iteration()`` enforces for disabled mode.
+        This invariant eliminates the need for None checks elsewhere.
+        """
+        self.iteration_history = (
+            iteration_history
+            if iteration_history is not None
+            else IterationHistory(mode=TraceMode.DISABLED)
+        )
         self.trace_mode = trace_mode
 
     def solve(
@@ -273,10 +284,12 @@ class IterativeSolverBase[S: SolverState](ABC):
         """Build the final solver result."""
 
     def _log_state(self, state: S) -> None:
-        """Log continuous iteration telemetry if enabled."""
-        if self.iteration_history is None:
-            return
+        """Log continuous iteration telemetry if enabled.
 
+        ``self.iteration_history`` is always a real object (never None);
+        its own ``log_iteration()`` method has the guard that makes
+        ``TraceMode.DISABLED`` a no-op.
+        """
         residual = None
         solution = None
         direction = None
@@ -337,10 +350,12 @@ class IterativeSolverBase[S: SolverState](ABC):
         tuple[float, ...] | None,
         tuple[float, ...] | None,
     ]:
-        """Extract result histories from the configured iteration history."""
+        """Extract result histories from the configured iteration history.
+
+        ``self.iteration_history`` is always a real object; when disabled,
+        ``log_iteration()`` ensures these histories stay empty.
+        """
         empty_result = (None, None, None, None, None, None, None)
-        if self.iteration_history is None:
-            return empty_result
 
         residual_history_abs = tuple(self.iteration_history.residual_norms.to_list())
         if not residual_history_abs:

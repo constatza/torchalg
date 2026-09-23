@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import torch
 
-from torchalg.models.history import DirectionHistory, ResidualHistory
+from torchalg.models.history import DirectionHistory
 from torchalg.models.state import CGState
 from torchalg.strategies.direction import (
     OrthogonalizationDirectionStrategy,
@@ -90,7 +90,6 @@ def test_orthogonalization_direction_strategy_uses_direction_history(
         d=previous_direction,
         q=previous_matrix_product,
         direction_history=history,
-        residual_history=ResidualHistory.empty(),
         w_prev=None,
         r_prev=None,
         rw_prev=0.0,

@@ -47,7 +47,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-from .history import DirectionHistory, ResidualHistory
+from .history import DirectionHistory
 from .result import SolverResult
 
 
@@ -147,9 +147,6 @@ class HasDirectionHistory(Protocol):
 
     direction_history: DirectionHistory
     """Sliding window history of search directions (d_i, q_i) for orthogonalization."""
-
-    residual_history: ResidualHistory
-    """History of residual norms (absolute and relative) for diagnostics."""
 
 
 @runtime_checkable

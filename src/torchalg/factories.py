@@ -266,8 +266,11 @@ def _bind_extra_inputs(
 
 def _iteration_history(
     trace_mode: TraceMode, *, x_exact: torch.Tensor | None = None
-) -> IterationHistory | None:
-    """Create iteration history for enabled trace modes."""
-    if trace_mode == TraceMode.DISABLED:
-        return None
+) -> IterationHistory:
+    """Create iteration history for the requested trace mode.
+
+    Always returns a real ``IterationHistory`` object; for ``TraceMode.DISABLED``,
+    the object is configured to be a no-op (its ``log_iteration()`` method returns
+    early). This eliminates the need for None checks elsewhere.
+    """
     return IterationHistory(mode=trace_mode, x_exact=x_exact)

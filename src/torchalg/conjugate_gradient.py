@@ -130,24 +130,6 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         u_new = state.u + alpha * d
         r_new = state.r - alpha * q
         residual_norm_new = torch.linalg.norm(r_new)
-        # `state.residual_history` is only ever read back in `_build_result` as a
-        # fallback when `self.iteration_history is None` (TraceMode.DISABLED) —
-        # whenever an IterationHistory is configured (MINIMAL/FULL), that object's
-        # own `residual_norms` is always already populated by `_log_state`, so this
-        # branch's data is provably never read. Skipping `.add()` there avoids two
-        # wasted tensor->float conversions per iteration for the common case.
-        if self.iteration_history is None:
-            rhs_norm_float = (
-                float(state.rhs_norm)
-                if isinstance(state.rhs_norm, torch.Tensor)
-                else state.rhs_norm
-            )
-            residual_history = state.residual_history.add(
-                norm_abs=residual_norm_new,
-                norm_rel=self._compute_relative_residual(residual_norm_new, rhs_norm_float),
-            )
-        else:
-            residual_history = state.residual_history
         direction_history = self._updated_direction_history(state, d, q)
         new_iteration = state.iteration + 1
         ortho_breakdown_at = state.ortho_breakdown_at
@@ -164,7 +146,6 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             d=d,
             q=q,
             direction_history=direction_history,
-            residual_history=residual_history,
             w_prev=w.clone(),
             r_prev=state.r.clone(),
             rw_prev=rw_curr,
@@ -212,9 +193,6 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             error_history_a_norm,
             energy_decrements,
         ) = self._extract_histories_from_iteration_history(rhs_norm_for_history)
-        if residual_abs_hist is None and self.iteration_history is not None:
-            residual_abs_hist = tuple(state.residual_history.norms_abs)
-            residual_rel_hist = tuple(state.residual_history.norms_rel)
 
         breakdown = state.breakdown or not solution_valid
         diagnostics = self._diagnostics(state, converged, breakdown)

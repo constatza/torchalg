@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .history import DirectionHistory, ResidualHistory
+from .history import DirectionHistory
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,8 +176,6 @@ class CGState(KrylovState):
         direction_history (DirectionHistory): Sliding window of search
             directions and products. Used by FCG for truncated Gram-Schmidt
             orthogonalization.
-        residual_history (ResidualHistory): Residual norms (absolute and
-            relative). Used for convergence monitoring and post-analysis.
         w_prev (torch.Tensor | None): Previous preconditioned residual
             w_{k-1} (for two-term recurrence). Used by
             ``TwoTermRecurrenceStrategy`` to compute the beta coefficient.
@@ -217,7 +215,7 @@ class CGState(KrylovState):
 
     Example:
         >>> import torch
-        >>> from torchalg.models.history import DirectionHistory, ResidualHistory
+        >>> from torchalg.models.history import DirectionHistory
         >>> state = CGState(
         ...     iteration=0,
         ...     converged=False,
@@ -231,7 +229,6 @@ class CGState(KrylovState):
         ...     d=torch.ones(10),
         ...     q=torch.ones(10),
         ...     direction_history=DirectionHistory.empty(max_size=10),
-        ...     residual_history=ResidualHistory.empty(),
         ...     w_prev=None,
         ...     r_prev=None,
         ...     rw_prev=0.0,
@@ -242,9 +239,6 @@ class CGState(KrylovState):
 
     direction_history: DirectionHistory
     """Sliding window of search directions and matrix-vector products."""
-
-    residual_history: ResidualHistory
-    """Residual norms (absolute and relative) across iterations."""
 
     w_prev: torch.Tensor | None
     """Previous preconditioned residual w_{k-1} (for two-term recurrence)."""
@@ -322,10 +316,6 @@ class CGState(KrylovState):
             d=d,
             q=q,
             direction_history=DirectionHistory.empty(max_size=max_history),
-            residual_history=ResidualHistory.empty().add(
-                norm_abs=residual_norm,
-                norm_rel=residual_norm / rhs_norm if rhs_norm > 0 else residual_norm,
-            ),
             w_prev=None,
             r_prev=None,
             rw_prev=0.0,
