@@ -72,6 +72,27 @@ class AMGPreconditioner(Preconditioner, nn.Module):
             (2 = one coarse grid).
         linear (bool): Whether the preconditioner is linear (False for
             neural AMG). Controls ``requires_flexible_cg``.
+
+    Complexity: **not** the textbook ``O(n)`` per V-cycle that multigrid
+    theory gives for a *sparse* hierarchy with a bounded coarsening ratio.
+    Every level here is a dense ``torch.Tensor`` (see this module's own
+    docstring), never a sparse structure regardless of the fine matrix's
+    true sparsity, so the actual cost is dominated by dense linear algebra:
+        - ``VCycle._vcycle`` (``cycle.py``) computes ``rhs - matrix @ x`` once
+          per pre-smooth and once per post-smooth at every level — a dense
+          ``(level_size, level_size)`` matvec, ``O(level_size^2)``. Summed
+          across levels this is a geometric-ish series dominated by the
+          finest level, i.e. ``O(n^2)`` overall per V-cycle (``WCycle``
+          doubles the coarse-grid-correction work per level, same finest-level
+          dominance).
+        - The coarsest-level solve (``torch.linalg.solve`` or
+          ``pseudo_inverse_solve``) is a dense direct solve,
+          ``O(coarsest_size^3)`` — small in absolute terms when the hierarchy
+          bottoms out at a small coarse dimension, but still cubic, not the
+          near-free coarsest solve a sparse/iterative coarse solver would give.
+    A neural-transfer or neural-coarsening variant adds whatever its network's
+    forward-pass cost is on top of this — see the coarsening/transfer class's
+    own complexity note.
     """
 
     def __init__(

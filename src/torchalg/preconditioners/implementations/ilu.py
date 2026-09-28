@@ -42,8 +42,24 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           ``A``'s original non-zero pattern - natural ordering, no
           pivoting).
         - ``z = (LU)^{-1}r`` via forward/backward triangular solves.
-        - ``O(nnz)`` storage, ``O(nnz)`` application cost.
         - Not guaranteed SPD even if ``A`` is SPD.
+
+    Complexity (corrected from a prior ``O(nnz)`` claim, which described the
+    sparse-textbook ILU(0) algorithm, not this dense implementation):
+        - Storage: ``O(n^2)`` — the combined ``L``/``U`` factor is a dense
+          ``(n, n)`` buffer, not a sparse structure sized by ``nnz(A)``.
+        - Setup: at least ``O(n^2)``, up to ``O(n^3)`` for a dense pattern —
+          ``_masked_factorization.dense_ilu0`` is a Python-level triple loop
+          (``i in range(1, n)``, ``k in range(i)``, ``j in range(k+1, n)``)
+          that always visits the full ``(i, k)`` grid to check the sparsity
+          mask (an ``O(n^2)`` floor regardless of how few entries are
+          actually nonzero), and does real elimination work in the inner
+          ``j`` loop for every mask hit, reaching the classical dense-LU
+          ``O(n^3)`` when the pattern is dense.
+        - Application: ``O(n^2)`` — ``apply()`` runs two dense
+          ``torch.linalg.solve_triangular`` calls against the full
+          ``(n, n)`` ``L``/``U`` factors, not a sparse-structured solve
+          bounded by ``nnz``.
 
     Example:
         >>> import torch

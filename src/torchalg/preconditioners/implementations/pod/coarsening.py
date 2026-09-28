@@ -75,6 +75,24 @@ class PODCoarseningStrategy(nn.Module):
         - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos,
           V. (2022). AI-enhanced iterative solvers for accelerating the
           solution of large-scale parametrized systems. arXiv:2207.02543.
+
+    Complexity (``m`` = snapshot count, ``n`` = ``n_dofs``, ``r`` = ``rank``):
+        - ``fit()``: dominated by ``compute_pod_basis``'s thin SVD,
+          ``O(min(m, n) * m * n)`` — cheap when ``m << n`` (few high-fidelity
+          solves relative to DOF count, the usual regime this class targets).
+        - ``build_transfer()``: the Galerkin coarse matrix
+          ``Phi_r.T @ A @ Phi_r`` is two dense matmuls against the full
+          ``(n, n)`` ``A`` — ``O(r * n^2)`` (the ``Phi_r.T @ A`` step; the
+          following ``@ Phi_r`` is the cheaper ``O(r^2 * n)``) — this runs
+          once per fit *and* once per reconstruction from a checkpoint
+          (unlike the SVD, which only runs when fitting from scratch),
+          since it depends on ``A``, not on the fitted basis alone.
+        - Per-iteration application (``DenseTransferOperator.prolongate``/
+          ``.restrict``, i.e. ``Phi_r @ x`` / ``Phi_r.T @ x``): ``O(r * n)``,
+          cheap relative to whatever multigrid cycle wraps it — see
+          ``AMGPreconditioner``'s own complexity note for why the
+          surrounding cycle's dense fine-level work (``O(n^2)`` per V-cycle)
+          dominates the total per-iteration cost, not this basis projection.
     """
 
     def __init__(self, rank: float) -> None:

@@ -32,6 +32,17 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           ``torch.cholesky_solve`` (replaces the reference's
           ``scipy.linalg.cho_solve`` outright - no scipy involved).
 
+    Complexity:
+        - Storage: ``O(n^2)`` — ``L`` is stored exactly as supplied, a dense
+          ``(n, n)`` buffer (no factorization, hence no sparsity to exploit
+          even if the caller's ``L`` happens to be sparse in practice).
+        - Setup: none — ``_compute_operator`` returns the supplied ``L``
+          unchanged.
+        - Application: ``O(n^2)`` — ``torch.cholesky_solve`` runs two dense
+          triangular solves against the full ``(n, n)`` factor, same as
+          ``IC0Preconditioner``'s application cost (see its complexity note),
+          since both share ``_triangular.cholesky_factor_solve``.
+
     Example:
         >>> import torch
         >>> L = torch.linalg.cholesky(torch.eye(3, dtype=torch.float64) * 2.0)
