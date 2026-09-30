@@ -8,6 +8,7 @@ dependencies = ["torch>=2.8.0,<3.0"]
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.10.0",
     "pyamg>=5.3.0",
     "pytest>=9.0",
     "ruff>=0.13.1",
@@ -40,7 +41,7 @@ ignore = ["RUF022"]
 convention = "google"
 
 [tool.ty.src]
-include = ["src/torchalg", "tests"]
+include = ["src/torchalg", "tests", "scripts"]
 respect-ignore-files = true
 
 [tool.ty.rules]
@@ -59,7 +60,7 @@ include = ["tests/**"]
 no-matching-overload = "warn"
 
 [tool.ty.environment]
-root = ["src", "."]
+root = ["src", ".", "scripts"]
 python-version = "3.14"
 python-platform = "all"
 
