@@ -1,52 +1,15 @@
-"""Comparison runner for multiple CG preconditioners."""
+"""Execution of Flexible CG across a set of preconditioners."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 
 import torch
 
 from torchalg.factories import flexible_cg
 from torchalg.preconditioners.base import Preconditioner
 
-
-@dataclass(frozen=True, slots=True)
-class CGComparisonResult:
-    """Result for one preconditioner in a CG comparison run."""
-
-    x: torch.Tensor
-    converged: bool
-    iterations: int
-    residual: float
-    residual_abs: float
-    residual_history_rel: tuple[float, ...]
-    residual_history_abs: tuple[float, ...]
-    preconditioner: str
-    initial_guess: torch.Tensor
-    exact_error: float | None
-    rhs_norm: float
-    breakdown: bool
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RankedRecommendation:
-    """Ranked recommendation entry for a converged preconditioner."""
-
-    label: str
-    iterations: int
-    residual: float
-    residual_abs: float
-    breakdown: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ComparisonRecommendations:
-    """Ranked comparison recommendations."""
-
-    ranked: tuple[RankedRecommendation, ...]
-    overall_best: RankedRecommendation | None
+from .models import CGComparisonResult
 
 
 def run_cg_comparison(
@@ -79,52 +42,7 @@ def run_cg_comparison(
             maxiter=maxiter,
             m_max=m_max,
         )
-
     return results
-
-
-def format_results_summary(results: dict[str, CGComparisonResult]) -> str:
-    """Format CG comparison results into a readable summary."""
-    lines = ["Flexible CG results:"]
-    for name, result in results.items():
-        status = "ok" if result.converged else "fail"
-        line = (
-            f"- {name:<18} status={status:<4} iters={result.iterations:>3}  "
-            f"rel_res={result.residual:.3e} (abs={result.residual_abs:.3e})"
-        )
-        if result.exact_error is not None:
-            line += f"  exact_err={result.exact_error:.3e}"
-        if result.error:
-            line += f"  note={result.error}"
-        elif result.breakdown and not result.converged:
-            line += "  note=breakdown"
-        elif result.breakdown and result.converged:
-            line += "  note=breakdown_post_convergence"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def summarize_best_combinations(
-    results: dict[str, CGComparisonResult],
-) -> ComparisonRecommendations:
-    """Rank converged comparison results by final relative residual."""
-    ranked = tuple(
-        sorted(
-            (
-                RankedRecommendation(
-                    label=label,
-                    iterations=result.iterations,
-                    residual=result.residual,
-                    residual_abs=result.residual_abs,
-                    breakdown=result.breakdown,
-                )
-                for label, result in results.items()
-                if result.converged
-            ),
-            key=lambda entry: entry.residual,
-        )
-    )
-    return ComparisonRecommendations(ranked=ranked, overall_best=ranked[0] if ranked else None)
 
 
 def _with_identity_baseline(

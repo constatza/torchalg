@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..amg import AMGPreconditioner, VCycle
+from ..amg.amg import AMGPreconditioner
+from ..amg.cycle import VCycle
 from ..amg.smoothers import resolve_jacobi_default
 from .coarsening import PODCoarseningStrategy
 
 if TYPE_CHECKING:
     import torch
 
-    from ..amg import MultigridSmoother
+    from ..amg.protocols import MultigridSmoother
 
 
 class POD2GPreconditioner(AMGPreconditioner):
@@ -123,3 +124,7 @@ class POD2GPreconditioner(AMGPreconditioner):
             n_levels=n_levels,
             linear=True,
         )
+
+    def __str__(self) -> str:
+        """Return the POD-specific structural summary."""
+        return str(self.coarsening)

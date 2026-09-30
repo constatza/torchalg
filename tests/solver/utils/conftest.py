@@ -189,7 +189,7 @@ def heterogeneous_stiffness_matrix(
     less stiff than the surrounding cube, further compounded by the usual
     mesh-size-driven spread of an FEM stiffness spectrum) — the exact regime
     where naive power-iteration-based condition-number estimators are known
-    to fail (see ``torchalg.utils.spectral``). Built via an orthogonal
+    to fail (see ``torchalg.analysis.spectral``). Built via an orthogonal
     similarity transform of a diagonal matrix, so the true condition number
     is known exactly: it is invariant under conjugation by an orthogonal
     matrix.

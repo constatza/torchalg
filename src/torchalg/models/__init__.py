@@ -23,9 +23,10 @@ Design Principles:
 """
 
 from .config import SolverConfig, SolverParams
+from .context import IterationContext
 from .diagnostics import TerminationDiagnostics
 from .history import DirectionHistory, ResidualHistory
-from .result import IterationContext, SolverResult
+from .result import SolverResult
 from .state import CGState, KrylovState, SolverState
 
 __all__ = [

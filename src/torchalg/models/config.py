@@ -6,7 +6,7 @@ was plain ``frozen=True``).
 
 ``ComparisonData``/``ComparisonGeneral`` are not ported here: both exist
 solely to configure the multi-preconditioner comparison workflow
-(``comparison.py``), which is Stage 10 (lowest priority) per
+(``torchalg.comparison``), which is the highest orchestration layer per
 ``docs/plan.md``'s scope trim - porting them now would be dead weight until
 that workflow lands.
 

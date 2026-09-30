@@ -21,18 +21,15 @@ Two deliberate deviations from a straight port, both per ``docs/plan.md``:
   Wiring it back onto ``SolverResult`` happens when Stage 9 lands, from a
   module that is allowed to see both.
 
-This module defines result containers returned by solvers after execution.
-It includes diagnostic information, convergence status, and optional
-traces.
+This module defines the result container returned by solvers after execution.
+It includes diagnostic information, convergence status, and optional traces.
 
 Design:
     - ``SolverResult``: General solver result with SciPy-aligned metadata.
-    - ``IterationContext``: Context passed to flexible preconditioners.
-
     The reference's comparison-workflow-specific result types
     (``CGComparisonResult``, ``PlotPaths``, ``RankedRecommendation``,
     ``ComparisonRecommendations``, ``ComparisonResult``) are not ported here;
-    they belong to ``comparison.py``, which is Stage 10 (lowest priority) per
+    they belong to ``torchalg.comparison``, the highest orchestration layer per
     ``docs/plan.md``'s scope trim.
 
 Theory:
@@ -170,58 +167,3 @@ class SolverResult:
     no ``x_exact`` required. Feed to
     ``torchalg.monitoring.golub_meurant_error_bound`` for a ground-truth-free
     lower-bound estimate of ``||e_k||_A``."""
-
-
-@dataclass(frozen=True, slots=True)
-class IterationContext:
-    """Context passed to flexible preconditioners and step helpers.
-
-    Provides iteration-specific information to preconditioners and helpers
-    that need access to current solver state beyond just the residual.
-
-    Attributes:
-        iteration (int): Current iteration number (0-indexed).
-        residual (torch.Tensor): Current residual vector r_k.
-        solution (torch.Tensor): Current solution vector x_k.
-        matrix (torch.Tensor): System matrix A (optional, may be expensive
-            to store).
-        rhs (torch.Tensor): Right-hand side vector b.
-
-    Example:
-        >>> import torch
-        >>> ctx = IterationContext(
-        ...     iteration=5,
-        ...     residual=torch.ones(10),
-        ...     solution=torch.zeros(10),
-        ...     matrix=torch.eye(10),
-        ...     rhs=torch.ones(10),
-        ... )
-        >>> ctx.iteration
-        5
-
-    Usage:
-        Context-aware preconditioners can use iteration info for adaptive
-        behavior::
-
-            def adaptive_precond(r: torch.Tensor, ctx: IterationContext) -> torch.Tensor:
-                if ctx.iteration < 10:
-                    # Use simple preconditioner early.
-                    return r / torch.diagonal(ctx.matrix)
-                # Use expensive preconditioner later.
-                return neural_network(r, ctx.solution)
-    """
-
-    iteration: int
-    """Current iteration number (0-indexed)."""
-
-    residual: torch.Tensor
-    """Current residual vector r_k = b - A*x_k."""
-
-    solution: torch.Tensor
-    """Current solution vector x_k."""
-
-    matrix: torch.Tensor
-    """System matrix A (optional, may be expensive to store)."""
-
-    rhs: torch.Tensor
-    """Right-hand side vector b."""

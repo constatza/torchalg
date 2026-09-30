@@ -26,7 +26,7 @@ from collections.abc import Callable
 
 import torch
 
-from ._algebraic_distance import depth_neighborhood
+from ._graph import depth_neighborhood
 
 _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
 """Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""

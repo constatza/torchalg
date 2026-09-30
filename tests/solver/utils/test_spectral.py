@@ -1,11 +1,11 @@
-"""Tests for ``torchalg.utils.spectral``.
+"""Tests for ``torchalg.analysis.spectral``.
 
 Exercises ``condition_number`` against hand-verifiable eigenvalue oracles
 (SPD matrices built via an orthogonal similarity transform of a known
 diagonal, so the true condition number is exact regardless of the random
 basis), including the ill-conditioned/near-singular-cluster regime that
 naive power-iteration estimators are known to get wrong (see the module
-docstring in ``torchalg.utils.spectral`` for the reference this replaces).
+docstring in ``torchalg.analysis.spectral`` for the reference this replaces).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
-from torchalg.utils.spectral import condition_number, preconditioned_condition_number
+from torchalg.analysis.spectral import condition_number, preconditioned_condition_number
 
 if TYPE_CHECKING:
     from collections.abc import Callable

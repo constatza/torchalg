@@ -11,3 +11,7 @@ nested dictionary after creation.
 This module is a low-level dependency. It must not import solver orchestration,
 monitoring, concrete preconditioners, or strategy implementations that would
 invert the dependency direction.
+
+Execution outputs live in `result.py`; iteration-time inputs live separately
+in `context.py`. Keeping the two records apart prevents result reporting from
+coupling to adaptive iteration collaborators.

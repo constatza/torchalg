@@ -10,6 +10,9 @@ wheels/
 *.egg-info/
 *.egg
 docs/
+!docs/
+docs/*
+!docs/dependency-architecture.md
 
 # Testing / coverage
 .pytest_cache/

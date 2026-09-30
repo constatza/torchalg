@@ -9,9 +9,10 @@ from __future__ import annotations
 import pytest
 import torch
 
+from torchalg.models.context import IterationContext
 from torchalg.models.diagnostics import TerminationDiagnostics
 from torchalg.models.history import DirectionHistory, ResidualHistory
-from torchalg.models.result import IterationContext, SolverResult
+from torchalg.models.result import SolverResult
 from torchalg.models.state import CGState, KrylovState, SolverState
 
 STATE_VECTOR_SIZE = 5

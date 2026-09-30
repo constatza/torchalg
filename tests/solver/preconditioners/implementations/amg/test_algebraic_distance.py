@@ -20,6 +20,7 @@ from torchalg.preconditioners.implementations.amg._algebraic_distance import (
 from torchalg.preconditioners.implementations.amg._algebraic_distance import (
     test_vector_weights as compute_test_vector_weights,  # avoid pytest collecting it as a test
 )
+from torchalg.preconditioners.implementations.amg._graph import depth_neighborhood
 
 
 @pytest.fixture
@@ -59,6 +60,31 @@ def one_strong_one_weak_distance_6(torch_dtype: torch.dtype) -> torch.Tensor:
 def small_test_vectors(torch_dtype: torch.dtype) -> torch.Tensor:
     """Non-trivial full-column-rank test vectors, shape ``(3, 2)``, for the direct-fit check."""
     return torch.tensor([[1.0, 0.3], [0.4, 1.0], [0.7, -0.5]], dtype=torch_dtype)
+
+
+def test_depth_neighborhood_preserves_device_and_boolean_dtype(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+) -> None:
+    """The shared graph kernel stays tensor-native on its input device."""
+    matrix = poisson_1d_factory(5)
+    neighborhood = depth_neighborhood(matrix, 1)
+    assert neighborhood.device == matrix.device
+    assert neighborhood.dtype == torch.bool
+
+
+def test_depth_neighborhood_excludes_diagonal_at_every_depth(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+) -> None:
+    """Walk expansion never turns self-reachability into a graph edge."""
+    matrix = poisson_1d_factory(5)
+    depth_one = depth_neighborhood(matrix, 1)
+    depth_two = depth_neighborhood(matrix, 2)
+    assert not torch.diagonal(depth_one).any()
+    assert not torch.diagonal(depth_two).any()
+    assert depth_one[0, 1]
+    assert not depth_one[0, 2]
+    assert not depth_two[0, 1]
+    assert depth_two[0, 2]
 
 
 def test_vector_weights_t_none_matches_identity_t(

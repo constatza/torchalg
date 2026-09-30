@@ -7,8 +7,9 @@ import dataclasses
 import pytest
 import torch
 
+from torchalg.models.context import IterationContext
 from torchalg.models.diagnostics import TerminationDiagnostics
-from torchalg.models.result import IterationContext, SolverResult
+from torchalg.models.result import SolverResult
 
 
 class TestSolverResult:

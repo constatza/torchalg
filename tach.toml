@@ -1,107 +1,153 @@
 source_roots = ["src"]
 
-# Dependency DAG for torchalg (see docs/plan.md's "Dependency
-# architecture (tach)" section for the full end-state graph and rationale).
-# Extended stage by stage, before each stage's implementation lands, so a
-# boundary violation is caught the moment it's written.
+# Implements docs/dependency-architecture.md. These are desired boundaries;
+# never add an edge merely to bless a current violation.
 
-# Stage 1: the dependency floor — pure tensor math, zero internal deps.
+# Pure leaves and immutable records.
 [[modules]]
-path = "torchalg.utils"
+path = "torchalg.utils.device"
 depends_on = []
+[[modules]]
+path = "torchalg.utils.energy"
+depends_on = []
+[[modules]]
+path = "torchalg.utils.grad_mode"
+depends_on = []
+[[modules]]
+path = "torchalg.utils.numerics"
+depends_on = []
+[[modules]]
+path = "torchalg.utils.validation"
+depends_on = []
+[[modules]]
+path = "torchalg.analysis"
+depends_on = []
+[[modules]]
+path = "torchalg.models.config"
+depends_on = []
+[[modules]]
+path = "torchalg.models.context"
+depends_on = []
+[[modules]]
+path = "torchalg.models.diagnostics"
+depends_on = []
+[[modules]]
+path = "torchalg.models.history"
+depends_on = []
+[[modules]]
+path = "torchalg.models.result"
+depends_on = ["torchalg.models.diagnostics"]
+[[modules]]
+path = "torchalg.models.state"
+depends_on = ["torchalg.models.history"]
+[[modules]]
+path = "torchalg.models.protocols"
+depends_on = ["torchalg.models.history", "torchalg.models.result"]
 
-# Stage 1: declared now (also a zero-dependency leaf), ahead of the
-# `torchalg.monitoring` package itself, which landed in Stage 8.
-# `tach check` only warns ("Module containing '...' not found in project")
-# for a path with no matching source yet — it does not fail — so declaring
-# the entry ahead of the implementation was safe.
-# `torchalg.utils` added when `monitoring/analysis.py` landed (post-hoc
-# energy-norm/Golub-Meurant helpers): it depends on the shared
-# `energy_dot` floor primitive, never on a concrete preconditioner package.
+# Monitoring and solver policies.
 [[modules]]
 path = "torchalg.monitoring"
-depends_on = ["torchalg.utils"]
-
-# Stage 2: data models (state/history/result/config/diagnostics/protocols) -
-# depends only on the utils floor.
-[[modules]]
-path = "torchalg.models"
-depends_on = ["torchalg.utils"]
-
-# Stage 2: framework-agnostic strategies (norms, convergence). Solver-specific
-# strategies (direction, orthogonalization) land in Stage 9, not here.
+depends_on = ["torchalg.utils.energy", "torchalg.utils.numerics"]
 [[modules]]
 path = "torchalg.strategies"
-depends_on = ["torchalg.models", "torchalg.utils"]
+depends_on = ["torchalg.models.state", "torchalg.utils.energy", "torchalg.utils.numerics"]
 
-# Stage 3: preconditioner interface layer — deliberately depends on `utils`
-# ONLY, never `models`/`strategies`. This is a load-bearing DIP/orthogonality
-# boundary (see docs/plan.md's "Dependency architecture (tach)" section):
-# preconditioners must never import solver state/strategy types.
+# Stable preconditioner abstractions.
 [[modules]]
 path = "torchalg.preconditioners.base"
-depends_on = ["torchalg.utils"]
-
-# Stage 3: declared now (same pattern Stage 1 used for `monitoring`) even
-# though `preconditioners/ports.py` itself isn't populated until Stage 7.
+depends_on = []
 [[modules]]
 path = "torchalg.preconditioners.ports"
-depends_on = ["torchalg.utils"]
+depends_on = []
 
-# Stage 3: concrete preconditioners (Identity, Jacobi, Callable,
-# LinearOperator, Scheduled here; ILU/IC0/ICholesky/AMG/POD/Neural land in
-# Stages 4-7). Depends on `.base`/`.ports` and `utils` only — never on
-# `models`/`strategies`, matching the interface layer above.
+# AMG foundation and high-risk feature seams.
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._graph"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._least_squares"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._algebraic_distance"
+depends_on = ["torchalg.preconditioners.implementations.amg._graph", "torchalg.preconditioners.implementations.amg._least_squares"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._compatible_relaxation"
+depends_on = ["torchalg.preconditioners.implementations.amg._graph"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg.hierarchy"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._spectral"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._relaxation"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._jacobi_omega"
+depends_on = ["torchalg.preconditioners.implementations.amg._spectral"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg.transfer"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg.cycle"
+depends_on = ["torchalg.preconditioners.implementations.amg.hierarchy"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg.smoothers"
+depends_on = ["torchalg.preconditioners.implementations.amg._jacobi_omega", "torchalg.preconditioners.implementations.amg._relaxation"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg._test_vectors"
+depends_on = ["torchalg.preconditioners.implementations.amg.smoothers"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg.amg"
+depends_on = ["torchalg.preconditioners.base", "torchalg.preconditioners.implementations.amg.hierarchy"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.amg"
+depends_on = ["torchalg.preconditioners.implementations.amg._algebraic_distance", "torchalg.preconditioners.implementations.amg._compatible_relaxation", "torchalg.preconditioners.implementations.amg._jacobi_omega", "torchalg.preconditioners.implementations.amg._least_squares", "torchalg.preconditioners.implementations.amg._relaxation", "torchalg.preconditioners.implementations.amg._spectral", "torchalg.preconditioners.implementations.amg.amg", "torchalg.preconditioners.implementations.amg.cycle", "torchalg.preconditioners.implementations.amg.hierarchy", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.preconditioners.implementations.amg.transfer"]
+
+# POD is an AMG client; AMG may never depend on POD.
+[[modules]]
+path = "torchalg.preconditioners.implementations.pod.basis"
+depends_on = []
+[[modules]]
+path = "torchalg.preconditioners.implementations.pod.coarsening"
+depends_on = ["torchalg.preconditioners.implementations.amg.transfer", "torchalg.preconditioners.implementations.pod.basis"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.pod.weighting"
+depends_on = ["torchalg.preconditioners.implementations.amg._test_vectors", "torchalg.utils.energy"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.pod.variants"
+depends_on = ["torchalg.preconditioners.implementations.amg.amg", "torchalg.preconditioners.implementations.amg.cycle", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.preconditioners.implementations.pod.coarsening"]
+[[modules]]
+path = "torchalg.preconditioners.implementations.pod"
+depends_on = ["torchalg.preconditioners.implementations.pod.basis", "torchalg.preconditioners.implementations.pod.coarsening", "torchalg.preconditioners.implementations.pod.variants", "torchalg.preconditioners.implementations.pod.weighting"]
+
+# Remaining concrete implementations share one bounded domain. Fine-grained
+# AMG/POD rules above override this umbrella where dependency direction matters.
 [[modules]]
 path = "torchalg.preconditioners.implementations"
-depends_on = [
-    "torchalg.preconditioners.base",
-    "torchalg.preconditioners.ports",
-    "torchalg.utils",
-]
+depends_on = ["torchalg.preconditioners.base", "torchalg.preconditioners.ports", "torchalg.preconditioners.implementations.amg", "torchalg.preconditioners.implementations.pod"]
 
-# Stage 9: solver template-method base. Depends on abstractions only.
+# Solver orchestration depends on abstractions; factories alone compose concretes.
 [[modules]]
 path = "torchalg.base"
-depends_on = [
-    "torchalg.models",
-    "torchalg.monitoring",
-    "torchalg.preconditioners.base",
-    "torchalg.strategies",
-    "torchalg.utils",
-]
-
-# Stage 9: CG algorithm family. Still depends only on the preconditioner
-# interface, never concrete implementations.
+depends_on = ["torchalg.models.protocols", "torchalg.models.result", "torchalg.models.state", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.strategies", "torchalg.utils.device", "torchalg.utils.grad_mode", "torchalg.utils.validation"]
 [[modules]]
 path = "torchalg.conjugate_gradient"
-depends_on = [
-    "torchalg.base",
-    "torchalg.models",
-    "torchalg.monitoring",
-    "torchalg.preconditioners.base",
-    "torchalg.strategies",
-    "torchalg.utils",
-]
-
-# Stage 9: composition root for public solver factories. This is the one
-# solver module allowed to instantiate concrete preconditioners.
+depends_on = ["torchalg.base", "torchalg.models.diagnostics", "torchalg.models.result", "torchalg.models.state", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.strategies", "torchalg.utils.numerics", "torchalg.utils.validation"]
 [[modules]]
 path = "torchalg.factories"
-depends_on = [
-    "torchalg.base",
-    "torchalg.conjugate_gradient",
-    "torchalg.models",
-    "torchalg.monitoring",
-    "torchalg.preconditioners.base",
-    "torchalg.preconditioners.implementations",
-    "torchalg.strategies",
-]
+depends_on = ["torchalg.base", "torchalg.conjugate_gradient", "torchalg.models.result", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.preconditioners.implementations", "torchalg.strategies"]
 
-# Stage 10: comparison runner is an orchestration layer above factories.
+# Comparison data and presentation remain independent of execution.
 [[modules]]
-path = "torchalg.comparison"
-depends_on = [
-    "torchalg.factories",
-    "torchalg.preconditioners.base",
-]
+path = "torchalg.comparison.models"
+depends_on = []
+[[modules]]
+path = "torchalg.comparison.presentation"
+depends_on = ["torchalg.comparison.models"]
+[[modules]]
+path = "torchalg.comparison.recommendations"
+depends_on = ["torchalg.comparison.models"]
+[[modules]]
+path = "torchalg.comparison.runner"
+depends_on = ["torchalg.comparison.models", "torchalg.factories", "torchalg.preconditioners.base"]

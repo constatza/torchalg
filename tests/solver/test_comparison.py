@@ -1,4 +1,4 @@
-"""Tests for ``torchalg.comparison``."""
+"""Tests for the public ``torchalg.comparison`` facade."""
 
 from __future__ import annotations
 
@@ -12,6 +12,14 @@ from torchalg.comparison import (
 )
 from torchalg.preconditioners.implementations.identity import Identity
 from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
+
+
+def test_comparison_facade_keeps_responsibilities_in_dedicated_modules() -> None:
+    """Public exports originate in model, runner, presentation, and ranking modules."""
+    assert CGComparisonResult.__module__ == "torchalg.comparison.models"
+    assert run_cg_comparison.__module__ == "torchalg.comparison.runner"
+    assert format_results_summary.__module__ == "torchalg.comparison.presentation"
+    assert summarize_best_combinations.__module__ == "torchalg.comparison.recommendations"
 
 
 def test_run_cg_comparison_adds_identity_baseline(

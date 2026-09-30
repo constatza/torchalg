@@ -97,6 +97,13 @@ def dense_transfer(torch_dtype: torch.dtype) -> DenseTransferOperator:
     return DenseTransferOperator(P)
 
 
+def test_generic_amg_string_does_not_special_case_coarsening_type(
+    amg_preconditioner: AMGPreconditioner,
+) -> None:
+    """The generic engine formats every structural coarsening uniformly."""
+    assert str(amg_preconditioner).startswith("AMG(n_levels=2, AggregationCoarsening(")
+
+
 @pytest.fixture(
     params=[
         pytest.param("VCycleAMG", id="VCycleAMG"),

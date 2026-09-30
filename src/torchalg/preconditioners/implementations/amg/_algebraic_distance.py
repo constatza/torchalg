@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import torch
 
+from ._graph import depth_neighborhood
 from ._least_squares import lsr_correction
 
 _NEAR_ZERO_ENERGY_TOL = 1e-14
@@ -92,35 +93,6 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
     """
     all_rows = torch.arange(matrix.shape[0], device=matrix.device)
     return lsr_correction(test_vectors, matrix, all_rows)
-
-
-def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
-    """Boolean off-diagonal adjacency of ``matrix`` raised to ``depth`` ([AD11] eq. 4.2).
-
-    ``depth=1`` is ``matrix``'s own off-diagonal nonzero pattern. Deeper
-    values are reached by repeated boolean matrix multiplication of that
-    base pattern with itself - only ever propagating sparsity, never
-    ``A``'s numeric values, matching eq. 4.2's own definition of ``V_i`` via
-    the nonzero *pattern* of ``A^d`` rather than its entries. The diagonal is
-    excluded at
-    every depth (including depths ``> 1``, where an even-length walk can
-    reintroduce ``i``-to-``i`` reachability): a node is never its own
-    caliber-one interpolation neighbor.
-
-    Args:
-        matrix (torch.Tensor): Dense matrix ``A``, shape ``(n, n)``.
-        depth (int): Search depth ``d``, ``>= 1``.
-
-    Returns:
-        torch.Tensor: Boolean neighborhood matrix, shape ``(n, n)``.
-    """
-    n = matrix.shape[0]
-    off_diagonal = ~torch.eye(n, dtype=torch.bool, device=matrix.device)
-    adjacency = (matrix != 0) & off_diagonal
-    reachable = adjacency
-    for _ in range(depth - 1):
-        reachable = (reachable.to(torch.float32) @ adjacency.to(torch.float32)) > 0
-    return reachable & off_diagonal
 
 
 def test_vector_weights(

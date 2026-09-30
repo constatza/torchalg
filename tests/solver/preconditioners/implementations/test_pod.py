@@ -351,6 +351,13 @@ class TestPODCoarseningStrategyLifecycle:
 
 
 class TestPOD2GPreconditioner:
+    def test_string_is_owned_by_pod_preset(
+        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    ) -> None:
+        """POD labeling does not require the generic AMG engine to know POD."""
+        precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        assert str(precond) == "POD-2G(rank=10)"
+
     def test_apply_returns_correct_shape(
         self,
         poisson_1d: torch.Tensor,

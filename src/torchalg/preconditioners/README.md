@@ -41,6 +41,11 @@ code that wants "algebraically smooth" probe vectors, reusing
 `amg.hierarchy.build_hierarchy(matrix, coarsening, n_levels)` is the pure
 function `AMGPreconditioner` uses to build its levels, so setup code can build
 trial hierarchies without instantiating a preconditioner.
+The generic AMG engine has no POD dependency or concrete coarsening type
+checks. POD imports the exact AMG engine/cycle modules it composes, and owns
+its preset-specific display string. Shared device-resident graph traversal
+lives in `amg/_graph.py`; compatible relaxation and algebraic distance depend
+on that neutral kernel rather than on each other.
 `apply_jacobi_damping[_trajectory]` live in `amg/_test_vectors.py` (`pod`
 depends on `amg`, never the reverse) and are re-exported by `pod.weighting`.
 

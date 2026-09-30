@@ -46,7 +46,8 @@ It ships:
 - `TraceMode`/`IterationHistory` for opt-in per-iteration residual/solution
   traces.
 - `run_cg_comparison`/`format_results_summary` to benchmark several
-  preconditioners on the same system side by side.
+  preconditioners on the same system side by side. Comparison execution,
+  result records, text presentation, and ranking live in separate modules.
 - **CPU or GPU, no code changes**: the solver core has no hardcoded device —
   it runs wherever `A`/`b`/`x0` already live. Preconditioners that hold tensor
   state are `nn.Module` subclasses with registered buffers, so
