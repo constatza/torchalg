@@ -22,44 +22,56 @@ from the coarsest down to and including the finest - this module's
 ``range(len(levels) - 1)`` (every level that has a coarser level to have
 been seeded from), which is that same full range translated to 0-indexing.
 
-Not implemented: [BAMG11] eq. 3.7's ``tau_lambda`` rebuild-or-skip test.
-That measure belongs to the W-cycle setup scheme (rebuild the hierarchy at
-every coarser grid immediately, only when relaxing an eigenvector changed
-its Rayleigh quotient by more than a tolerance) - ``bootstrap.py`` only
-implements V^mu-style setup, which always rebuilds the whole hierarchy once
-per bootstrap cycle regardless of how much any single eigenvector changed,
-so ``tau_lambda``-gated skipping has no consumer here.
+Not implemented: [STATUS14] eq. 4.4's ``tau_lambda`` rebuild-or-skip test
+(``tau_lambda(l, l-1) = |lambda^(l) - lambda^(l-1)| / |lambda^(l-1)|``,
+directly confirmed - ``docs/bamg/status14_raw.md``). That measure belongs to
+the W-cycle setup scheme (rebuild the hierarchy at every coarser grid
+immediately, only when relaxing an eigenvector changed its Rayleigh quotient
+by more than a tolerance) - ``bootstrap.py`` only implements V^mu-style
+setup, which always rebuilds the whole hierarchy once per bootstrap cycle
+regardless of how much any single eigenvector changed, so
+``tau_lambda``-gated skipping has no consumer here.
 
 ``test_vector_weights`` (``_algebraic_distance.py``) computes ``omega_kappa``
-using the ``T = I`` reduction of [BAMG11] eq. 4.1 only where that precondition
-("on the finest level, or before any MGE enrichment," ``docs/bootstrap-amg.md``
-line 234) actually holds: ``BAMGCoarsening`` tracks the composite
-prolongation incrementally (``_current_T`` in ``bootstrap.py``) and passes
-the resulting ``T_l`` (this module's own ``T_l = P_l^H P_l`` and
+using the ``T = I`` reduction only where that precondition ("on the finest
+level, or before any MGE enrichment," ``docs/bootstrap-amg.md`` line 234)
+actually holds: ``BAMGCoarsening`` tracks the composite prolongation
+incrementally (``_current_T`` in ``bootstrap.py``) and passes the resulting
+``T_l`` (this module's own ``T_l = P_l^H P_l`` and
 composite-prolongation-chaining formula, both directly confirmed against
-[STATUS14] Sec. 4) into both ``test_vector_weights`` and
-``algebraic_distance`` once ``k_e > 0`` makes it genuinely differ from ``I``
-at the levels this module enriches. **TODO(bamg-fidelity, needs-check),
-not yet resolved:** whether ``omega_kappa`` is actually meant to use this
-same ``T_l`` is unconfirmed - that link rests only on
-``docs/bootstrap-amg.md``'s transcription of [BAMG11] eq. 4.1, a paper this
-session could never fetch from any mirror; a direct [STATUS14] check of
-``omega_kappa`` found it described only via ``||v||_A^2``, with no ``T``
-and an explicit statement that the paper does not link ``T`` to the
-weights - not a contradiction (STATUS14's own tables are MGE-free) but not
-confirmation either. This module's own use of ``T_l`` (the Rayleigh
-quotient in ``refine_eigenpair``/``coarsest_eigenpairs``) is unaffected and
-independently confirmed; only the weight-formula application is in doubt.
+[STATUS14] Sec. 4, prose before eq. 4.2 - ``docs/bamg/status14_raw.md``)
+into both ``test_vector_weights`` and ``algebraic_distance`` once ``k_e > 0``
+makes it genuinely differ from ``I`` at the levels this module enriches.
+**TODO(bamg-fidelity, needs-check), not yet resolved:** whether
+``omega_kappa`` is actually meant to use this same ``T_l`` is unconfirmed.
+[STATUS14] Sec. 3 (``docs/bamg/status14_raw.md`` line 593) states
+``omega_kappa`` only via ``||v||_A^2 = <Av,v>``, with no ``T`` term and no
+equation number of its own; nothing in [STATUS14] or [AD11], as directly
+read from their raw text, links a ``T`` operator to these weights - not a
+contradiction (STATUS14's own tables are MGE-free) but not confirmation
+either. A prior read of this module attributed the ``T``-weighted
+generalization to "[BAMG11] eq. 4.1" - **wrong on its face**: [STATUS14]'s
+own eq. 4.1 is the unrelated homogeneous relaxation system ``A_l x_l = 0``,
+not a weight formula, so that citation could not have been correct even
+setting aside [BAMG11]'s unconfirmed numbering; the underlying uncertainty
+about ``T``-weighted ``omega_kappa`` itself remains, just without a
+fabricated equation number attached to it. This module's own use of ``T_l``
+(the Rayleigh quotient in ``refine_eigenpair``/``coarsest_eigenpairs``) is
+unaffected and independently confirmed; only the weight-formula application
+is in doubt.
 
 Measured effect (``k_r=8``, ``eta=4``, ``n_bootstrap_cycles=2``, GS smoother,
 ``seed=5``, this repo's 1D FD Poisson - the same harness as
 ``tests/benchmarks/preconditioners/test_bootstrap_amg.py``, which itself
-targets [BAMG11] Tables 4.2/4.3's MGE-*free* baseline and so does not
-exercise ``k_e``): ``k_e=8`` alongside the same ``k_r=8`` roughly halves the
-measured convergence factor at the larger sizes - ``rho`` from
+targets [STATUS14] Table 2's MGE-*free* baseline (confirmed:
+``docs/bamg/status14_raw.md`` - ``k_r=8``, ``eta=4``, varying ``h``) and so
+does not exercise ``k_e``): ``k_e=8`` alongside the same ``k_r=8`` roughly
+halves the measured convergence factor at the larger sizes - ``rho`` from
 ``0.51 -> 0.20`` at N=127, ``0.72 -> 0.39`` at N=255, ``0.59 -> 0.31`` at
-N=511 - consistent with [BAMG11] Table 4.4-4.5's qualitative claim that MGE
-improves on relaxation-only test vectors of the same count. At the smallest
+N=511 - consistent with [STATUS14] Table 4's qualitative claim, confirmed
+verbatim, that "using the MGE to enhance the test vectors consistently
+improves the performance of the resulting solvers when compared to the
+results reported in Table 2." At the smallest
 sizes (N=31, N=63) with ``k_e`` comparable to ``k_r``, MGE's enriched test
 vectors can instead push compatible-relaxation coarsening to a degenerate
 single-level result for some setup seeds (measured: 2 of 8 seeds at N=31) -
@@ -114,7 +126,7 @@ def composite_transfer_metrics(
     dtype: torch.dtype,
     device: torch.device,
 ) -> list[torch.Tensor]:
-    """``T_l = P_l^H P_l`` for every level, ``P_l`` the composite interpolation ([STATUS14] Sec. 4.2, prose before eq. 4.2).
+    """``T_l = P_l^H P_l`` for every level, ``P_l`` the composite interpolation ([STATUS14] Sec. 4, prose before eq. 4.2).
 
     ``P_l`` maps level ``l``'s space up to the finest level's space by
     chaining every prolongation from ``l`` to ``0``; ``P_0`` is the identity,
@@ -144,7 +156,7 @@ def composite_transfer_metrics(
 def coarsest_eigenpairs(
     matrix: torch.Tensor, T: torch.Tensor, k_e: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Solve ``A w = lambda T w`` directly for the ``k_e`` smallest eigenvalues ([STATUS14] Sec. 4.2's MGE procedure).
+    """Solve ``A w = lambda T w`` directly for the ``k_e`` smallest eigenvalues ([STATUS14] Sec. 4's MGE procedure).
 
     Reduced to a standard symmetric eigenproblem by Cholesky-whitening ``T``:
     ``T = L L^H``, ``A' = L^{-1} A L^{-H}``, ``eigh(A') = (mu, y)``,
@@ -185,7 +197,7 @@ def refine_eigenpair(
     """Relax an interpolated eigenvector on the shifted homogeneous problem, refresh its Rayleigh quotient.
 
     ``relax on (A_l - lambda_l T_l) w_l = 0``, then ``lambda_l = <A_l w_l,
-    w_l> / <T_l w_l, w_l>`` ([STATUS14] Sec. 4.2's per-level step). This
+    w_l> / <T_l w_l, w_l>`` ([STATUS14] Sec. 4's per-level step). This
     "resembles inverse Rayleigh-quotient iteration with the inverse replaced
     by relaxation sweeps" (``docs/bootstrap-amg.md`` Sec. 4.2) - and, like
     ordinary Rayleigh-quotient iteration, renormalizes to unit ``T``-norm
@@ -243,7 +255,7 @@ def multigrid_eigensolver(
     relaxation: _Relaxation,
     sweeps: int,
 ) -> dict[int, torch.Tensor]:
-    """[STATUS14] Sec. 4.2's MGE procedure: ``k_e`` eigenvector approximations for every level but the coarsest.
+    """[STATUS14] Sec. 4's MGE procedure: ``k_e`` eigenvector approximations for every level but the coarsest.
 
     Solves the coarsest level's generalized eigenproblem directly
     (``coarsest_eigenpairs``), then interpolates and relaxes up through

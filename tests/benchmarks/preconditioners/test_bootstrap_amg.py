@@ -11,7 +11,9 @@ coarsening algorithm) that keeps its absolute numbers from matching the
 paper's exactly.
 
 Every other test below instead attempts to reproduce the *shape* of
-[BAMG11] Tables 4.2/4.3 - LS degrading with problem size, LSR generally
+[STATUS14] Table 2 (confirmed directly - ``docs/bamg/status14_raw.md``:
+``k_r=8``, ``eta=4``, ``h`` varying ``1/32..1/512``, ``rho`` rising with
+problem size) - LS degrading with problem size, LSR generally
 doing better - on this repo's own plain finite-difference Poisson problems
 (``poisson_1d_factory``/``anisotropic_2d_factory``, ``tests/conftest.py``),
 using hyperparameters that were never checked against a specific verified
@@ -26,7 +28,7 @@ What is measured:
     root-form rate estimate), but applies the full
     ``BootstrapAMGPreconditioner.apply()`` V-cycle each step instead of a
     single-level HCR F-relaxation sweep - i.e. it is the actual solver
-    convergence factor the paper's Tables 4.2/4.3 report, not the CR
+    convergence factor [STATUS14] Table 2 reports, not the CR
     diagnostic rate Task 1's own property test covers. A direct
     convergence-factor measurement was chosen over a PCG-iteration-count
     proxy because ``AMGPreconditioner.apply(residual)`` already exposes one
@@ -38,33 +40,46 @@ What is measured:
     Sec. 5's own "estimate ... rho; stop if rho <= target" - not the true
     infinite-iteration limit.
 
-Why the absolute numbers will not match [BAMG11] Tables 4.2/4.3:
-    1. **Discretization.** ``poisson_1d_factory``/``anisotropic_2d_factory``
-       build a plain 5-point finite-difference Poisson stencil; [BAMG11]
-       Sec. 4.1 uses a finite-element Laplace discretization on the same
-       nominal grid sizes. Different discretizations have different
-       algebraically-smooth-error spectra, which directly changes ``rho``.
+Why the absolute numbers will not match [STATUS14] Table 2:
+    1. **Coarsening algorithm.** [STATUS14] Table 1/2's own text states its
+       method "using standard (full) coarsening and interpolation" -
+       structured, geometric mesh-doubling coarsening, not this module's
+       compatible-relaxation-plus-algebraic-distance coarsening
+       (``bootstrap.py``'s ``BAMGCoarsening``). This is the primary
+       confirmed source of the numeric gap - see
+       ``test_bootstrap_amg_matches_status14_table1_exact_setup`` below,
+       which reproduces every other input (discretization, cycle,
+       hyperparameters, TV distribution) exactly and still cannot close it.
+       A prior version of this note instead attributed the gap to a
+       finite-element vs. finite-difference discretization difference
+       ("[BAMG11] Sec. 4.1"): **that claim does not hold up against
+       [STATUS14]'s own text**, which states Table 1/2's results use "the
+       central finite difference discretization of the Poisson problem" -
+       the same discretization family ``poisson_1d_factory``/
+       ``anisotropic_2d_factory`` build here, not a different one.
     2. **Cycle.** ``BootstrapAMGPreconditioner`` hardcodes a fixed
        V(1,1)-cycle (``_presets.PRESET_CYCLE``), not the paper's V(2,2).
-    3. **No near-null-space seeding.** [BAMG11] Sec. 6's near-optimal LSR
-       range (``rho ~= 0.04-0.15``) requires seeding the known constant
-       vector ``1`` into the test-vector set alongside the ``k_r`` random
-       ones; ``BootstrapAMGPreconditioner`` has no such seeding hook - its
-       test vectors are purely ``k_r`` random draws
+    3. **No near-null-space seeding.** [STATUS14] Table 3's near-optimal LSR
+       range (``rho`` from ``0.089`` to ``0.150`` across ``h=1/32..1/512``,
+       confirmed directly - ``docs/bamg/status14_raw.md``) requires seeding
+       the known constant vector ``1`` into the test-vector set alongside
+       the ``k_r`` random ones; ``BootstrapAMGPreconditioner`` has no such
+       seeding hook - its test vectors are purely ``k_r`` random draws
        (``_random_test_vectors`` in ``bootstrap.py``). This is this
        harness's best-attributed reason the absolute numbers here sit around
        ``rho ~= 0.45-0.75`` rather than the paper's seeded range; it is a
        documented, deliberate scope decision, not a defect. See point 4:
        nothing here decomposes this reason's share of the gap from that
        one's, since only seeding (and MGE, not listed here because this
-       benchmark targets Tables 4.2/4.3, which are MGE-free) has an explicit
+       benchmark targets Table 2, which is MGE-free) has an explicit
        paper-sanctioned "optional" framing.
     4. **Finest-level-only test-vector improvement (RESOLVED).**
        ``BootstrapSetup.run`` used to improve only the finest level's test
-       vectors per bootstrap cycle; [BAMG11] Sec. 5 and [STATUS14]'s base
-       bootstrap loop (independent of MGE) improve every level's, and no
-       paper text sanctioned finest-only as an alternate mode, so this was a
-       mandatory fix (``BootstrapSetup._improve_levels``, ``bootstrap.py``).
+       vectors per bootstrap cycle; [STATUS14] Sec. 4's base bootstrap loop
+       (independent of MGE, confirmed directly) improves every level's, and
+       no paper text sanctioned finest-only as an alternate mode, so this
+       was a mandatory fix (``BootstrapSetup._improve_levels``,
+       ``bootstrap.py``).
        Re-measuring after the fix showed a small, mixed effect on this
        harness's ``rho`` values, not the clear improvement a first guess
        might expect: the fix only changes anything for hierarchies with 3+
@@ -206,7 +221,7 @@ def _mg_convergence_factor(
 
 @pytest.fixture
 def poisson_paper_sizes() -> tuple[int, ...]:
-    """1D problem sizes reproducing [BAMG11] Tables 4.2/4.3's ``N`` column."""
+    """1D problem sizes reproducing [STATUS14] Table 2's ``h`` column (as ``N = 1/h - 1``)."""
     return (31, 63, 127, 255, 511)
 
 
@@ -252,7 +267,7 @@ def energy_norm_start_factory(torch_dtype: torch.dtype) -> Callable[[int], torch
 
 @pytest.fixture
 def bootstrap_amg_factory() -> Callable[[torch.Tensor, bool], BootstrapAMGPreconditioner]:
-    """Factory building a ``BootstrapAMGPreconditioner`` with [BAMG11] Sec. 6's default hyperparameters.
+    """Factory building a ``BootstrapAMGPreconditioner`` with [STATUS14] Table 1/2's default hyperparameters (``k_r=8``, ``eta=4``).
 
     ``seed=5`` matches this codebase's existing convention for
     ``BootstrapAMGPreconditioner`` tests (``test_bootstrap.py``'s
@@ -261,9 +276,10 @@ def bootstrap_amg_factory() -> Callable[[torch.Tensor, bool], BootstrapAMGPrecon
     a value hand-picked for this benchmark.
 
     ``smoother=GaussSeidelSmoother()`` is pinned explicitly rather than
-    left to the class default: this benchmark validates against [BAMG11]'s
-    own published Table 4.2/4.3 numbers, which are for the paper's
-    algorithm specifically (symmetric GS smoothing) - it needs to keep
+    left to the class default: [STATUS14] Table 1/2's own text confirms its
+    test vectors "are computed by applying Gauss Seidel iterations" - this
+    benchmark validates against that published behavior specifically - it
+    needs to keep
     measuring that claim regardless of what ``BootstrapAMGPreconditioner``
     defaults to for everyday PCG use, which is a separate, orthogonal
     decision (currently weighted Jacobi, for solve-time performance).

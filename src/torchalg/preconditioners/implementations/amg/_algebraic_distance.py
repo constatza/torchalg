@@ -14,10 +14,19 @@ number cited below refers to it.
 References:
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). An algebraic
       distances measure of AMG strength of connection. arXiv:1106.5990.
-      Cited as [AD11]: eq. 4.2 (algebraic d-neighborhood ``V_i``), eq. 4.3
-      (the caliber-one LS distance ``r_ij``), eq. 4.4 (the pruned strength
-      graph ``M_d``), Remark 4.3 (computing ``V_i`` from ``A``'s sparsity
-      alone, without forming ``A^d``'s values).
+      Cited as [AD11] (all four directly confirmed against
+      ``docs/bamg/ad11_raw.md``): eq. 4.2 (algebraic d-neighborhood
+      ``V_i := {j : (A^d)_ij != 0}`` - defined via the nonzero *pattern* of
+      ``A^d``, not its values, which is what ``depth_neighborhood`` below
+      computes), eq. 4.3 (the caliber-one LS distance ``r_ij``, whose own
+      formula already embeds the residual-corrected target ``v_i^(kappa) -
+      (1/a_ii) r_i^(kappa)`` inline), eq. 4.4 (the pruned strength graph
+      ``M_d``). A prior read of this module additionally cited "Remark 4.3"
+      for the sparsity-only claim above: **no Remark 4.3 exists in this
+      paper** (its Sec. 4 has only Remarks 4.1, 4.2 and 4.4, none of which
+      make this claim) - that citation was fabricated or misremembered and
+      is dropped; eq. 4.2's own definition already supports the claim
+      without needing a remark.
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2015). Bootstrap
       algebraic multigrid: status report, open problems, and outlook. Numer.
       Math. Theor. Meth. Appl. 8(1). arXiv:1406.1819. Cited as [STATUS14]:
@@ -86,12 +95,14 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
 
 
 def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
-    """Boolean off-diagonal adjacency of ``matrix`` raised to ``depth`` ([AD11] eq. 4.2/Remark 4.3).
+    """Boolean off-diagonal adjacency of ``matrix`` raised to ``depth`` ([AD11] eq. 4.2).
 
     ``depth=1`` is ``matrix``'s own off-diagonal nonzero pattern. Deeper
     values are reached by repeated boolean matrix multiplication of that
     base pattern with itself - only ever propagating sparsity, never
-    ``A``'s numeric values, per Remark 4.3. The diagonal is excluded at
+    ``A``'s numeric values, matching eq. 4.2's own definition of ``V_i`` via
+    the nonzero *pattern* of ``A^d`` rather than its entries. The diagonal is
+    excluded at
     every depth (including depths ``> 1``, where an even-length walk can
     reintroduce ``i``-to-``i`` reachability): a node is never its own
     caliber-one interpolation neighbor.

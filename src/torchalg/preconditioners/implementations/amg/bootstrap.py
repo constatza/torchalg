@@ -28,23 +28,32 @@ paper itself presents the omitted piece as an add-on enhancement over an
 already-valid baseline, so the right fix is to expose it as a configurable
 knob, not to silently hardcode one setting.
 
-- **Multigrid eigensolver (MGE, [BAMG11] Sec. 4.2 / [STATUS14] Sec. 4) -
-  RESOLVED: implemented in ``_mge.py``, opt-in via ``k_e``.** Bootstrap
-  cycles improve test vectors by running the current AMG cycle on ``A x =
-  0`` alone by default ([BAMG11] Sec. 3, Sec. 5's "for l=0..L-1: relax; ...
-  repeat: improve V ... recompute C_l, P_l"); [STATUS14] frames MGE as an
-  enhancement layered on this already-functional relaxation-only baseline
-  (its Tables 1-3 report working two-grid solvers before MGE is even
-  introduced; MGE then "consistently improves the performance... when
-  compared to" those results) - not as required infrastructure, so ``k_e=0``
-  (the default) keeps the historical MGE-free behavior exactly.
+- **Multigrid eigensolver (MGE, [STATUS14] Sec. 4) - RESOLVED: implemented
+  in ``_mge.py``, opt-in via ``k_e``.** Bootstrap cycles improve test
+  vectors by running the current AMG cycle on ``A x = 0`` alone by default
+  ([STATUS14] Sec. 4, confirmed - ``docs/bamg/status14_raw.md``: "the
+  algorithm begins with relaxation applied to the homogeneous system,
+  A_l x_l = 0, (4.1)... this overall process is then repeated with the
+  current AMG method applied in addition to (or replacing) relaxation");
+  [STATUS14] frames MGE as an enhancement layered on this already-functional
+  relaxation-only baseline (its Tables 1-3 report working two-grid solvers
+  before MGE is even introduced; MGE then "consistently improves the
+  performance... when compared to" those results, confirmed verbatim
+  against Table 4's surrounding text) - not as required infrastructure, so
+  ``k_e=0`` (the default) keeps the historical MGE-free behavior exactly.
   ``k_e > 0`` runs ``_mge.multigrid_eigensolver`` each bootstrap cycle:
   solve the coarsest level's small generalized eigenproblem directly, then
   interpolate and relax the eigenvectors up through every finer level
   (``_mge.py``'s own module docstring has the index-convention translation
   from the papers' numbering). The resulting eigenvector columns are
   appended to the relaxation-improved test vectors at every level
-  (``k = k_r + k_e`` total for the LS/LSR fit, per [BAMG11] Table 4.4-4.5).
+  (``k = k_r + k_e`` total for the LS/LSR fit - [STATUS14] Tables 4-5,
+  confirmed: "k_r = |V^r| = 8 and k_e = |V^e| = 8... combined to form the
+  set of TVs V"). A prior read of this module attributed the same material
+  to "[BAMG11] Sec. 4.2"/"Sec. 3, Sec. 5"/"Table 4.4-4.5"; [BAMG11] could
+  not be fetched this session, so those specific numbers are unconfirmed
+  (STATUS14's own numbering, used above, is flat - Sec. 4, Table 4/5, no
+  subsections).
   ``test_vector_weights``'s ``T = I`` reduction (used in both
   ``_algebraic_distance.algebraic_distance`` and this module's
   ``_prolongation``) is only paper-valid "on the finest level, or before
@@ -104,10 +113,13 @@ knob, not to silently hardcode one setting.
   algebraic-distance matrix once, at initialization, and never recomputes it
   as the independent-set loop proceeds - this module already matches that.
 - **Every-level test-vector improvement (RESOLVED: no longer finest-only).**
-  [BAMG11] Sec. 5's outer loop, and [STATUS14]'s own description of the base
-  bootstrap loop (independent of MGE), improve the test vectors on *every*
-  level; neither paper offers a finest-only variant as a sanctioned
-  alternative, so this was a mandatory fix, not an optional knob.
+  [STATUS14] Sec. 4's own description of the base bootstrap loop
+  (independent of MGE, confirmed directly - ``docs/bamg/status14_raw.md``),
+  improves the test vectors on *every* level; the paper offers no
+  finest-only variant as a sanctioned alternative, so this was a mandatory
+  fix, not an optional knob. A prior read of this module attributed the
+  same outer loop additionally to "[BAMG11] Sec. 5"; [BAMG11] could not be
+  fetched this session, so that section number is unconfirmed.
   ``BootstrapSetup._improve_levels`` now runs the current partial
   hierarchy's cycle rooted at *each* level ``l`` (sub-hierarchy from ``l``
   down to the coarsest) on that level's own ``A_l x_l = 0`` - the same
@@ -236,7 +248,7 @@ confirmed, since [BAMG11] could not be fetched this session."""
 def _random_test_vectors(
     matrix: torch.Tensor, k: int, draw: Callable[[int], torch.Tensor]
 ) -> torch.Tensor:
-    """``k`` random test vectors on ``matrix``'s grid ([BAMG11] Sec. 4.1: TVs start random).
+    """``k`` random test vectors on ``matrix``'s grid ([STATUS14] Sec. 4: TVs start random).
 
     Args:
         matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
@@ -289,7 +301,7 @@ def _seeded_test_vectors(
 def _relax_columns(
     matrix: torch.Tensor, vectors: torch.Tensor, relaxation: _Relaxation, sweeps: int
 ) -> torch.Tensor:
-    """Relax every column of ``vectors`` on ``matrix @ x = 0`` ([BAMG11] eq. 3.1).
+    """Relax every column of ``vectors`` on ``matrix @ x = 0`` ([STATUS14] eq. 4.1, confirmed - ``docs/bamg/status14_raw.md``).
 
     Args:
         matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
@@ -312,7 +324,7 @@ def _improve_test_vectors(
     hierarchy: MultigridHierarchy,
     iterations: int,
 ) -> torch.Tensor:
-    """Improve ``vectors`` by running the current AMG cycle on ``matrix @ x = 0`` ([BAMG11] Sec. 3).
+    """Improve ``vectors`` by running the current AMG cycle on ``matrix @ x = 0`` ([STATUS14] Sec. 4: "repeated with the current AMG method applied... as the solver for the homogeneous systems").
 
     Uses linearity of the cycle for a zero right-hand side: one cycle from
     ``x`` is ``x - cycle.apply(hierarchy, matrix @ x)`` (``adaptive.py``'s
@@ -499,13 +511,17 @@ class BAMGCoarsening:
         (no coarsening has happened yet within this pass, so ``T_0 = I``
         trivially - see ``_current_T``). A fresh ``BAMGCoarsening`` per
         bootstrap cycle (``BootstrapSetup._coarsening_from``) means this
-        always starts ``None`` at the true finest level, exactly matching
-        [BAMG11]/[STATUS14]'s own ``T_0 = I``."""
+        always starts ``None`` at the true finest level, matching the
+        natural reading of [STATUS14]'s composite-interpolation definition
+        (``P_l = P_0 ... P_{l-1}`` for ``l = 1, ..., L``; the empty product
+        at ``l = 0`` is the identity, so ``T_0 = I`` - the paper states the
+        chain for ``l >= 1`` and does not spell out the ``l = 0`` case
+        explicitly)."""
 
     def _current_T(self) -> torch.Tensor | None:
         """Composite-interpolation Gram operator ``T_l = P_l^H P_l`` for the level about to be processed.
 
-        [BAMG11] Sec. 4.2 / ``docs/bootstrap-amg.md`` line 234: ``T`` only
+        [STATUS14] Sec. 4 / ``docs/bootstrap-amg.md`` line 234: ``T`` only
         differs from the identity once at least one coarser level has been
         built within this pass, i.e. never at the finest level. Returning
         ``None`` (rather than materializing an explicit identity matrix)
@@ -690,8 +706,10 @@ class BAMGCoarsening:
             distance (torch.Tensor): Algebraic-distance matrix ``r``, shape
                 ``(n, n)``, used by the empty-interpolatory-set fallback.
             T (torch.Tensor | None): Composite-interpolation Gram operator
-                for the LS/LSR fit weights ([BAMG11] eq. 4.1); ``None`` for
-                the ``T = I`` reduction (see ``_current_T``).
+                for the LS/LSR fit weights (``omega_kappa``'s ``T``-weighted
+                generalization - see ``_mge.py``'s module docstring for its
+                unresolved TODO status); ``None`` for the ``T = I``
+                reduction (see ``_current_T``).
 
         Returns:
             torch.Tensor: Prolongation matrix, shape ``(n, n_c)``.
@@ -794,10 +812,13 @@ class BootstrapSetup:
         k_r (int): Number of relaxation-derived test vectors.
         use_lsr (bool): Apply the LSR residual correction before fitting.
         k_e (int): Number of multigrid-eigensolver (MGE) eigenvector
-            approximations per bootstrap cycle ([BAMG11] Algorithm 1,
-            ``_mge.py``); ``0`` disables MGE (the historical behavior -
-            [STATUS14] frames MGE as an optional enhancement over an
-            already-valid relaxation-only baseline, not a requirement).
+            approximations per bootstrap cycle (``_mge.py``; ``k_r``/``k_e``
+            naming, and the combined-total convention below, both directly
+            confirmed against [STATUS14] Sec. 4's ``V^r``/``V^e`` sets and
+            Tables 4-5's ``k_r = k_e = 8``); ``0`` disables MGE (the
+            historical behavior - [STATUS14] frames MGE as an optional
+            enhancement over an already-valid relaxation-only baseline, not
+            a requirement).
         n_bootstrap_cycles (int): Number of bootstrap-cycle passes.
         max_levels (int): Maximum number of levels.
         max_coarse (int): Stop coarsening at this many coarse nodes.
@@ -853,11 +874,17 @@ class BootstrapSetup:
     ) -> dict[int, torch.Tensor]:
         """Improve every level's relaxation-derived test vectors via its own sub-hierarchy cycle.
 
-        [BAMG11] Sec. 5's outer loop, and [STATUS14]'s base bootstrap loop
-        (independent of MGE), improve the test vectors on *every* level each
-        bootstrap cycle - "the current AMG cycle replaces plain relaxation"
-        for the ``for l=0,...,L-1: relax on A_l x_l=0`` step ([BAMG11] eq.
-        3.1). This applies that replacement at every level ``l`` that has a
+        [STATUS14] Sec. 4's base bootstrap loop (independent of MGE) -
+        "repeated with the current AMG method applied in addition to (or
+        replacing) relaxation as the solver for the homogeneous systems" -
+        improves the test vectors on *every* level each bootstrap cycle,
+        replacing plain relaxation for the ``for l=0,...,L-1: relax on
+        A_l x_l=0`` step ([STATUS14] eq. 4.1, confirmed). A prior read of
+        this module attributed the same outer loop to "[BAMG11] Sec. 5";
+        [BAMG11] could not be fetched this session, so that specific section
+        number is unconfirmed (STATUS14's own restatement is in its flat,
+        unsectioned Sec. 4, not a "Sec. 5"). This applies that replacement
+        at every level ``l`` that has a
         coarser level below it (``0..len(levels)-2``), rooting the cycle at
         ``levels[l]`` with the sub-hierarchy from ``l`` down to the
         coarsest - the same linearity identity ``_improve_test_vectors``
@@ -868,8 +895,11 @@ class BootstrapSetup:
         Takes ``level_vectors`` directly (the relaxation-derived family
         ``V^r`` alone) rather than reading a ``BAMGCoarsening``'s stored
         state, because that state may also carry MGE's ``V^e`` columns
-        appended for the *previous* cycle's LS/LSR fit ([BAMG11] Algorithm
-        1) - ``V^r`` must keep exactly ``run``'s original column count across
+        appended for the *previous* cycle's LS/LSR fit ([STATUS14] Sec. 4:
+        "the sets V^r and V^e are then combined to form the set of TVs V
+        that is used to compute the least squares interpolation operator on
+        each level", confirmed) - ``V^r`` must keep exactly ``run``'s
+        original column count across
         every cycle, or MGE columns would compound cycle over cycle instead
         of being freshly recomputed each time (``multigrid_eigensolver``
         never "improves" a stored eigenvector across cycles; it re-solves
@@ -912,9 +942,9 @@ class BootstrapSetup:
     ) -> dict[int, torch.Tensor]:
         """Concatenate MGE eigenvector columns onto the relaxation-improved vectors, per level.
 
-        [BAMG11] Algorithm 1: "MGE-enriched TVs are appended to the
-        relaxation-derived ones" (``k = k_r + k_e`` total for the LS/LSR
-        fit) - ``relaxed`` and ``enriched`` share the same keys
+        [STATUS14] Sec. 4: "the sets V^r and V^e are then combined to form
+        the set of TVs V" (``k = k_r + k_e`` total for the LS/LSR fit,
+        confirmed) - ``relaxed`` and ``enriched`` share the same keys
         (``BootstrapSetup._improve_levels`` and ``multigrid_eigensolver``
         both cover every level except the coarsest, for the same reason).
 
@@ -1110,8 +1140,9 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     is several multiples of a classical-AMG setup (Sec. 8), so it pays off
     when one matrix is reused across many solves. Compatible-relaxation
     coarsening keeps symmetric Gauss-Seidel unconditionally: CR's relaxation
-    *is* the coarsening criterion ([BAMG11] Sec. 2.1's F-relaxation
-    convergence test), not a smoothing style, so swapping it would change
+    *is* the coarsening criterion ([AD11] Sec. 3.2, eq. 3.3-3.4, confirmed -
+    the F-relaxation convergence-rate test), not a smoothing style, so
+    swapping it would change
     which nodes are marked coarse rather than merely change speed;
     ``smoother`` affects only the solve-time cycle, exactly like
     ``AdaptiveSAPreconditioner``.
@@ -1128,7 +1159,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         gamma (float): Caliber-growth penalization exponent.
         use_lsr (bool): Apply the LSR residual correction before fitting.
         k_e (int): Number of MGE eigenvector approximations per bootstrap
-            cycle ([BAMG11] Algorithm 1); ``0`` disables MGE (the
+            cycle (``_mge.py``, [STATUS14] Sec. 4); ``0`` disables MGE (the
             historical behavior - [STATUS14] frames MGE as an optional
             enhancement over an already-valid baseline, not a requirement).
         max_levels (int): Maximum number of levels.
