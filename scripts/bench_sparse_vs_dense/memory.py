@@ -20,17 +20,25 @@ Three tiers, all stdlib/torch-native (no new dependency):
    approximate secondary signal (process-wide, includes Python/allocator
    overhead, and - because ``ru_maxrss`` is a running high-water mark that
    never resets - only detects a *new* peak reached during the block, not
-   memory reused below a previous cell's peak).
+   memory reused below a previous cell's peak). The ``resource`` module is
+   POSIX-only (no Windows build), so this signal is simply unavailable
+   there - ``peak_bytes`` stays ``None`` rather than the import failing the
+   whole script, since :func:`storage_bytes` is the primary, exact signal
+   and this is only ever a secondary cross-check.
 """
 
 from __future__ import annotations
 
-import resource
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
+
+try:
+    import resource
+except ImportError:  # Windows has no `resource` module.
+    resource = None
 
 
 def storage_bytes(tensor: torch.Tensor) -> int:
@@ -127,9 +135,13 @@ def cpu_peak_rss_delta() -> Iterator[MemoryReading]:
         MemoryReading: Mutated in place; ``peak_bytes`` (bytes, converted
             from the kilobytes ``ru_maxrss`` reports on Linux) and
             ``approximate=True`` are only valid after the ``with`` block
-            exits.
+            exits. ``peak_bytes`` stays ``None`` on platforms without
+            ``resource`` (Windows).
     """
     reading = MemoryReading(peak_bytes=None, approximate=True)
+    if resource is None:
+        yield reading
+        return
     before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     try:
         yield reading
