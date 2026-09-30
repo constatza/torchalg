@@ -55,6 +55,37 @@ def dense_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     return factors
 
 
+def ic0_sparsity_mask(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
+    """Compute IC(0)'s target sparsity pattern without factorizing.
+
+    This is the structural half of ``dense_ic0``, split out because it
+    answers "does IC(0) stay non-filling at this threshold?" on its own:
+    the pattern is fixed by ``matrix`` and ``threshold`` alone (an ``&`` of
+    two boolean tensors), before any elimination, square root, or pivot
+    check runs. Checking it directly is ``O(n^2)`` with no loop and no
+    breakdown risk, versus ``dense_ic0``'s ``O(n^3)`` elimination that can
+    raise ``ValueError`` on an indefinite pivot - a question about pattern
+    shouldn't have to survive numerics to get answered.
+
+    Args:
+        matrix (torch.Tensor): Symmetric positive-definite system matrix
+            ``A``, shape ``(n, n)``.
+        threshold (float): Drop tolerance - entries with ``|value| <=
+            threshold`` are treated as zero and excluded from the sparsity
+            pattern.
+
+    Returns:
+        torch.Tensor: Boolean mask, shape ``(n, n)``, true where the IC(0)
+            factor is allowed to be non-zero (lower triangle, ``|A_ij| >
+            threshold``).
+    """
+    n = matrix.shape[0]
+    row_index = torch.arange(n, device=matrix.device).unsqueeze(1)
+    col_index = torch.arange(n, device=matrix.device).unsqueeze(0)
+    lower_triangle = row_index >= col_index
+    return lower_triangle & (matrix.abs() > threshold)
+
+
 def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     """Compute a dense zero-fill incomplete Cholesky (IC(0)) factor ``L``.
 
@@ -90,10 +121,7 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
             shape ``(n, n)``.
     """
     n = matrix.shape[0]
-    row_index = torch.arange(n, device=matrix.device).unsqueeze(1)
-    col_index = torch.arange(n, device=matrix.device).unsqueeze(0)
-    lower_triangle = row_index >= col_index
-    sparsity_mask = lower_triangle & (matrix.abs() > threshold)
+    sparsity_mask = ic0_sparsity_mask(matrix, threshold)
 
     factor = torch.where(sparsity_mask, torch.tril(matrix), torch.zeros_like(matrix))
 
