@@ -212,3 +212,21 @@ class TestPodWeighting:
             smoother_persistence_scales(snapshots, poisson_matrix, steps=3),
             smoother_persistence_scales(snapshots, poisson_matrix, omega=1.0 / rho, steps=3),
         )
+
+
+class TestSparseJacobiSpectralRadius:
+    """``jacobi_spectral_radius``/``scaled_by_inverse_diagonal`` accept sparse CSR input."""
+
+    def test_matches_dense_reference(self, poisson_matrix: torch.Tensor) -> None:
+        """The Arnoldi estimate is identical whether ``A`` is dense or sparse CSR."""
+        dense_rho = jacobi_spectral_radius(poisson_matrix)
+        sparse_rho = jacobi_spectral_radius(poisson_matrix.to_sparse_csr())
+        torch.testing.assert_close(sparse_rho, dense_rho)
+
+    def test_scaled_by_inverse_diagonal_matches_dense_reference(
+        self, poisson_matrix: torch.Tensor
+    ) -> None:
+        """``D^-1 A`` densified from the sparse path equals the dense path exactly."""
+        dense = jacobi_omega_module.scaled_by_inverse_diagonal(poisson_matrix)
+        sparse = jacobi_omega_module.scaled_by_inverse_diagonal(poisson_matrix.to_sparse_csr())
+        torch.testing.assert_close(sparse.to_dense(), dense)

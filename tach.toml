@@ -44,6 +44,27 @@ depends_on = ["torchalg.models.history"]
 path = "torchalg.models.protocols"
 depends_on = ["torchalg.models.history", "torchalg.models.result"]
 
+# Sparse (torch.sparse CSR) primitives - pure leaves, no dependency on any
+# preconditioner module (consumed by AMG/POD, never the reverse).
+[[modules]]
+path = "torchalg.sparse.diagonal"
+depends_on = []
+[[modules]]
+path = "torchalg.sparse.rowscale"
+depends_on = []
+[[modules]]
+path = "torchalg.sparse.galerkin"
+depends_on = []
+[[modules]]
+path = "torchalg.sparse.transfer"
+depends_on = []
+[[modules]]
+path = "torchalg.sparse.aggregation"
+depends_on = ["torchalg.sparse.diagonal", "torchalg.sparse.rowscale"]
+[[modules]]
+path = "torchalg.sparse"
+depends_on = ["torchalg.sparse.aggregation", "torchalg.sparse.diagonal", "torchalg.sparse.galerkin", "torchalg.sparse.rowscale", "torchalg.sparse.transfer"]
+
 # Monitoring and solver policies.
 [[modules]]
 path = "torchalg.monitoring"
@@ -84,7 +105,7 @@ path = "torchalg.preconditioners.implementations.amg._relaxation"
 depends_on = []
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg._jacobi_omega"
-depends_on = ["torchalg.preconditioners.implementations.amg._spectral"]
+depends_on = ["torchalg.preconditioners.implementations.amg._spectral", "torchalg.sparse"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg.transfer"
 depends_on = []
@@ -102,7 +123,7 @@ path = "torchalg.preconditioners.implementations.amg.amg"
 depends_on = ["torchalg.preconditioners.base", "torchalg.preconditioners.implementations.amg.hierarchy"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg"
-depends_on = ["torchalg.preconditioners.implementations.amg._algebraic_distance", "torchalg.preconditioners.implementations.amg._compatible_relaxation", "torchalg.preconditioners.implementations.amg._jacobi_omega", "torchalg.preconditioners.implementations.amg._least_squares", "torchalg.preconditioners.implementations.amg._relaxation", "torchalg.preconditioners.implementations.amg._spectral", "torchalg.preconditioners.implementations.amg.amg", "torchalg.preconditioners.implementations.amg.cycle", "torchalg.preconditioners.implementations.amg.hierarchy", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.preconditioners.implementations.amg.transfer"]
+depends_on = ["torchalg.preconditioners.implementations.amg._algebraic_distance", "torchalg.preconditioners.implementations.amg._compatible_relaxation", "torchalg.preconditioners.implementations.amg._jacobi_omega", "torchalg.preconditioners.implementations.amg._least_squares", "torchalg.preconditioners.implementations.amg._relaxation", "torchalg.preconditioners.implementations.amg._spectral", "torchalg.preconditioners.implementations.amg.amg", "torchalg.preconditioners.implementations.amg.cycle", "torchalg.preconditioners.implementations.amg.hierarchy", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.preconditioners.implementations.amg.transfer", "torchalg.sparse"]
 
 # POD is an AMG client; AMG may never depend on POD.
 [[modules]]

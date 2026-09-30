@@ -27,6 +27,8 @@ import weakref
 
 import torch
 
+from torchalg.sparse import sparse_diagonal, sparse_row_scale
+
 from ._spectral import approximate_spectral_radius
 
 RELAXATION_NOMINAL = 1.0
@@ -42,12 +44,21 @@ _cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], torch.Tensor]] = {}
 def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     """``D^-1 A`` with ``D^-1`` zero where the diagonal is zero (PyAMG's ``get_diagonal(inv=True)``).
 
+    Dispatches on ``matrix.is_sparse_csr`` (``torchalg.sparse.sparse_diagonal``/
+    ``sparse_row_scale`` instead of ``torch.diagonal``/dense broadcasting,
+    which have no sparse-CSR equivalent) - see ``docs/plan.md``. Dense input
+    is unaffected.
+
     Args:
-        matrix (torch.Tensor): Square matrix ``A``.
+        matrix (torch.Tensor): Square matrix ``A``, dense or sparse CSR.
 
     Returns:
-        torch.Tensor: Row-scaled matrix.
+        torch.Tensor: Row-scaled matrix, same format as ``matrix``.
     """
+    if matrix.is_sparse_csr:
+        diagonal = sparse_diagonal(matrix)
+        inverse = torch.where(diagonal != 0, 1.0 / diagonal, torch.zeros_like(diagonal))
+        return sparse_row_scale(matrix, inverse)
     diagonal = torch.diagonal(matrix)
     inverse = torch.where(diagonal != 0, 1.0 / diagonal, torch.zeros_like(diagonal))
     return inverse.unsqueeze(1) * matrix
