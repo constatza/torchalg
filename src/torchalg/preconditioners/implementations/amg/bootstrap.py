@@ -48,15 +48,33 @@ knob, not to silently hardcode one setting.
   ``test_vector_weights``'s ``T = I`` reduction (used in both
   ``_algebraic_distance.algebraic_distance`` and this module's
   ``_prolongation``) is only paper-valid "on the finest level, or before
-  any MGE enrichment" - **RESOLVED**: ``BAMGCoarsening`` now tracks the
-  composite prolongation ``P_l = P_0 P_1 ... P_{l-1}`` incrementally as
+  any MGE enrichment" - **partially resolved, TODO(bamg-fidelity,
+  needs-check) remains.** ``BAMGCoarsening`` now tracks the composite
+  prolongation ``P_l = P_0 P_1 ... P_{l-1}`` incrementally as
   ``build_transfer`` runs level by level (``_current_T``, ``None`` -
   meaning ``T = I`` - only at the true finest level of each bootstrap
   cycle's coarsening pass), and threads the resulting ``T_l = P_l^H P_l``
   into both call sites via an optional ``T`` parameter (default ``None``,
-  preserving every existing ``k_e=0`` caller's exact behavior). Was
-  originally deferred as a known follow-up while implementing MGE itself,
-  rather than expanding that change further; fixed once flagged.
+  preserving every existing ``k_e=0`` caller's exact behavior). ``T_l =
+  P_l^H P_l`` and the composite-prolongation chaining formula are confirmed
+  directly against [STATUS14] Sec. 4 (arXiv:1406.1819) - that part is
+  solid. **What is NOT confirmed:** that ``omega_kappa`` (the LS/LSR fit
+  weight this ``T`` now feeds) is actually supposed to use this same
+  ``T_l``. That specific link rests only on ``docs/bootstrap-amg.md``'s own
+  transcription, attributed to [BAMG11] Sec. 2/eq. 4.1 - a paper that could
+  not be fetched from any mirror tried this session. A direct [STATUS14]
+  check of ``omega_kappa`` itself found it described only as ``||v||_A^2 =
+  <Av,v>``, with no ``T`` mentioned and an explicit statement that "there is
+  no statement linking this T operator to the omega_kappa weights" in that
+  paper - not a contradiction (STATUS14's own tables are MGE-free, so it may
+  simply not need the fuller formula), but not confirmation either, and
+  ``docs/bootstrap-amg.md`` has already been shown wrong once this session
+  on an unverifiable [BAMG11]-attributed claim (the LSR single-vector
+  schedule). TODO: get [BAMG11] itself (or other independent confirmation)
+  before treating this wiring as more than plausible; until then it is
+  live but unverified for the weight-formula application (MGE's own use of
+  ``T_l`` for the Rayleigh quotient, in ``_mge.py``, is unaffected and
+  independently confirmed).
   **Known limitation, not a deviation from [BAMG11]/[STATUS14]:** at small
   problem sizes with ``k_e`` comparable to ``k_r`` (e.g. ``k_r=k_e=8`` on
   ``N=31`` 1D Poisson), the enriched test-vector set can occasionally push
@@ -208,7 +226,11 @@ _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Te
 """Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
 
 _LSR_TARGET_FRACTION = 0.2
-"""Fraction of F-points corrected by LSR - [BAMG11] Sec. 4's practical schedule."""
+"""Fraction of F-points corrected by LSR - [STATUS14] Table 1's caption gives
+this practical 20%/largest-residual schedule; [STATUS14] Sec. 3's own text
+attributes the same result to "[7]" ([BAMG11]) but the exact section within
+[BAMG11] (previously cited here as "Sec. 4") was never independently
+confirmed, since [BAMG11] could not be fetched this session."""
 
 
 def _random_test_vectors(

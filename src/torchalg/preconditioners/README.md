@@ -185,8 +185,11 @@ residual, not one combined across vectors - see `BAMGCoarsening._fit_vectors`.
 `test_vector_weights`'s `T = I` reduction is only paper-valid before any MGE
 enrichment - `BAMGCoarsening` now tracks the composite prolongation
 incrementally across levels (`_current_T`) and passes the resulting `T_l`
-into both `test_vector_weights` and `algebraic_distance`, so this holds
-correctly whether or not `k_e > 0`.
+into both `test_vector_weights` and `algebraic_distance`. `T_l = P_l^H P_l`
+itself is confirmed directly against [STATUS14]; whether `omega_kappa` is
+actually meant to use this `T_l` is **not** confirmed (rests only on an
+unverifiable [BAMG11] attribution) - see `bootstrap.py`'s
+`TODO(bamg-fidelity, needs-check)` marker.
 `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the

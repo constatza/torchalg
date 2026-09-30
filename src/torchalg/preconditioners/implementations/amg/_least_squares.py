@@ -13,19 +13,29 @@ directly from the primary papers, not a secondary summary); every equation
 number cited below refers to it.
 
 References:
-    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). Bootstrap
-      AMG. SIAM J. Sci. Comput. 33(2), 612-632. Cited as [BAMG11]: eq. 2.1
-      (the LS functional), eq. 2.2 and the closed-form minimizer stated
-      immediately after it, Sec. 2.1's uniqueness condition
-      ``rank(V_{C_i}) = |C_i|``, eq. 2.3 (the residual-correction/"adaptive
-      relaxation" step, LSR), eq. 2.4 (the residual-based LS functional LSR
-      fits).
+    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2015). Bootstrap
+      algebraic multigrid: status report, open problems, and outlook. Numer.
+      Math. Theor. Meth. Appl. 8(1). arXiv:1406.1819. Cited as [STATUS14]:
+      eq. 3.1 (the LS functional, the closed-form minimizer stated
+      immediately after it, and Sec. 3's uniqueness condition
+      ``rank(V_{C_i}) = |C_i|``), eq. 3.2 (the residual-correction/"adaptive
+      relaxation" step, LSR), Table 1's caption (the practical 20%/
+      largest-residual LSR schedule - see ``bootstrap.py``'s
+      ``_LSR_TARGET_FRACTION``).
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). An algebraic
       distances measure of AMG strength of connection. arXiv:1106.5990.
       Cited as [AD11]: eq. 4.5 (the LS-ring candidate neighborhood ``C_i`` is
       drawn from, computed by ``BAMGCoarsening`` upstream of this module -
       see the ``candidates`` argument below), Sec. 4.3 (the caliber-growth
       penalization rule ``LS_{W''} < (LS_{W'})^{gamma(|W''|-|W'|)}``).
+    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). Bootstrap
+      AMG. SIAM J. Sci. Comput. 33(2), 612-632. Cited as [BAMG11] where a
+      prior read of this module attributed "eq. 2.1-2.4"/"Sec. 4" to the
+      same material: the *content* matches what [STATUS14] confirms above,
+      but [BAMG11] could not be fetched this session, so its own section/
+      equation numbering (plausibly its own Sec. 2, differently numbered
+      from [STATUS14]'s restatement in Sec. 3) is unconfirmed. See
+      ``docs/bootstrap-amg.md`` Sec. 9.
 
 Real-SPD substitution: [BAMG11]'s formulas use Hermitian-transpose notation
 (``V^H``) since the paper allows complex test vectors; torchalg is real-SPD
@@ -46,7 +56,7 @@ import torch
 
 _RANK_DEFICIENCY_RTOL = 1e-10
 """Relative tolerance for ``torch.linalg.matrix_rank`` when checking
-[BAMG11] Sec. 2.1's uniqueness condition ``rank(V_{C_i}) = |C_i|`` on
+[STATUS14] Sec. 3's uniqueness condition ``rank(V_{C_i}) = |C_i|`` on
 ``V_{C_i} W V_{C_i}^T``; below full rank, ``ls_interpolation_row`` falls back
 to ``torch.linalg.lstsq`` instead of ``torch.linalg.solve``."""
 
@@ -63,16 +73,16 @@ def ls_interpolation_row(
     interp_set: torch.Tensor,
     weights: torch.Tensor,
 ) -> torch.Tensor:
-    """Closed-form weighted-LS interpolation row ``p_i`` ([BAMG11] eq. 2.1-2.2).
+    """Closed-form weighted-LS interpolation row ``p_i`` ([STATUS14] eq. 3.1).
 
     Solves ``p_i V_{C_i} W V_{C_i}^T = V_i W V_{C_i}^T`` for ``p_i`` (the
-    normal equations of the weighted LS functional, eq. 2.1), returning the
+    normal equations of the weighted LS functional, eq. 3.1), returning the
     minimizer's transpose as a plain vector so ``p @ test_vectors[interp_set]``
     reconstructs the fitted approximation to ``test_vectors[target]``. Uses
     ``torch.linalg.solve`` on ``V_{C_i} W V_{C_i}^T`` when that Gram matrix is
     full rank; falls back to ``torch.linalg.lstsq`` when
-    ``rank(V_{C_i} W V_{C_i}^T) < |interp_set|``, i.e. when [BAMG11] Sec.
-    2.1's uniqueness condition ``rank(V_{C_i}) = |C_i|`` fails (typically
+    ``rank(V_{C_i} W V_{C_i}^T) < |interp_set|``, i.e. when [STATUS14] Sec.
+    3's uniqueness condition ``rank(V_{C_i}) = |C_i|`` fails (typically
     ``|interp_set| > k``, or duplicate/collinear rows of ``V_{C_i}``).
 
     Args:
@@ -101,11 +111,11 @@ def lsr_correction(
     matrix: torch.Tensor,
     target_rows: torch.Tensor,
 ) -> torch.Tensor:
-    """Residual-based "adaptive relaxation" correction ([BAMG11] eq. 2.3).
+    """Residual-based "adaptive relaxation" correction ([STATUS14] eq. 3.2).
 
     ``v_i^(kappa) <- v_i^(kappa) - (A v^(kappa))_i / a_ii``, applied only at
     ``target_rows`` (the paper's practical schedule restricts this to a
-    subset of TVs/points, [BAMG11] Sec. 4 - callers choose that subset;
+    subset of TVs/points, [STATUS14] Table 1's caption - callers choose that subset;
     this function applies the correction to whichever rows they pass).
     Assumes ``a_ii != 0`` (the paper's own precondition), guarded against
     near-zero diagonals the same way ``_algebraic_distance.py`` guards its
@@ -140,7 +150,7 @@ def _ls_residual(
     interp_set: torch.Tensor,
     weights: torch.Tensor,
 ) -> float:
-    """Weighted LS functional value ``LS_{C_i}(p_i)`` at its minimizer ([BAMG11] eq. 2.1).
+    """Weighted LS functional value ``LS_{C_i}(p_i)`` at its minimizer ([STATUS14] eq. 3.1).
 
     Args:
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.

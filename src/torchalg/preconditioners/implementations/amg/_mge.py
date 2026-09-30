@@ -35,11 +35,21 @@ using the ``T = I`` reduction of [BAMG11] eq. 4.1 only where that precondition
 ("on the finest level, or before any MGE enrichment," ``docs/bootstrap-amg.md``
 line 234) actually holds: ``BAMGCoarsening`` tracks the composite
 prolongation incrementally (``_current_T`` in ``bootstrap.py``) and passes
-the resulting ``T_l`` into both ``test_vector_weights`` and
+the resulting ``T_l`` (this module's own ``T_l = P_l^H P_l`` and
+composite-prolongation-chaining formula, both directly confirmed against
+[STATUS14] Sec. 4) into both ``test_vector_weights`` and
 ``algebraic_distance`` once ``k_e > 0`` makes it genuinely differ from ``I``
-at the levels this module enriches - so the LS/LSR fit weights and the
-algebraic-distance strength measure both use the correct, general formula
-regardless of whether MGE is enabled.
+at the levels this module enriches. **TODO(bamg-fidelity, needs-check),
+not yet resolved:** whether ``omega_kappa`` is actually meant to use this
+same ``T_l`` is unconfirmed - that link rests only on
+``docs/bootstrap-amg.md``'s transcription of [BAMG11] eq. 4.1, a paper this
+session could never fetch from any mirror; a direct [STATUS14] check of
+``omega_kappa`` found it described only via ``||v||_A^2``, with no ``T``
+and an explicit statement that the paper does not link ``T`` to the
+weights - not a contradiction (STATUS14's own tables are MGE-free) but not
+confirmation either. This module's own use of ``T_l`` (the Rayleigh
+quotient in ``refine_eigenpair``/``coarsest_eigenpairs``) is unaffected and
+independently confirmed; only the weight-formula application is in doubt.
 
 Measured effect (``k_r=8``, ``eta=4``, ``n_bootstrap_cycles=2``, GS smoother,
 ``seed=5``, this repo's 1D FD Poisson - the same harness as
@@ -57,15 +67,23 @@ see ``bootstrap.py``'s module docstring for why this is a pre-existing
 CR-coarsening fragility at small problem sizes, not a defect in this module.
 
 References:
-    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). Bootstrap
-      AMG. SIAM J. Sci. Comput. 33(2), 612-632. Cited as [BAMG11]: Sec. 3.1,
-      Algorithm 1, eq. 3.2 (composite interpolation and ``T_l = P_l^H P_l``),
-      eq. 3.3-3.5 (Rayleigh-quotient transfer identity).
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2015). Bootstrap
       algebraic multigrid: status report, open problems, and outlook. Numer.
       Math. Theor. Meth. Appl. 8(1). arXiv:1406.1819. Cited as [STATUS14]:
-      eq. 4.2 (the coarse/fine Rayleigh-quotient identity ``bootstrap-amg.md``
-      Sec. 4.2 follows).
+      eq. 4.2 (the coarse/fine Rayleigh-quotient transfer identity
+      ``bootstrap-amg.md`` Sec. 4.2 follows). [STATUS14] describes the
+      composite-interpolation/``T_l = P_l^H P_l`` identity only in prose,
+      immediately before eq. 4.2 - no explicit equation number - and never
+      labels this procedure "Algorithm 1"; it appears only in prose and in
+      Figure 3's schematic.
+    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). Bootstrap
+      AMG. SIAM J. Sci. Comput. 33(2), 612-632. Cited as [BAMG11] where a
+      prior read of this module attributed "Sec. 3.1, Algorithm 1, eq. 3.2,
+      eq. 3.3-3.5" to the same material: **unconfirmed** - [BAMG11] could
+      not be fetched this session (no arXiv listing, every mirror failed),
+      so whether it actually uses that section/equation numbering, or a
+      formal "Algorithm 1" label [STATUS14] does not use, is not verified
+      against the primary source. See ``docs/bootstrap-amg.md`` Sec. 9.
 """
 
 from __future__ import annotations
@@ -96,7 +114,7 @@ def composite_transfer_metrics(
     dtype: torch.dtype,
     device: torch.device,
 ) -> list[torch.Tensor]:
-    """``T_l = P_l^H P_l`` for every level, ``P_l`` the composite interpolation ([BAMG11] eq. 3.2).
+    """``T_l = P_l^H P_l`` for every level, ``P_l`` the composite interpolation ([STATUS14] Sec. 4.2, prose before eq. 4.2).
 
     ``P_l`` maps level ``l``'s space up to the finest level's space by
     chaining every prolongation from ``l`` to ``0``; ``P_0`` is the identity,
@@ -126,14 +144,14 @@ def composite_transfer_metrics(
 def coarsest_eigenpairs(
     matrix: torch.Tensor, T: torch.Tensor, k_e: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Solve ``A w = lambda T w`` directly for the ``k_e`` smallest eigenvalues ([BAMG11] Algorithm 1).
+    """Solve ``A w = lambda T w`` directly for the ``k_e`` smallest eigenvalues ([STATUS14] Sec. 4.2's MGE procedure).
 
     Reduced to a standard symmetric eigenproblem by Cholesky-whitening ``T``:
     ``T = L L^H``, ``A' = L^{-1} A L^{-H}``, ``eigh(A') = (mu, y)``,
     ``w = L^{-H} y`` (``A'``'s eigenvalues equal the generalized problem's;
     ``w`` satisfies ``A w = mu T w`` by substitution). ``torch.linalg.eigh``
     returns eigenvalues ascending, matching "the smallest-eigenvalue ones"
-    ([BAMG11] Algorithm 1's own selection rule) with a plain slice.
+    ([STATUS14]'s own selection rule for this step) with a plain slice.
 
     Args:
         matrix (torch.Tensor): Coarsest-level SPD matrix ``A_L``, shape
@@ -167,7 +185,7 @@ def refine_eigenpair(
     """Relax an interpolated eigenvector on the shifted homogeneous problem, refresh its Rayleigh quotient.
 
     ``relax on (A_l - lambda_l T_l) w_l = 0``, then ``lambda_l = <A_l w_l,
-    w_l> / <T_l w_l, w_l>`` ([BAMG11] Algorithm 1's per-level step). This
+    w_l> / <T_l w_l, w_l>`` ([STATUS14] Sec. 4.2's per-level step). This
     "resembles inverse Rayleigh-quotient iteration with the inverse replaced
     by relaxation sweeps" (``docs/bootstrap-amg.md`` Sec. 4.2) - and, like
     ordinary Rayleigh-quotient iteration, renormalizes to unit ``T``-norm
@@ -225,7 +243,7 @@ def multigrid_eigensolver(
     relaxation: _Relaxation,
     sweeps: int,
 ) -> dict[int, torch.Tensor]:
-    """[BAMG11] Algorithm 1: ``k_e`` eigenvector approximations for every level but the coarsest.
+    """[STATUS14] Sec. 4.2's MGE procedure: ``k_e`` eigenvector approximations for every level but the coarsest.
 
     Solves the coarsest level's generalized eigenproblem directly
     (``coarsest_eigenpairs``), then interpolates and relaxes up through

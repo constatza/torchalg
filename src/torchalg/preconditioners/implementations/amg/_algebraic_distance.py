@@ -18,13 +18,20 @@ References:
       (the caliber-one LS distance ``r_ij``), eq. 4.4 (the pruned strength
       graph ``M_d``), Remark 4.3 (computing ``V_i`` from ``A``'s sparsity
       alone, without forming ``A^d``'s values).
-    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). Bootstrap
-      AMG. SIAM J. Sci. Comput. 33(2), 612-632. Cited as [BAMG11]: eq. 4.1
-      (test-vector weights ``omega_kappa``, ``T = I`` reduction used here
-      since no composite-interpolation operator exists yet at this stage),
-      eq. 2.3 (the residual-correction/"adaptive relaxation" step that eq.
+    - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2015). Bootstrap
+      algebraic multigrid: status report, open problems, and outlook. Numer.
+      Math. Theor. Meth. Appl. 8(1). arXiv:1406.1819. Cited as [STATUS14]:
+      eq. 3.2 (the residual-correction/"adaptive relaxation" step that eq.
       4.3 below applies to the target test vectors - implemented once, in
       ``_least_squares.lsr_correction``, which this module delegates to).
+      Test-vector weights ``omega_kappa`` with the ``T = I`` reduction used
+      here (no composite-interpolation operator exists yet at this stage):
+      **not confirmed** against [STATUS14], which describes ``omega_kappa``
+      only via ``||v||_A^2`` with no ``T`` term at all - see
+      ``test_vector_weights``'s own TODO below and ``_mge.py``'s module
+      docstring. A prior read of this module attributed this formula to
+      "[BAMG11] eq. 4.1"; [BAMG11] could not be fetched this session to
+      confirm that attribution either. See ``docs/bootstrap-amg.md`` Sec. 9.
 
 ``r_ij`` is a **one-sided, directional** measure, not a distance in the
 metric sense: [AD11] describes eq. 4.3 explicitly as "the simplified variant
@@ -59,12 +66,12 @@ by clamping unrelated edges to one common value."""
 
 
 def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
-    """Apply one local Jacobi correction to every test vector ([BAMG11] eq. 2.3).
+    """Apply one local Jacobi correction to every test vector ([STATUS14] eq. 3.2).
 
     ``v_i^(kappa) <- v_i^(kappa) - (A v^(kappa))_i / a_ii`` - the "adaptive
     relaxation" step eq. 4.3 fits its LS regression to, rather than the raw
     test vectors. This is exactly ``_least_squares.lsr_correction`` applied
-    to *every* row, so it delegates there rather than reimplementing eq. 2.3
+    to *every* row, so it delegates there rather than reimplementing eq. 3.2
     (including its near-zero-diagonal guard) a second time.
 
     Args:
@@ -108,7 +115,7 @@ def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
 def test_vector_weights(
     test_vectors: torch.Tensor, matrix: torch.Tensor, T: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """Per-test-vector weights ``omega_kappa`` ([BAMG11] eq. 4.1).
+    """Per-test-vector weights ``omega_kappa``.
 
     ``omega_kappa = <T v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>``.
     ``T`` is the composite-interpolation Gram operator ``P_l^H P_l``
@@ -117,6 +124,10 @@ def test_vector_weights(
     or before any MGE enrichment" (line 234) - i.e. whenever no composite
     interpolation has been built yet, which is every level when MGE
     (``_mge.py``, ``k_e``) is disabled, and the finest level regardless.
+    **TODO(bamg-fidelity, needs-check):** the ``T``-weighted generalization
+    used here for ``k_e > 0`` is not confirmed against [STATUS14], which
+    states ``omega_kappa`` only via ``||v||_A^2`` (no ``T`` term); see
+    ``_mge.py``'s module docstring for the full status of this gap.
 
     Args:
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
@@ -144,7 +155,7 @@ def algebraic_distance(
 
     For every edge ``(i, j)`` of ``matrix``'s depth-``d`` graph, fits the
     caliber-one weighted LS regression of the residual-corrected ``v_i``
-    (``_residual_corrected_vectors``, [BAMG11] eq. 2.3) onto the raw ``v_j``
+    (``_residual_corrected_vectors``, [STATUS14] eq. 3.2) onto the raw ``v_j``
     (minimizer ``p_ij``) and returns the reciprocal of the weighted residual
     sum of squares: large ``r_ij`` means ``j`` predicts ``i`` with small LS
     error, i.e. a strong connection. This is a **one-sided/directional**
