@@ -30,14 +30,16 @@ implements V^mu-style setup, which always rebuilds the whole hierarchy once
 per bootstrap cycle regardless of how much any single eigenvector changed,
 so ``tau_lambda``-gated skipping has no consumer here.
 
-Known follow-up, not addressed by this module: ``test_vector_weights``
-(``_algebraic_distance.py``) computes ``omega_kappa`` using the ``T = I``
-reduction of [BAMG11] eq. 4.1, which the papers state is only valid "on the
-finest level, or before any MGE enrichment" (``docs/bootstrap-amg.md`` line
-234). With ``k_e > 0`` that precondition no longer holds at every level -
-``T_l`` genuinely differs from ``I`` for the levels this module enriches -
-so the LS/LSR fit weights become a documented additional simplification once
-MGE is enabled, not yet updated to use the general ``T_l``-weighted formula.
+``test_vector_weights`` (``_algebraic_distance.py``) computes ``omega_kappa``
+using the ``T = I`` reduction of [BAMG11] eq. 4.1 only where that precondition
+("on the finest level, or before any MGE enrichment," ``docs/bootstrap-amg.md``
+line 234) actually holds: ``BAMGCoarsening`` tracks the composite
+prolongation incrementally (``_current_T`` in ``bootstrap.py``) and passes
+the resulting ``T_l`` into both ``test_vector_weights`` and
+``algebraic_distance`` once ``k_e > 0`` makes it genuinely differ from ``I``
+at the levels this module enriches - so the LS/LSR fit weights and the
+algebraic-distance strength measure both use the correct, general formula
+regardless of whether MGE is enabled.
 
 Measured effect (``k_r=8``, ``eta=4``, ``n_bootstrap_cycles=2``, GS smoother,
 ``seed=5``, this repo's 1D FD Poisson - the same harness as

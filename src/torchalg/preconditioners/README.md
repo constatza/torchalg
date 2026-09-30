@@ -182,10 +182,11 @@ twice: it corrects every test vector (never just one, contrary to an
 earlier reading of an unverifiable secondary source), each at the 20% of
 F-points with the largest absolute value of **that same vector's own**
 residual, not one combined across vectors - see `BAMGCoarsening._fit_vectors`.
-One remaining, explicitly scoped follow-up: `test_vector_weights`'s
-`T = I` reduction is only paper-valid before any MGE enrichment - with
-`k_e > 0` it becomes a documented, not-yet-addressed simplification (see the
-`TODO(bamg-fidelity, follow-up)` marker at its call site in `bootstrap.py`).
+`test_vector_weights`'s `T = I` reduction is only paper-valid before any MGE
+enrichment - `BAMGCoarsening` now tracks the composite prolongation
+incrementally across levels (`_current_T`) and passes the resulting `T_l`
+into both `test_vector_weights` and `algebraic_distance`, so this holds
+correctly whether or not `k_e > 0`.
 `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the

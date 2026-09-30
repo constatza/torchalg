@@ -105,28 +105,40 @@ def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
     return reachable & off_diagonal
 
 
-def test_vector_weights(test_vectors: torch.Tensor, matrix: torch.Tensor) -> torch.Tensor:
-    """Per-test-vector weights ``omega_kappa`` ([BAMG11] eq. 4.1, ``T = I`` reduction).
+def test_vector_weights(
+    test_vectors: torch.Tensor, matrix: torch.Tensor, T: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Per-test-vector weights ``omega_kappa`` ([BAMG11] eq. 4.1).
 
-    ``omega_kappa = <v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>`` - the
-    pure ``A``-energy weighting the paper falls back to before any composite
-    interpolation operator ``T`` exists, which is always the case at the
-    strength-of-connection stage.
+    ``omega_kappa = <T v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>``.
+    ``T`` is the composite-interpolation Gram operator ``P_l^H P_l``
+    (``docs/bootstrap-amg.md`` Sec. 4.2); ``T = None`` uses the ``T = I``
+    reduction to a pure ``A``-energy weighting, valid "on the finest level,
+    or before any MGE enrichment" (line 234) - i.e. whenever no composite
+    interpolation has been built yet, which is every level when MGE
+    (``_mge.py``, ``k_e``) is disabled, and the finest level regardless.
 
     Args:
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
         matrix (torch.Tensor): Dense matrix ``A``, shape ``(n, n)``.
+        T (torch.Tensor | None): Composite-interpolation Gram operator,
+            shape ``(n, n)``; ``None`` for the ``T = I`` reduction.
 
     Returns:
         torch.Tensor: Weight vector, shape ``(k,)``.
     """
     energy = (test_vectors * (matrix @ test_vectors)).sum(dim=0)
     energy_safe = torch.where(energy.abs() > _NEAR_ZERO_ENERGY_TOL, energy, torch.ones_like(energy))
-    return (test_vectors**2).sum(dim=0) / energy_safe
+    numerator = (
+        (test_vectors**2).sum(dim=0)
+        if T is None
+        else (test_vectors * (T @ test_vectors)).sum(dim=0)
+    )
+    return numerator / energy_safe
 
 
 def algebraic_distance(
-    test_vectors: torch.Tensor, matrix: torch.Tensor, depth: int = 1
+    test_vectors: torch.Tensor, matrix: torch.Tensor, depth: int = 1, T: torch.Tensor | None = None
 ) -> torch.Tensor:
     """Pairwise caliber-one algebraic distance ``r_ij`` ([AD11] eq. 4.3).
 
@@ -145,14 +157,21 @@ def algebraic_distance(
     ``S_ij = sum_kappa omega_kappa v_tilde_i^(kappa) v_j^(kappa)`` the
     corrected-target/raw-predictor cross term and ``T_i = sum_kappa
     omega_kappa v_tilde_i^(kappa)^2`` the corrected target's own weighted
-    energy), avoiding both a Python loop over pairs and an ``(n, n, k)``
-    intermediate.
+    energy - unrelated to this function's own ``T`` parameter below despite
+    the shared letter: ``T_i`` here is a per-row scalar intermediate of this
+    SSE decomposition, while ``T`` is the composite-interpolation Gram
+    *operator* that only enters through ``omega_kappa`` itself), avoiding
+    both a Python loop over pairs and an ``(n, n, k)`` intermediate.
 
     Args:
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
         matrix (torch.Tensor): Dense fine-grid matrix ``A``, shape ``(n, n)``.
         depth (int): Search depth ``d`` defining the neighborhood ``V_i``
             (default ``1``).
+        T (torch.Tensor | None): Composite-interpolation Gram operator
+            passed through to ``test_vector_weights``, shape ``(n, n)``;
+            ``None`` for the ``T = I`` reduction (see that function's
+            docstring).
 
     Returns:
         torch.Tensor: Dense algebraic-distance matrix ``r``, shape
@@ -160,7 +179,7 @@ def algebraic_distance(
         symmetric in general.
     """
     neighborhood = depth_neighborhood(matrix, depth)
-    weights = test_vector_weights(test_vectors, matrix)
+    weights = test_vector_weights(test_vectors, matrix, T=T)
     corrected = _residual_corrected_vectors(test_vectors, matrix)
 
     cross = (corrected * weights) @ test_vectors.T

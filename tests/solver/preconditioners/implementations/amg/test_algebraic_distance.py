@@ -17,6 +17,9 @@ from torchalg.preconditioners.implementations.amg._algebraic_distance import (
     algebraic_distance,
     strength_graph,
 )
+from torchalg.preconditioners.implementations.amg._algebraic_distance import (
+    test_vector_weights as compute_test_vector_weights,  # avoid pytest collecting it as a test
+)
 
 
 @pytest.fixture
@@ -56,6 +59,64 @@ def one_strong_one_weak_distance_6(torch_dtype: torch.dtype) -> torch.Tensor:
 def small_test_vectors(torch_dtype: torch.dtype) -> torch.Tensor:
     """Non-trivial full-column-rank test vectors, shape ``(3, 2)``, for the direct-fit check."""
     return torch.tensor([[1.0, 0.3], [0.4, 1.0], [0.7, -0.5]], dtype=torch_dtype)
+
+
+def test_vector_weights_t_none_matches_identity_t(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    small_test_vectors: torch.Tensor,
+) -> None:
+    """``T=None`` (the default) must be numerically identical to passing an
+    explicit identity ``T`` - [BAMG11] eq. 4.1's ``T = I`` reduction, valid
+    "on the finest level, or before any MGE enrichment" (``docs/
+    bootstrap-amg.md`` line 234). This is the regression guard for every
+    existing ``k_e=0`` caller: passing ``T`` must never change behavior
+    unless a caller actually supplies a non-identity one.
+    """
+    matrix = poisson_1d_factory(3)
+    identity = torch.eye(3, dtype=small_test_vectors.dtype)
+
+    weights_default = compute_test_vector_weights(small_test_vectors, matrix)
+    weights_explicit_identity = compute_test_vector_weights(small_test_vectors, matrix, T=identity)
+
+    assert torch.equal(weights_default, weights_explicit_identity)
+
+
+def test_vector_weights_uses_non_identity_t(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    small_test_vectors: torch.Tensor,
+) -> None:
+    """A non-identity ``T`` must change the result: ``omega_kappa = <T v, v> /
+    <A v, v>`` ([BAMG11] eq. 4.1's general form, composite-interpolation Gram
+    operator ``T = P_l^H P_l``, not just its ``T=I`` finest-level reduction).
+    """
+    matrix = poisson_1d_factory(3)
+    non_identity_T = torch.tensor(
+        [[2.0, 0.5, 0.0], [0.5, 3.0, 0.0], [0.0, 0.0, 1.5]], dtype=small_test_vectors.dtype
+    )
+
+    weights_identity = compute_test_vector_weights(small_test_vectors, matrix)
+    weights_non_identity = compute_test_vector_weights(small_test_vectors, matrix, T=non_identity_T)
+
+    assert not torch.equal(weights_identity, weights_non_identity)
+    # Directly verify the general formula, not just "it changed".
+    expected_numerator = (small_test_vectors * (non_identity_T @ small_test_vectors)).sum(dim=0)
+    expected_denominator = (small_test_vectors * (matrix @ small_test_vectors)).sum(dim=0)
+    assert torch.allclose(weights_non_identity, expected_numerator / expected_denominator)
+
+
+def test_algebraic_distance_t_none_matches_identity_t(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    small_test_vectors: torch.Tensor,
+) -> None:
+    """``algebraic_distance``'s own ``T`` pass-through has the same
+    default-preserving guarantee as ``test_vector_weights``'s."""
+    matrix = poisson_1d_factory(3)
+    identity = torch.eye(3, dtype=small_test_vectors.dtype)
+
+    r_default = algebraic_distance(small_test_vectors, matrix, depth=1)
+    r_explicit_identity = algebraic_distance(small_test_vectors, matrix, depth=1, T=identity)
+
+    assert torch.equal(r_default, r_explicit_identity)
 
 
 def test_algebraic_distance_is_directional_not_symmetric(

@@ -45,13 +45,18 @@ knob, not to silently hardcode one setting.
   from the papers' numbering). The resulting eigenvector columns are
   appended to the relaxation-improved test vectors at every level
   (``k = k_r + k_e`` total for the LS/LSR fit, per [BAMG11] Table 4.4-4.5).
-  Known follow-up this does not address: ``test_vector_weights``'s ``T = I``
-  reduction (used in both ``_algebraic_distance.algebraic_distance`` and
-  this module's ``_prolongation``) is only paper-valid "on the finest level,
-  or before any MGE enrichment" - with ``k_e > 0`` that precondition no
-  longer holds at every level, so the LS/LSR fit weights become an
-  additional, not-yet-addressed simplification once MGE is enabled (see
-  ``_mge.py``'s module docstring).
+  ``test_vector_weights``'s ``T = I`` reduction (used in both
+  ``_algebraic_distance.algebraic_distance`` and this module's
+  ``_prolongation``) is only paper-valid "on the finest level, or before
+  any MGE enrichment" - **RESOLVED**: ``BAMGCoarsening`` now tracks the
+  composite prolongation ``P_l = P_0 P_1 ... P_{l-1}`` incrementally as
+  ``build_transfer`` runs level by level (``_current_T``, ``None`` -
+  meaning ``T = I`` - only at the true finest level of each bootstrap
+  cycle's coarsening pass), and threads the resulting ``T_l = P_l^H P_l``
+  into both call sites via an optional ``T`` parameter (default ``None``,
+  preserving every existing ``k_e=0`` caller's exact behavior). Was
+  originally deferred as a known follow-up while implementing MGE itself,
+  rather than expanding that change further; fixed once flagged.
   **Known limitation, not a deviation from [BAMG11]/[STATUS14]:** at small
   problem sizes with ``k_e`` comparable to ``k_r`` (e.g. ``k_r=k_e=8`` on
   ``N=31`` 1D Poisson), the enriched test-vector set can occasionally push
@@ -465,6 +470,31 @@ class BAMGCoarsening:
         self._draw = draw if draw is not None else seeded_draw(seed)
         self._vectors: dict[int, torch.Tensor] = {test_vectors.shape[0]: test_vectors}
         self._last_prolongation: torch.Tensor | None = None
+        self._composite: torch.Tensor | None = None
+        """Composite prolongation ``P_l = P_0 P_1 ... P_{l-1}`` from the
+        *current* level ``l`` up to the finest level, built incrementally as
+        ``build_transfer`` runs level by level; ``None`` at the finest level
+        (no coarsening has happened yet within this pass, so ``T_0 = I``
+        trivially - see ``_current_T``). A fresh ``BAMGCoarsening`` per
+        bootstrap cycle (``BootstrapSetup._coarsening_from``) means this
+        always starts ``None`` at the true finest level, exactly matching
+        [BAMG11]/[STATUS14]'s own ``T_0 = I``."""
+
+    def _current_T(self) -> torch.Tensor | None:
+        """Composite-interpolation Gram operator ``T_l = P_l^H P_l`` for the level about to be processed.
+
+        [BAMG11] Sec. 4.2 / ``docs/bootstrap-amg.md`` line 234: ``T`` only
+        differs from the identity once at least one coarser level has been
+        built within this pass, i.e. never at the finest level. Returning
+        ``None`` (rather than materializing an explicit identity matrix)
+        lets ``test_vector_weights``/``algebraic_distance`` take their
+        cheaper ``T = I`` path directly.
+
+        Returns:
+            torch.Tensor | None: ``T_l``, shape ``(n, n)`` for the current
+            level's dimension ``n``, or ``None`` for ``T = I``.
+        """
+        return self._composite.T @ self._composite if self._composite is not None else None
 
     def test_vectors_for(self, matrix: torch.Tensor) -> torch.Tensor:
         """Currently stored test vectors for ``matrix``'s dimension.
@@ -510,12 +540,16 @@ class BAMGCoarsening:
             tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse, transfer)``.
         """
         test_vectors = self._vectors[A.shape[0]]
-        distance = algebraic_distance(test_vectors, A, depth=self._depth)
+        T = self._current_T()
+        distance = algebraic_distance(test_vectors, A, depth=self._depth, T=T)
         coarse_mask = self._coarse_mask(A, distance)
-        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance)
+        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance, T=T)
         coarse_matrix = prolongation.T @ A @ prolongation
         self._last_prolongation = prolongation
         self._vectors[coarse_matrix.shape[0]] = prolongation.T @ test_vectors
+        self._composite = (
+            prolongation if self._composite is None else self._composite @ prolongation
+        )
         return coarse_matrix, DenseTransferOperator(prolongation)
 
     def _coarse_mask(self, A: torch.Tensor, distance: torch.Tensor) -> torch.Tensor:
@@ -623,6 +657,7 @@ class BAMGCoarsening:
         test_vectors: torch.Tensor,
         coarse_mask: torch.Tensor,
         distance: torch.Tensor,
+        T: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """LS/LSR-fitted prolongation matrix ``P`` (identity on ``C``, fitted rows on ``F``).
 
@@ -632,6 +667,9 @@ class BAMGCoarsening:
             coarse_mask (torch.Tensor): Boolean coarse mask, shape ``(n,)``.
             distance (torch.Tensor): Algebraic-distance matrix ``r``, shape
                 ``(n, n)``, used by the empty-interpolatory-set fallback.
+            T (torch.Tensor | None): Composite-interpolation Gram operator
+                for the LS/LSR fit weights ([BAMG11] eq. 4.1); ``None`` for
+                the ``T = I`` reduction (see ``_current_T``).
 
         Returns:
             torch.Tensor: Prolongation matrix, shape ``(n, n_c)``.
@@ -644,13 +682,7 @@ class BAMGCoarsening:
         coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
         coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
 
-        # TODO(bamg-fidelity, follow-up): `test_vector_weights` always uses
-        # the T=I reduction of [BAMG11] eq. 4.1, paper-valid "on the finest
-        # level, or before any MGE enrichment" (docs/bootstrap-amg.md line
-        # 234). With `k_e > 0` (`_mge.py`), T_l genuinely differs from I at
-        # every non-finest level - this weight computation does not yet
-        # account for that, a known, not-yet-addressed simplification.
-        weights = test_vector_weights(test_vectors, A)
+        weights = test_vector_weights(test_vectors, A, T=T)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = depth_neighborhood(A, self._depth + 2)
 
