@@ -393,7 +393,7 @@ def _cells_for_n_and_device(
 
     def build_formed_spgemm():
         sparse = matrices.to_torch_sparse_csr(scipy_matrix, dtype).to(device)
-        p_sparse = torch.randn(n, rank, dtype=dtype, device=device).to_sparse_csr()
+        p_sparse = matrices.sparse_prolongation(n, rank, dtype=dtype).to(device)
         return (lambda: ops.form_galerkin_spgemm(p_sparse, sparse)), sparse
 
     yield Cell("galerkin_form", "formed_spgemm", "sparse", device_label, n, build_formed_spgemm)
