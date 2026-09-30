@@ -13,12 +13,12 @@ reimplemented, so "the representative op" really is the op the algorithms
 use, not a lookalike.
 
 Some sparse/native alternatives may be unavailable on a given torch build or
-device (e.g. ``torch.sparse.spsolve`` only has a CUDA kernel as of this
-torch build - it raises ``NotImplementedError`` on CPU). Callers
-(``run_benchmark.py``) are expected to catch ``(NotImplementedError,
-RuntimeError)`` around each cell and record it as a skip rather than a
-crash - operations.py itself stays a plain function registry with no
-try/except noise.
+device (e.g. ``torch.sparse.spsolve`` needs a cuDSS-enabled build even on
+CUDA - standard wheels raise ``NotImplementedError`` on CPU and
+``RuntimeError`` on CUDA without cuDSS). Callers (``run_benchmark.py``) are
+expected to catch ``(NotImplementedError, RuntimeError)`` around each cell
+and record it as a skip rather than a crash - operations.py itself stays a
+plain function registry with no try/except noise.
 """
 
 from __future__ import annotations
@@ -212,10 +212,30 @@ def triangular_apply_sparse(factor_sparse: torch.Tensor, residual: torch.Tensor)
     """Apply a precomputed sparse Cholesky-style factor via ``torch.sparse.spsolve``.
 
     Two sparse solves (forward with ``L``, backward with ``L.T``), mirroring
-    the dense two-triangular-solve apply above. As of this torch build,
-    ``torch.sparse.spsolve`` only has a CUDA kernel - this raises
-    ``NotImplementedError`` on CPU, which callers should treat as "this leg
+    the dense two-triangular-solve apply above. ``torch.sparse.spsolve`` has
+    no CPU kernel (raises ``NotImplementedError``), and on CUDA it needs
+    PyTorch built against cuDSS - standard CUDA wheels aren't, so it raises
+    there too (``RuntimeError``, worded "...is not supported in ROCm build,"
+    which fires on plain CUDA builds without cuDSS and is misleading - it
+    is not a ROCm-specific check). Callers should treat either as "this leg
     isn't available here," not a bug.
+
+    Why not pip-install cuDSS and move on: official PyTorch CUDA wheels
+    (verified by inspecting ``libtorch_cuda.so`` - no ``NEEDED`` entry and
+    no ``dlopen`` reference to any ``libcudss``) have the cuDSS code path
+    compiled out entirely, not merely missing an optional runtime library.
+    Getting a working cuDSS-backed ``spsolve`` needs a PyTorch built from
+    source with ``-DUSE_CUDSS=1`` against the cuDSS SDK - out of scope here.
+
+    A real alternative exists for the CUDA leg: CuPy's
+    ``cupyx.scipy.sparse.linalg.spsolve_triangular`` runs on cuSPARSE
+    directly, no cuDSS needed, and CUDA tensors can move to/from CuPy
+    zero-copy via DLPack (``cupy.from_dlpack``/``torch.from_dlpack``). Not
+    wired in here: it needs its own dependency, and the DLPack conversion
+    is an extra cost that would have to be timed separately from the solve
+    itself (same reasoning as ``h2d``/``to_sparse`` being their own rows
+    rather than folded into a compute cell) - deferred until a CUDA sparse
+    solve leg is actually needed, not added speculatively.
 
     Args:
         factor_sparse: Sparse lower-triangular factor ``L``, CSR, shape

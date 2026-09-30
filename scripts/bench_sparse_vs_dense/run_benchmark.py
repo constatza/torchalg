@@ -10,10 +10,14 @@ Cartesian-product reductions applied before any cell runs (see
    (Galerkin product, factorization, full eigh) are capped at
    ``--dense-cubic-max-n`` and never attempted above it - a known
    ~20GB/hours-long blowup at N=50k, not something worth discovering via a
-   live timeout.
+   live timeout. ``ic0`` gets a much lower, non-CLI-configurable cap of its
+   own (``DENSE_CUBIC_MAX_N_OVERRIDES``) - unlike the other two capped ops,
+   it's a Python-level loop rather than one BLAS/LAPACK call, and its
+   measured wall time grows far worse than N^3 in practice.
 3. A sparse/native leg that isn't available on this build/device (e.g.
-   ``torch.sparse.spsolve`` on CPU) is caught and logged as a skip, not a
-   crash.
+   ``torch.sparse.spsolve`` on CPU, or on CUDA without a cuDSS-enabled
+   PyTorch build - see ``operations.py`` for both) is caught and logged as
+   a skip, not a crash.
 
 Every surviving cell is timed with ``torch.utils.benchmark.Timer``
 (handles warm-up, repetition statistics, and CUDA synchronization
@@ -60,6 +64,17 @@ RESULTS_DIR = Path(__file__).with_name("results")
 # "matrix_free_sparse" needs no dense A at all). Every other op runs the
 # full sweep.
 DENSE_CUBIC_OPS = {"formed_dense", "ic0", "eigvalsh"}
+
+# Per-op override of --dense-cubic-max-n, for ops whose measured cost grows
+# far worse than the other DENSE_CUBIC_OPS members at the same N.
+# "formed_dense"/"eigvalsh" are single BLAS/LAPACK calls, so the general
+# cap (tuned for an N^3 blowup, see module docstring point 2) fits them.
+# "ic0" (``dense_ic0``) is a Python-level ``for k in range(n)`` loop over
+# per-step tensor ops, not one fused kernel - measured wall time at
+# float64 (0.19s @ n=1024, 3.7s @ n=2048, 18.5s @ n=3000) grows far faster
+# than N^3 in practice, so it needs its own, much lower cap rather than
+# sharing the 8000 default meant for a single BLAS/LAPACK call.
+DENSE_CUBIC_MAX_N_OVERRIDES = {"ic0": 2_000}
 
 # Rough multiplier on a matrix's own storage size for the peak working
 # memory a family needs (factorization/eigh/svd allocate several
@@ -573,7 +588,8 @@ def main() -> None:
     results: list[CellResult] = []
     started = perf_counter()
     for cell in build_grid(args.sizes, args.k_values, args.dims, dtype):
-        if cell.op in DENSE_CUBIC_OPS and cell.n > args.dense_cubic_max_n:
+        cell_max_n = DENSE_CUBIC_MAX_N_OVERRIDES.get(cell.op, args.dense_cubic_max_n)
+        if cell.op in DENSE_CUBIC_OPS and cell.n > cell_max_n:
             results.append(
                 CellResult(
                     cell.family,
