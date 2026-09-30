@@ -46,6 +46,14 @@ REAL_TEMPLATES: dict[str, Path] = {
 STATS_CACHE_PATH = Path(__file__).with_name("results") / "template_stats.json"
 """Where structural stats for real templates are cached, keyed by template name."""
 
+PROLONGATION_NNZ_PER_ROW = 4
+"""Nonzero coarse columns per fine row in :func:`sparse_prolongation`.
+
+Matches a real AMG/POD interpolation stencil (e.g. 2D bilinear
+interpolation from the 4 surrounding coarse-grid corners) - "a handful",
+not a size that scales with ``n`` or ``rank``.
+"""
+
 
 @dataclass(frozen=True)
 class TemplateStats:
@@ -164,6 +172,42 @@ def to_torch_sparse_csr(matrix: csr_matrix, dtype: torch.dtype = torch.float64) 
         torch.from_numpy(csr.data).to(dtype),
         size=csr.shape,
     )
+
+
+def sparse_prolongation(
+    n: int,
+    rank: int,
+    nnz_per_row: int = PROLONGATION_NNZ_PER_ROW,
+    dtype: torch.dtype = torch.float64,
+) -> torch.Tensor:
+    """Build a genuinely sparse ``(n, rank)`` prolongation operator ``P``.
+
+    Real AMG/POD prolongation operators are sparse - each fine row
+    interpolates from a handful of coarse columns, not from all of them.
+    ``torch.randn(n, rank).to_sparse_csr()`` does *not* give that: a
+    continuous Gaussian sample is essentially never exactly ``0.0``, so
+    that round trip stores ~100% of entries as explicit nonzeros - dense
+    data in a sparse container. This builds exactly ``nnz_per_row``
+    nonzeros per row instead, via ``topk`` over per-row random keys
+    (vectorized - no per-row Python loop).
+
+    Args:
+        n: Number of fine rows.
+        rank: Number of coarse columns.
+        nnz_per_row: Nonzero coarse columns per fine row, clamped to
+            ``rank``.
+        dtype: Value dtype.
+
+    Returns:
+        torch.Tensor: Sparse CSR ``(n, rank)`` tensor.
+    """
+    nnz_per_row = min(nnz_per_row, rank)
+    col_indices = torch.rand(n, rank).topk(nnz_per_row, dim=1).indices
+    row_indices = torch.arange(n).unsqueeze(1).expand(-1, nnz_per_row)
+    values = torch.randn(n, nnz_per_row, dtype=dtype)
+    indices = torch.stack([row_indices.reshape(-1), col_indices.reshape(-1)])
+    coo = torch.sparse_coo_tensor(indices, values.reshape(-1), size=(n, rank))
+    return coo.coalesce().to_sparse_csr()
 
 
 def load_real_template(name: str) -> torch.Tensor:
