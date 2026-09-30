@@ -141,6 +141,36 @@ class TestResidualHistoryAgainstPyAMG:
             JacobiSmoother,
         )
 
+    def test_adaptive_sa_defaults_to_v11_solve_cycle(
+        self,
+        aniso_matrix: torch.Tensor,
+    ) -> None:
+        """Solve-time sweep counts default to V(1,1), matching the historical hardcoded cycle."""
+        preconditioner = AdaptiveSAPreconditioner(
+            aniso_matrix,
+            num_candidates=1,
+            max_levels=2,
+            max_coarse=5,
+        )
+        assert preconditioner._cycle._n_pre == 1  # ty: ignore[unresolved-attribute]
+        assert preconditioner._cycle._n_post == 1  # ty: ignore[unresolved-attribute]
+
+    def test_adaptive_sa_uses_configured_cycle_sweep_counts(
+        self,
+        aniso_matrix: torch.Tensor,
+    ) -> None:
+        """Sweep counts are experiment-specific in the source papers; expose them."""
+        preconditioner = AdaptiveSAPreconditioner(
+            aniso_matrix,
+            num_candidates=1,
+            max_levels=2,
+            max_coarse=5,
+            n_pre=3,
+            n_post=2,
+        )
+        assert preconditioner._cycle._n_pre == 3  # ty: ignore[unresolved-attribute]
+        assert preconditioner._cycle._n_post == 2  # ty: ignore[unresolved-attribute]
+
 
 class TestAdaptiveSAResultAndStr:
     def test_result_property_matches_private_attribute(self, aniso_matrix: torch.Tensor) -> None:

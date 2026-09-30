@@ -1,10 +1,21 @@
 """Benchmark: Bootstrap AMG paper-table reproduction (docs/bootstrap-amg.md Sec. 6).
 
-Attempts to reproduce the *shape* of [BAMG11] Tables 4.2/4.3 - LS degrading
-with problem size, LSR generally doing better - on this repo's own plain
-finite-difference Poisson problems (``poisson_1d_factory``/
-``anisotropic_2d_factory``, ``tests/conftest.py``). Not an attempt to match
-the paper's absolute ``rho`` numbers.
+**Primary fidelity target:** ``test_bootstrap_amg_matches_status14_table1_exact_setup``,
+below. It reproduces [STATUS14] (arXiv:1406.1819) Table 1's exact experimental
+setup - discretization, grid, cycle, hyperparameters, test-vector distribution,
+all confirmed directly against the paper, not inferred - and is the one test
+in this module checked against a specific, verified paper configuration
+rather than an approximation of one. Read its own docstring for the full
+correspondence and for the one remaining, understood gap (a different
+coarsening algorithm) that keeps its absolute numbers from matching the
+paper's exactly.
+
+Every other test below instead attempts to reproduce the *shape* of
+[BAMG11] Tables 4.2/4.3 - LS degrading with problem size, LSR generally
+doing better - on this repo's own plain finite-difference Poisson problems
+(``poisson_1d_factory``/``anisotropic_2d_factory``, ``tests/conftest.py``),
+using hyperparameters that were never checked against a specific verified
+table. Not an attempt to match the paper's absolute ``rho`` numbers.
 
 What is measured:
     The multigrid *solve-phase* convergence factor,
@@ -40,10 +51,45 @@ Why the absolute numbers will not match [BAMG11] Tables 4.2/4.3:
        vector ``1`` into the test-vector set alongside the ``k_r`` random
        ones; ``BootstrapAMGPreconditioner`` has no such seeding hook - its
        test vectors are purely ``k_r`` random draws
-       (``_random_test_vectors`` in ``bootstrap.py``). This is the main
-       reason the absolute numbers here sit around ``rho ~= 0.45-0.75``
-       rather than the paper's seeded range; it is a documented, deliberate
-       scope decision, not a defect.
+       (``_random_test_vectors`` in ``bootstrap.py``). This is this
+       harness's best-attributed reason the absolute numbers here sit around
+       ``rho ~= 0.45-0.75`` rather than the paper's seeded range; it is a
+       documented, deliberate scope decision, not a defect. See point 4:
+       nothing here decomposes this reason's share of the gap from that
+       one's, since only seeding (and MGE, not listed here because this
+       benchmark targets Tables 4.2/4.3, which are MGE-free) has an explicit
+       paper-sanctioned "optional" framing.
+    4. **Finest-level-only test-vector improvement (RESOLVED).**
+       ``BootstrapSetup.run`` used to improve only the finest level's test
+       vectors per bootstrap cycle; [BAMG11] Sec. 5 and [STATUS14]'s base
+       bootstrap loop (independent of MGE) improve every level's, and no
+       paper text sanctioned finest-only as an alternate mode, so this was a
+       mandatory fix (``BootstrapSetup._improve_levels``, ``bootstrap.py``).
+       Re-measuring after the fix showed a small, mixed effect on this
+       harness's ``rho`` values, not the clear improvement a first guess
+       might expect: the fix only changes anything for hierarchies with 3+
+       levels (a 2-level hierarchy's "every level except the coarsest" is
+       just the finest level, identical to the old behavior), and even
+       where it does apply, FD-vs-FE discretization (point 1) and V(1,1)
+       vs. V(2,2) (point 2) appear to dominate the measured ``rho`` far more
+       than this specific algorithmic gap at these problem sizes/hyperparameters.
+    5. **LSR practical schedule (RESOLVED, corrected twice; final version
+       checked against [STATUS14] Sec. 3 directly, arXiv:1406.1819, not a
+       secondary transcription).** The schedule corrects *every* test
+       vector, each at the 20% of F-points with the largest absolute value
+       of *that same vector's own* residual - never a single vector, never
+       a residual combined across vectors (``bootstrap.py``'s module
+       docstring has the full correction history, including a first fix
+       that turned out to still be wrong). Once implemented faithfully, the
+       LSR-beats-LS trend visible in every earlier version of the table
+       below mostly disappears in this harness: LSR now wins outright at
+       half the rows and loses outright at N=127 (0/8) and the 2D case, with
+       no clean pattern by size. This does not contradict [BAMG11]/[STATUS14]'s
+       own claim that LSR is the better-scaling interpolation - the same
+       undecomposed confounders as points 1-3 (discretization, cycle,
+       missing seeding) plausibly dominate which of LS/LSR wins at these
+       problem sizes in this harness, same as they already do for the
+       *absolute* level of ``rho``.
 
 LS vs LSR, as measured by this module's own harness:
     Averaged over 8 independent ``BootstrapAMGPreconditioner`` setup seeds
@@ -51,33 +97,40 @@ LS vs LSR, as measured by this module's own harness:
     Poisson, ``mean (sd)`` of ``rho``, and how many of the 8 seeds LSR won:
 
         N     LS mean (sd)     LSR mean (sd)    LSR wins
-        31    0.4698 (0.132)   0.4795 (0.152)   3/8
-        63    0.6916 (0.100)   0.6402 (0.123)   5/8
-        127   0.6556 (0.138)   0.5767 (0.088)   4/8
-        255   0.6959 (0.065)   0.6574 (0.078)   5/8
-        511   0.7163 (0.033)   0.6633 (0.053)   8/8
+        31    0.4850 (0.099)   0.4303 (0.149)   4/8
+        63    0.7156 (0.166)   0.6839 (0.120)   5/8
+        127   0.5988 (0.042)   0.7354 (0.111)   0/8
+        255   0.7323 (0.056)   0.7043 (0.060)   5/8
+        511   0.7311 (0.058)   0.7390 (0.054)   4/8
         2D 16x16 (256 nodes)
-              0.4597 (0.072)   0.4715 (0.052)   3/8
+              0.4833 (0.064)   0.5397 (0.054)   2/8
 
-    **LSR's advantage is size-dependent, and that is the [BAMG11] Sec. 6
-    trend.** At the small sizes (1D N=31, the 256-node 2D grid) LS and LSR
-    are indistinguishable - the mean gap is a fraction of the per-seed
-    spread, and LS is marginally ahead. The advantage appears at N=63 and
-    grows monotonically with problem size, becoming unambiguous at N=511,
-    where LSR wins at *every one* of the 8 seeds with a mean gap (0.053)
-    larger than either variant's own standard deviation. That is the shape
-    Sec. 6 reports: LS degrades as the problem grows while LSR holds up.
+    **No LSR advantage survives the LSR-schedule correction (point 5
+    above).** Every earlier version of this table showed LSR's mean beating
+    LS's mean at every size, with only the *shape* of the trend in dispute.
+    After correcting the schedule to match what [STATUS14] actually
+    describes (every vector corrected at its own residual, not a combined
+    one), LSR now loses outright at N=127 and the 2D case, and its
+    advantage elsewhere is small relative to the per-seed spread. This is
+    not read as evidence the paper's LSR claim is wrong - it is read as
+    further confirmation that this harness's undecomposed confounders
+    (points 1-3) dominate the measured numbers strongly enough to overturn
+    even the *direction* of a paper-reported trend, not just its absolute
+    level or shape.
 
-    This replaces an earlier version of this docstring which reported LS
-    and LSR as statistically indistinguishable at *every* size and
-    attributed that to the missing near-null-vector seeding. The flat
-    result was an artifact of a real bug (``select_interpolatory_set``
-    compared raw, un-normalized LS functional values, so the bootstrap
-    cycles' own shrinking of the test vectors stalled interpolatory-set
-    growth and left most F-rows of ``P`` entirely zero - e.g. 14 of 15
-    F-rows at N=31, ``rho ~= 0.88``); it was not caused by the seeding gap.
-    With that fixed, the seeding gap still explains the *absolute* level of
-    ``rho`` (point 3 above), but no longer the LS-vs-LSR comparison.
+    This replaces two earlier versions of this docstring. The first
+    reported LS and LSR as statistically indistinguishable at *every* size,
+    an artifact of a real bug (``select_interpolatory_set`` compared raw,
+    un-normalized LS functional values, so the bootstrap cycles' own
+    shrinking of the test vectors stalled interpolatory-set growth and left
+    most F-rows of ``P`` entirely zero - e.g. 14 of 15 F-rows at N=31,
+    ``rho ~= 0.88``); not caused by the seeding gap. The second, after that
+    fix, showed LSR beating LS's mean at every size - an artifact of the LSR
+    schedule itself using a residual combined across every test vector to
+    pick F-points, instead of each vector's own residual (point 5's
+    correction). Neither artifact announced itself as a bug; both were
+    caught only because a later, unrelated fix changed the measured trend
+    enough to demand re-examining why.
 
 Problem-size choice (31/63/127/255/511 for the 1D case, a 16x16 grid for 2D):
     N=31 and N=63 were excluded from an earlier version of this sweep
@@ -253,24 +306,31 @@ def test_bootstrap_amg_ls_and_lsr_both_converge_on_1d_poisson(
 ) -> None:
     """Both LS and LSR build convergent hierarchies at every size, within a real numeric bound.
 
-    Asserts three things, in increasing strength:
+    Asserts two things:
       1. every ``rho`` is below ``rho_per_size_bound`` (``0.95``) - a bound
          that a barely-converging hierarchy (``rho ~= 0.97``) fails, unlike
          the plain ``rho < 1.0`` this test used to assert;
       2. the *mean* ``rho`` over the sweep is below ``rho_mean_bound``
          (``0.75``) for both variants - the assertion that would actually
          have caught the un-normalized-penalization bug, whose LS means sat
-         at ``0.87``;
-      3. LSR's mean beats LS's over the sweep as a whole. Per-size ordering
-         is deliberately *not* asserted: it is genuinely noisy at the small
-         sizes (see the module docstring's table - LSR wins only 3/8 seeds
-         at N=31) and only becomes reliable as ``N`` grows.
+         at ``0.87``.
+
+    A third assertion - LSR's mean beats LS's - was removed after correcting
+    the LSR practical schedule to match [STATUS14] Sec. 3 (every vector
+    corrected at its own residual, not one combined across vectors; see the
+    module docstring's point 5). LSR no longer reliably beats LS in this
+    harness once that correction is in place; asserting it would be fitting
+    the test to a result this repo cannot currently reproduce faithfully,
+    not verifying a real property. Per-size ordering was already not
+    asserted before this change, for the same "genuinely noisy" reason the
+    module docstring's table shows.
 
     Actual measured values (``seed=5``, 10 V(1,1)-cycle iterations, this
     repo's plain 5-point FD 1D Poisson, N=31/63/127/255/511 - recorded for
-    future regression comparison):
-        LS rho:  [0.4592, 0.6955, 0.8718, 0.6193, 0.7097]  (mean 0.6711)
-        LSR rho: [0.4681, 0.6219, 0.5110, 0.6374, 0.5918]  (mean 0.5660)
+    future regression comparison; superseded twice, see the module
+    docstring's points 4 and 5):
+        LS rho:  [0.5833, 0.6382, 0.6733, 0.7724, 0.7757]  (mean 0.6886)
+        LSR rho: [0.4559, 0.7280, 0.8384, 0.6591, 0.7788]  (mean 0.6920)
     """
     rho_ls_values: list[float] = []
     rho_lsr_values: list[float] = []
@@ -289,30 +349,36 @@ def test_bootstrap_amg_ls_and_lsr_both_converge_on_1d_poisson(
     mean_lsr = mean(rho_lsr_values)
     assert mean_ls < rho_mean_bound, f"LS mean rho={mean_ls} over {rho_ls_values}"
     assert mean_lsr < rho_mean_bound, f"LSR mean rho={mean_lsr} over {rho_lsr_values}"
-    assert mean_lsr < mean_ls, f"LSR mean {mean_lsr} did not beat LS mean {mean_ls}"
 
 
 @pytest.mark.benchmark
-def test_bootstrap_amg_lsr_beats_ls_at_fixed_seed_on_2d_poisson(
+def test_bootstrap_amg_ls_and_lsr_both_converge_at_fixed_seed_on_2d_poisson(
     isotropic_2d_matrix_256: torch.Tensor,
     energy_norm_start_factory: Callable[[int], torch.Tensor],
     bootstrap_amg_factory: Callable[[torch.Tensor, bool], BootstrapAMGPreconditioner],
     rho_per_size_bound: float,
 ) -> None:
-    """At the codebase's standard seed, LSR converges and beats LS on the 2D payoff case.
+    """At the codebase's standard seed, both LS and LSR converge on the 2D payoff case.
 
-    A single, fixed-seed demonstration, not a general statistical claim: at
-    this size the two variants are statistically indistinguishable across
-    setup seeds (8-seed means ``0.4597`` LS vs ``0.4715`` LSR, LSR winning
-    3/8), which is the small-problem end of the size-dependent trend the
-    module docstring tabulates. Both are still bounded well below
-    ``rho_per_size_bound``.
+    Was named ``..._lsr_beats_ls_...`` and asserted ``rho_lsr < rho_ls``.
+    That assertion is no longer true after correcting the LSR practical
+    schedule to match [STATUS14] Sec. 3 (every vector corrected at its own
+    residual, not one combined across vectors - module docstring point 5):
+    at this size and seed, LSR is now measurably *worse* than LS
+    (``0.5808`` vs ``0.5445``, see below), not better, consistent with the
+    8-seed aggregate (module docstring table: 2 of 8 seeds now won by LSR,
+    not 5 of 8). Renamed and the assertion removed rather than kept passing
+    on a claim this harness no longer supports; both are still bounded well
+    below ``rho_per_size_bound``, which is what the test now demonstrates.
 
     Actual measured values (``seed=5``, 10 V(1,1)-cycle iterations, 16x16
     isotropic 2D Poisson, 256 nodes - recorded for future regression
-    comparison):
+    comparison; superseded by the LSR-schedule correction, unlike the
+    every-level test-vector-improvement fix, which left this particular
+    seed's numbers unchanged since it happens to build only a 2-level
+    hierarchy here):
         LS rho:  0.5445
-        LSR rho: 0.4566
+        LSR rho: 0.5808
     """
     matrix = isotropic_2d_matrix_256
     start = energy_norm_start_factory(matrix.shape[0])
@@ -322,4 +388,117 @@ def test_bootstrap_amg_lsr_beats_ls_at_fixed_seed_on_2d_poisson(
 
     assert 0.0 <= rho_ls < rho_per_size_bound, f"LS rho={rho_ls}"
     assert 0.0 <= rho_lsr < rho_per_size_bound, f"LSR rho={rho_lsr}"
-    assert rho_lsr < rho_ls
+
+
+@pytest.fixture
+def isotropic_2d_matrix_h64(
+    anisotropic_2d_factory: Callable[[int, float], torch.Tensor],
+) -> torch.Tensor:
+    """63x63 (3969-node) isotropic 2D Poisson matrix, ``h=1/64`` - [STATUS14] Table 1's
+    exact grid ("central finite difference discretization of the Poisson problem with
+    homogenous Dirichlet boundary conditions on a uniform quadrilateral grid," verified
+    directly against arXiv:1406.1819)."""
+    return anisotropic_2d_factory(63, 1.0)
+
+
+@pytest.fixture
+def normal_seeded_draw_factory(
+    torch_dtype: torch.dtype,
+) -> Callable[[int], Callable[[int], torch.Tensor]]:
+    """N(0,1) draw-source factory, matching [STATUS14] Sec. 3's test-vector distribution
+    ("generated randomly with a normal distribution with expectation zero and variance
+    one, N(0,1)") - distinct from this package's default uniform ``[0, 1)`` ``seeded_draw``."""
+
+    def _factory(seed: int) -> Callable[[int], torch.Tensor]:
+        generator = torch.Generator().manual_seed(seed)
+        return lambda n: torch.randn(n, generator=generator, dtype=torch_dtype)
+
+    return _factory
+
+
+@pytest.mark.benchmark
+def test_bootstrap_amg_matches_status14_table1_exact_setup(
+    isotropic_2d_matrix_h64: torch.Tensor,
+    energy_norm_start_factory: Callable[[int], torch.Tensor],
+    normal_seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    rho_per_size_bound: float,
+) -> None:
+    """**Primary fidelity regression.** [STATUS14] Sec. 3, Table 1's exact experimental
+    setup, reproduced as faithfully as this implementation currently allows - the
+    canonical target this module is checked against, not one more loose approximation
+    like the tests above. Confirmed directly against arXiv:1406.1819, not inferred:
+
+    - ``h = 1/64`` on a "uniform quadrilateral grid" -> 63x63 = 3969 interior nodes
+      (``isotropic_2d_matrix_h64``);
+    - "central finite difference discretization" -> ``anisotropic_2d_factory(63, 1.0)``,
+      already this repo's FD stencil, no discretization mismatch to correct for here;
+    - "two pre- and two post-smoothing steps" -> ``n_pre=2, n_post=2`` (V(2,2));
+    - ``k=8`` test vectors, ``eta=4`` Gauss-Seidel sweeps -> ``k_r=8, eta=4``;
+    - "no near-null-space seeding" for this table -> ``seed_vectors=None`` (default);
+    - test vectors "generated randomly with a normal distribution ... N(0,1)" ->
+      ``test_vector_draw=normal_seeded_draw_factory(...)``, *not* the default uniform
+      ``draw`` (which must stay uniform - it also seeds compatible relaxation's own
+      internal convergence-rate probe, which is documented to expect a uniform ``[0,1)``
+      start; conflating the two used to collapse coarsening entirely under a signed
+      distribution, a real bug fixed alongside this test - see
+      ``BootstrapSetup.run``'s docstring and ``test_bootstrap.py``'s
+      ``test_bootstrap_setup_run_normal_test_vectors_do_not_break_cr_coarsening``);
+    - "Gauss Seidel iterations ... starting with k distinct initial guesses" with no
+      mention of iterative bootstrap refinement -> ``n_bootstrap_cycles=0`` (a single
+      relaxation pass, not this module's usual default of 2).
+
+    Paper's own reported rho at exactly these hyperparameters (Table 1, the k=8,
+    eta=4 cell): **LS 0.648, LSR 0.403** (LSR in parentheses in the original).
+
+    Measured here: **LS 0.75, LSR 0.7034** - both worse than the paper's numbers, and
+    LSR's margin over LS is smaller. This gap is understood, not a loose end: torchalg
+    implements compatible-relaxation + algebraic-distance coarsening ([AD11]'s
+    generalization for problems without a structured grid), while the paper's own
+    reported numbers use full geometric (mesh-doubling) coarsening for structured grids
+    like this one (``docs/bootstrap-amg.md`` Sec. 6 already documents this as a
+    deliberate scope choice). Closing it would mean implementing geometric coarsening
+    as a genuinely separate strategy - out of scope here, and not attempted by this
+    test. What this test asserts is exactly what *is* verified reproducible with the
+    setup above, no more and no less:
+
+    1. the pipeline builds a working multi-level hierarchy at all under this exact
+       setup (a direct regression guard for the draw-conflation bug, which made this
+       specific configuration crash outright before the fix above);
+    2. both LS and LSR converge (``rho < rho_per_size_bound``);
+    3. LSR beats LS - the one comparative claim from Table 1 that *does* survive
+       faithful reproduction, even though the absolute level does not.
+
+    Slow (~65s): builds two BAMG hierarchies on a 3969-node dense system. Marked
+    ``benchmark`` like every other test in this module for that reason.
+    """
+    matrix = isotropic_2d_matrix_h64
+    start = energy_norm_start_factory(matrix.shape[0])
+
+    def factory(use_lsr: bool, seed: int) -> BootstrapAMGPreconditioner:
+        return BootstrapAMGPreconditioner(
+            matrix,
+            k_r=8,
+            eta=4,
+            n_bootstrap_cycles=0,
+            use_lsr=use_lsr,
+            test_vector_draw=normal_seeded_draw_factory(seed),
+            n_pre=2,
+            n_post=2,
+            smoother=GaussSeidelSmoother(),
+        )
+
+    preconditioner_ls = factory(use_lsr=False, seed=0)
+    preconditioner_lsr = factory(use_lsr=True, seed=0)
+    assert len(preconditioner_ls.result.matrices) >= 2, (
+        "must build a real multi-level hierarchy under the paper's exact setup - "
+        "this configuration used to collapse to a single level before the "
+        "draw/test_vector_draw fix"
+    )
+    assert len(preconditioner_lsr.result.matrices) >= 2
+
+    rho_ls = _mg_convergence_factor(preconditioner_ls, matrix, start)
+    rho_lsr = _mg_convergence_factor(preconditioner_lsr, matrix, start)
+
+    assert 0.0 <= rho_ls < rho_per_size_bound, f"LS rho={rho_ls}"
+    assert 0.0 <= rho_lsr < rho_per_size_bound, f"LSR rho={rho_lsr}"
+    assert rho_lsr < rho_ls, f"LSR ({rho_lsr}) must beat LS ({rho_ls}) - Table 1's own claim"

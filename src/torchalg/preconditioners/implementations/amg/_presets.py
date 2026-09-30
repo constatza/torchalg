@@ -34,16 +34,23 @@ cycles are built separately so changing their smoother cannot perturb setup.
 """
 
 
-def prebuilt_cycle(smoother: MultigridSmoother) -> VCycle:
-    """Build the solve-time V(1,1) cycle for a prebuilt hierarchy preset.
+def prebuilt_cycle(smoother: MultigridSmoother, n_pre: int = 1, n_post: int = 1) -> VCycle:
+    """Build the solve-time cycle for a prebuilt hierarchy preset, V(1,1) by default.
+
+    [STATUS14] treats pre/post sweep counts as experiment-specific rather
+    than mandated (its Table 1 sweeps eta = 2, 4, 6, 8; V(2,2) is a reported
+    configuration, not a required setting) - callers may override the
+    historical V(1,1) default.
 
     Args:
         smoother (MultigridSmoother): Solve-time smoothing strategy.
+        n_pre (int): Pre-smoothing steps.
+        n_post (int): Post-smoothing steps.
 
     Returns:
         VCycle: Symmetric-step cycle with a pseudo-inverse coarse solve.
     """
-    return VCycle(smoother, n_pre=1, n_post=1, coarse_solver=pseudo_inverse_solve)
+    return VCycle(smoother, n_pre=n_pre, n_post=n_post, coarse_solver=pseudo_inverse_solve)
 
 
 def seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:

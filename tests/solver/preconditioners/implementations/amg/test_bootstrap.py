@@ -145,6 +145,50 @@ def test_bamg_coarsening_without_lsr_also_produces_psd_galerkin_operator(
     assert torch.all(eigenvalues > -1e-8)
 
 
+def test_bamg_coarsening_fit_vectors_corrects_every_vector_at_its_own_top_residual_points(
+    torch_dtype: torch.dtype,
+) -> None:
+    """[STATUS14] Sec. 3 (Table 1 caption, verified directly against arXiv:1406.1819): "the
+    update ... is applied only to 20% of the entries of the TVs for which the associated
+    values of the residual r_i^(kappa) are largest in absolute value" - every test vector
+    is corrected (no restriction to a single vector), each at *its own* highest-residual
+    points, not a residual combined/shared across vectors.
+
+    Construction: two locally-coupled zones (rows 1-3 and rows 6-8) on an otherwise-identity
+    matrix. Vector 0 has a huge spike in zone 1 only; vector 1 has a spike in zone 2 only,
+    plus a small secondary presence in zone 1 (small enough that a wrong, cross-vector
+    selection there would still be observable rather than a no-op). If row selection used a
+    residual combined across vectors, vector 0's huge zone-1 spike would dominate and could
+    pull vector 1's own correction into zone 1 too; using each vector's own residual keeps
+    vector 1's correction confined to its own zone 2.
+    """
+    n = 10
+    matrix = torch.eye(n, dtype=torch_dtype)
+    for i, j in ((1, 2), (2, 3), (6, 7), (7, 8)):
+        matrix[i, j] = matrix[j, i] = 0.3
+    vector_a = torch.zeros(n, dtype=torch_dtype)
+    vector_a[2] = 100.0  # huge spike in zone 1 (rows 1-3), vector_a's own peak
+    vector_b = torch.zeros(n, dtype=torch_dtype)
+    vector_b[7] = 5.0  # its own peak, zone 2 (rows 6-8)
+    vector_b[2] = 0.5  # small secondary presence in zone 1
+    test_vectors = torch.stack([vector_a, vector_b], dim=1)
+    fine_points = torch.arange(n, dtype=torch.long)
+
+    coarsening = BAMGCoarsening(test_vectors, relaxation=GaussSeidelSmoother().smooth, use_lsr=True)
+    corrected = coarsening._fit_vectors(matrix, test_vectors, fine_points)
+
+    assert not torch.equal(corrected[:, 0], test_vectors[:, 0]), (
+        "vector_a is corrected at its own zone 1 peak"
+    )
+    assert torch.equal(corrected[2, 1], test_vectors[2, 1]), (
+        "vector_b's own residual in zone 1 is small - it must not be selected just because "
+        "vector_a (a DIFFERENT vector) has a huge residual there"
+    )
+    assert not torch.equal(corrected[7, 1], test_vectors[7, 1]), (
+        "zone 2 is vector_b's own dominant residual - it must be selected"
+    )
+
+
 def test_bamg_coarsening_stores_restricted_test_vectors_for_next_level(
     poisson_16: torch.Tensor,
     bamg_coarsening: BAMGCoarsening,
@@ -247,6 +291,150 @@ def test_bootstrap_setup_run_produces_a_multilevel_result(
     assert result.candidates.shape == (16, 4)
     for level, prolongation in zip(result.matrices[1:], result.prolongations, strict=True):
         assert level.shape[0] == prolongation.shape[1]
+
+
+def test_bootstrap_setup_improve_levels_improves_every_level_except_coarsest(
+    poisson_16: torch.Tensor,
+    bootstrap_setup_small: BootstrapSetup,
+    bootstrap_draw: Callable[[int], torch.Tensor],
+) -> None:
+    """[BAMG11] Sec. 5 / [STATUS14]: every level's test vectors are improved via its own
+    sub-hierarchy cycle each bootstrap cycle - not just the finest level's, which was a
+    real simplification of Sec. 5 this module used to make (see ``run``'s previous
+    ``TODO(bamg-fidelity, mandatory)`` marker).
+    """
+    from torchalg.preconditioners.implementations.amg.bootstrap import (
+        _hierarchy_of,
+        _improve_test_vectors,
+        _random_test_vectors,
+    )
+
+    relaxation = GaussSeidelSmoother().smooth
+    vectors = _random_test_vectors(poisson_16, bootstrap_setup_small.k_r, bootstrap_draw)
+    coarsening = bootstrap_setup_small._coarsening_from(vectors, relaxation, bootstrap_draw)
+    levels, prolongations = bootstrap_setup_small._build_levels(poisson_16, coarsening, relaxation)
+    assert len(levels) >= 3, "fixture must build >= 3 levels to distinguish per-level improvement"
+    before = {level.shape[0]: coarsening.test_vectors_for(level) for level in levels[:-1]}
+
+    improved = bootstrap_setup_small._improve_levels(levels, prolongations, before)
+
+    assert set(improved) == {level.shape[0] for level in levels[:-1]}
+    for level in levels[:-1]:
+        assert improved[level.shape[0]].shape == before[level.shape[0]].shape
+
+    coarse_level = levels[1]
+    assert not torch.equal(improved[coarse_level.shape[0]], before[coarse_level.shape[0]]), (
+        "a coarser level's vectors must actually change - the previous finest-only "
+        "implementation left every coarser level's improvement step a no-op"
+    )
+
+    full_hierarchy = _hierarchy_of(levels, prolongations)
+    expected_finest = _improve_test_vectors(
+        poisson_16, before[poisson_16.shape[0]], full_hierarchy, bootstrap_setup_small.eta
+    )
+    assert torch.equal(improved[poisson_16.shape[0]], expected_finest)
+
+
+def test_seeded_test_vectors_concatenates_seed_columns_after_random_draws(
+    poisson_16: torch.Tensor,
+) -> None:
+    """[STATUS14] Table 3 seeds a known near-null vector alongside ``k_r`` random draws, not instead of them."""
+    from torchalg.preconditioners.implementations.amg._presets import seeded_draw
+    from torchalg.preconditioners.implementations.amg.bootstrap import (
+        _random_test_vectors,
+        _seeded_test_vectors,
+    )
+
+    seed_vectors = torch.ones(poisson_16.shape[0], 1, dtype=poisson_16.dtype)
+
+    seeded = _seeded_test_vectors(poisson_16, k_r=3, draw=seeded_draw(7), seed_vectors=seed_vectors)
+    random_only = _seeded_test_vectors(poisson_16, k_r=3, draw=seeded_draw(7), seed_vectors=None)
+
+    assert seeded.shape == (16, 4)
+    assert torch.equal(seeded[:, 3:4], seed_vectors)
+    assert torch.equal(random_only, _random_test_vectors(poisson_16, 3, seeded_draw(7)))
+
+
+def test_bootstrap_setup_run_includes_seed_vector_columns(
+    poisson_16: torch.Tensor,
+    bootstrap_setup_small: BootstrapSetup,
+    bootstrap_draw: Callable[[int], torch.Tensor],
+) -> None:
+    """``run(seed_vectors=...)`` grows the finest-level test-vector count by the seed columns."""
+    seed_vectors = torch.ones(poisson_16.shape[0], 1, dtype=poisson_16.dtype)
+
+    result = bootstrap_setup_small.run(poisson_16, bootstrap_draw, seed_vectors=seed_vectors)
+
+    assert result.candidates.shape[1] == 4 + 1
+
+
+def test_bootstrap_setup_run_test_vector_draw_is_independent_of_draw(
+    poisson_16: torch.Tensor,
+    bootstrap_setup_small: BootstrapSetup,
+) -> None:
+    """``draw`` is used for two unrelated things: generating the initial ``k_r``
+    test vectors, and seeding compatible relaxation's own internal
+    convergence-rate probe (``cr_rate``, documented to expect a uniform
+    ``[0, 1)`` start for its short, ``nu``-sweep power-iteration-style
+    estimate). Reusing one ``draw`` for both means changing the test-vector
+    distribution silently changes CR's behavior too. ``test_vector_draw``
+    (optional, defaults to ``draw`` - unchanged behavior) decouples them:
+    the finest-level test vectors before any bootstrap-cycle mixing depend
+    only on ``test_vector_draw`` and the (deterministic) relaxation, not on
+    ``draw`` - confirmed here by holding ``test_vector_draw`` fixed and
+    varying ``draw``, which must not change the result.
+    """
+    from torchalg.preconditioners.implementations.amg._presets import seeded_draw
+
+    fixed_test_vector_draw = seeded_draw(3)
+    result_a = bootstrap_setup_small.run(
+        poisson_16, seeded_draw(1), test_vector_draw=seeded_draw(3)
+    )
+    result_b = bootstrap_setup_small.run(
+        poisson_16, seeded_draw(2), test_vector_draw=fixed_test_vector_draw
+    )
+
+    assert torch.equal(result_a.candidates, result_b.candidates)
+
+
+def test_bootstrap_setup_run_normal_test_vectors_do_not_break_cr_coarsening(
+    poisson_16: torch.Tensor,
+    bootstrap_setup_small: BootstrapSetup,
+) -> None:
+    """Regression: before ``test_vector_draw`` existed, generating test vectors
+    from a signed distribution (e.g. N(0,1), matching [STATUS14] Sec. 3's
+    "generated randomly with a normal distribution ... N(0,1)") reused the
+    same ``draw`` for CR's internal uniform-``[0,1)``-expecting probe too,
+    which collapsed compatible-relaxation coarsening to a single level -
+    reproduced directly (not merely inferred) on a 256-node 2D fixture during
+    investigation. With the distributions separated, CR must coarsen normally
+    regardless of what distribution generates the test vectors.
+    """
+    from torchalg.preconditioners.implementations.amg._presets import seeded_draw
+
+    def normal_draw(seed: int) -> Callable[[int], torch.Tensor]:
+        generator = torch.Generator().manual_seed(seed)
+        return lambda n: torch.randn(n, generator=generator, dtype=torch.float64)
+
+    result = bootstrap_setup_small.run(poisson_16, seeded_draw(7), test_vector_draw=normal_draw(0))
+
+    assert len(result.matrices) >= 2, "CR coarsening must not collapse to a single level"
+
+
+def test_bootstrap_setup_run_includes_mge_eigenvector_columns(
+    poisson_16: torch.Tensor,
+    bootstrap_setup_small: BootstrapSetup,
+    bootstrap_draw: Callable[[int], torch.Tensor],
+) -> None:
+    """[BAMG11] Algorithm 1: MGE eigenvectors are appended to the relaxation-derived
+    TVs (``k = k_r + k_e``), not built in v1 but opt-in via ``k_e``."""
+    from dataclasses import replace
+
+    setup = replace(bootstrap_setup_small, k_e=2)
+
+    result = setup.run(poisson_16, bootstrap_draw)
+
+    assert result.candidates.shape[1] == 4 + 2
 
 
 def test_bootstrap_setup_run_hierarchy_matches_matrices(
@@ -380,6 +568,84 @@ def test_bootstrap_amg_preconditioner_defaults_to_jacobi_at_solve_time(
         bootstrap_amg_preconditioner_64._cycle._smoother,  # ty: ignore[unresolved-attribute]
         JacobiSmoother,
     )
+
+
+def test_bootstrap_amg_preconditioner_defaults_to_v11_solve_cycle(
+    bootstrap_amg_preconditioner_64: BootstrapAMGPreconditioner,
+) -> None:
+    """Solve-time sweep counts default to V(1,1), matching the historical hardcoded cycle."""
+    assert bootstrap_amg_preconditioner_64._cycle._n_pre == 1  # ty: ignore[unresolved-attribute]
+    assert bootstrap_amg_preconditioner_64._cycle._n_post == 1  # ty: ignore[unresolved-attribute]
+
+
+def test_bootstrap_amg_preconditioner_uses_configured_cycle_sweep_counts(
+    anisotropic_2d_matrix_64: torch.Tensor,
+) -> None:
+    """[STATUS14] treats sweep counts as experiment-specific (eta = 2, 4, 6, 8); expose them."""
+    preconditioner = BootstrapAMGPreconditioner(
+        anisotropic_2d_matrix_64, k_r=8, eta=4, n_bootstrap_cycles=2, seed=5, n_pre=3, n_post=2
+    )
+    assert preconditioner._cycle._n_pre == 3  # ty: ignore[unresolved-attribute]
+    assert preconditioner._cycle._n_post == 2  # ty: ignore[unresolved-attribute]
+
+
+def test_bootstrap_amg_preconditioner_accepts_seed_vectors(
+    anisotropic_2d_matrix_64: torch.Tensor,
+) -> None:
+    """[STATUS14] Table 3's near-null seeding is reachable through the public preconditioner too."""
+    seed_vectors = torch.ones(
+        anisotropic_2d_matrix_64.shape[0], 1, dtype=anisotropic_2d_matrix_64.dtype
+    )
+
+    preconditioner = BootstrapAMGPreconditioner(
+        anisotropic_2d_matrix_64,
+        k_r=8,
+        eta=4,
+        n_bootstrap_cycles=2,
+        seed=5,
+        seed_vectors=seed_vectors,
+    )
+
+    assert preconditioner.result.candidates.shape[1] == 8 + 1
+
+
+def test_bootstrap_amg_preconditioner_accepts_k_e(
+    anisotropic_2d_matrix_64: torch.Tensor,
+) -> None:
+    """[BAMG11] Algorithm 1's MGE enrichment is reachable through the public preconditioner too."""
+    preconditioner = BootstrapAMGPreconditioner(
+        anisotropic_2d_matrix_64,
+        k_r=8,
+        eta=4,
+        n_bootstrap_cycles=2,
+        seed=5,
+        k_e=2,
+    )
+
+    assert preconditioner.result.candidates.shape[1] == 8 + 2
+
+
+def test_bootstrap_amg_preconditioner_accepts_test_vector_draw(
+    anisotropic_2d_matrix_64: torch.Tensor,
+) -> None:
+    """``test_vector_draw`` is reachable through the public preconditioner too,
+    letting a caller match [STATUS14] Sec. 3's N(0,1) test vectors without
+    also feeding a signed distribution into CR's own uniform-expecting probe."""
+
+    def normal_draw(n: int) -> torch.Tensor:
+        generator = torch.Generator().manual_seed(0)
+        return torch.randn(n, generator=generator, dtype=anisotropic_2d_matrix_64.dtype)
+
+    preconditioner = BootstrapAMGPreconditioner(
+        anisotropic_2d_matrix_64,
+        k_r=8,
+        eta=4,
+        n_bootstrap_cycles=2,
+        seed=5,
+        test_vector_draw=normal_draw,
+    )
+
+    assert len(preconditioner.result.matrices) >= 2
 
 
 def test_bootstrap_amg_preconditioner_uses_configured_solve_smoother(

@@ -152,23 +152,41 @@ assumption. `_compatible_relaxation.py` (compatible relaxation, choosing
 caliber-bounded interpolatory-set selection) are pure per-kernel modules;
 `bootstrap.py`'s `BAMGCoarsening` wires them into one `build_transfer(A)` =
 one level of the paper's setup algorithm, `BootstrapSetup.run` is the outer
-Sec. 4.1/5 loop (build the initial hierarchy from relaxed random test
-vectors, then for `n_bootstrap_cycles` improve the *finest* level's vectors
-by running the current partial hierarchy on `A x = 0` and rebuild the whole
-hierarchy from them — each coarse level's vectors are re-derived from
-scratch during that rebuild, by restriction plus `eta` relaxation sweeps,
-rather than improved in place; a documented simplification of Sec. 5, which
-improves every level), and
-`BootstrapAMGPreconditioner` is the `AdaptiveSAPreconditioner`-shaped preset
-around it — both presets share `amg/_presets.py`'s GS-only
-`GS_SETUP_CYCLE`, solve-cycle factory, `seeded_draw`, and
-`PrebuiltCoarsening` (a placeholder `CoarseningStrategy` that always raises,
-since `_make_hierarchy` is overridden). BAMG's solve-time cycle defaults to
-weighted Jacobi like the rest of the preset family; CR's own relaxation
-(`BootstrapSetup.run`'s `relaxation`) stays symmetric GS unconditionally,
-since it defines the coarsening rather than merely smoothing it. Not built in
-v1: the multigrid eigensolver (MGE, Sec. 4.2) - bootstrap cycles improve
-test vectors by relaxation/cycling alone. `compatible_relaxation_coarsening`
+Sec. 4.1/5 loop: build the initial hierarchy from relaxed random test
+vectors (optionally concatenated with known near-null `seed_vectors`, e.g.
+the constant vector `1` — [STATUS14] Table 3), then for `n_bootstrap_cycles`
+improve *every* level's test vectors via that level's own sub-hierarchy
+cycle on `A_l x_l = 0` (`BootstrapSetup._improve_levels`) — no longer
+finest-only, since neither paper sanctions a finest-only variant — and
+optionally enrich them with `k_e` multigrid-eigensolver (MGE, [BAMG11]
+Algorithm 1, `_mge.py`) eigenvector approximations before rebuilding the
+whole hierarchy from the combined set. `BootstrapAMGPreconditioner` is the
+`AdaptiveSAPreconditioner`-shaped preset around it — both presets share
+`amg/_presets.py`'s GS-only `GS_SETUP_CYCLE`, solve-cycle factory
+(`prebuilt_cycle`, sweep counts `n_pre`/`n_post` configurable on both
+presets, V(1,1) by default), `seeded_draw`, and `PrebuiltCoarsening` (a
+placeholder `CoarseningStrategy` that always raises, since `_make_hierarchy`
+is overridden). BAMG's solve-time cycle defaults to weighted Jacobi like the
+rest of the preset family; CR's own relaxation (`BootstrapSetup.run`'s
+`relaxation`) stays symmetric GS unconditionally, since it defines the
+coarsening rather than merely smoothing it. Every deviation from
+[BAMG11]/[STATUS14] was classified mandatory-vs-optional against what the
+papers themselves say and resolved accordingly: MGE, near-null seeding, and
+solve-time sweep counts were confirmed optional and are now opt-in
+parameters (all default to the historical MGE-free, unseeded, V(1,1)
+behavior); every-level test-vector improvement was confirmed **not**
+paper-sanctioned as a finest-only variant and is now the only behavior, not
+a flag. The LSR practical schedule was checked against [STATUS14] Sec. 3
+directly (arXiv:1406.1819, not a secondary transcription) and corrected
+twice: it corrects every test vector (never just one, contrary to an
+earlier reading of an unverifiable secondary source), each at the 20% of
+F-points with the largest absolute value of **that same vector's own**
+residual, not one combined across vectors - see `BAMGCoarsening._fit_vectors`.
+One remaining, explicitly scoped follow-up: `test_vector_weights`'s
+`T = I` reduction is only paper-valid before any MGE enrichment - with
+`k_e > 0` it becomes a documented, not-yet-addressed simplification (see the
+`TODO(bamg-fidelity, follow-up)` marker at its call site in `bootstrap.py`).
+`compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
 algebraic-distance strength graph there, computed once per level (before any
@@ -228,14 +246,19 @@ Bootstrap-AMG pipeline to validate the whole algorithm against. Correctness
 instead rests on the property tests above plus a `benchmark`-marked paper-table reproduction
 (`tests/benchmarks/preconditioners/test_bootstrap_amg.py`) checked against
 [BAMG11]'s Tables 4.2/4.3 convergence-factor trends on this codebase's own
-Poisson fixtures. That benchmark also records a real, known accuracy gap, stated plainly
-rather than swept under the rug: **this implementation seeds no a priori
-near-null vector** (e.g. the constant vector `1`) into the test-vector set —
-only `k_r` random draws — and [BAMG11] Sec. 6 reports that seeding takes
-LSR into a near-optimal `ρ ≈ 0.04–0.15` range. That gap explains the
-*absolute* level of the numbers measured here (`ρ ≈ 0.45–0.75` on 1D Poisson
-at N=31…511, averaged over 8 setup seeds), and remains a deliberate,
-documented scope decision.
+Poisson fixtures. That benchmark deliberately exercises the *defaults*
+(no `seed_vectors`, `k_e=0`), so it still records the same real, known
+accuracy gap versus the paper's own seeded/MGE-enriched numbers, stated
+plainly rather than swept under the rug: with no near-null vector seeded and
+no MGE enrichment, the measured `ρ ≈ 0.40–0.73` on 1D Poisson at N=31…511
+(averaged over 8 setup seeds; see that file's own docstring for the current
+per-size table) sits well short of [BAMG11] Sec. 6's near-optimal seeded
+range `ρ ≈ 0.04–0.15`. Both `seed_vectors` and `k_e` are now implemented and
+available to close this gap for callers who opt in (`_mge.py`'s module
+docstring measures MGE's effect directly: e.g. `k_e=8` roughly halves `ρ` at
+N=127…511 on the same benchmark's fixtures) - the benchmark's own numbers
+just don't exercise them, since [BAMG11] Tables 4.2/4.3 (what it targets)
+are themselves the unseeded, MGE-free baseline.
 
 It does **not** explain the LS-vs-LSR comparison. Averaged over 8 setup
 seeds, LSR's advantage over LS is size-dependent, exactly as Sec. 6 reports:

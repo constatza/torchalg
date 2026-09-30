@@ -480,6 +480,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         smoother (MultigridSmoother | None): Explicit solve-time smoother.
             ``None`` selects weighted Jacobi. When supplied,
             ``smoother_omega`` must remain ``None``.
+        n_pre (int): Solve-time pre-smoothing sweeps.
+        n_post (int): Solve-time post-smoothing sweeps.
 
     Note (DIP):
         Preset/factory leaf class, same pattern as ``VCycleAMG`` and
@@ -503,6 +505,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         draw: Callable[[int], torch.Tensor] | None = None,
         smoother_omega: float | None = None,
         smoother: MultigridSmoother | None = None,
+        n_pre: int = 1,
+        n_post: int = 1,
     ) -> None:
         """Run the adaptive setup and wrap the resulting hierarchy.
 
@@ -523,6 +527,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
                 per-level spectral rule.
             smoother (MultigridSmoother | None): Explicit solve-time
                 smoother, or ``None`` for weighted Jacobi.
+            n_pre (int): Solve-time pre-smoothing sweeps.
+            n_post (int): Solve-time post-smoothing sweeps.
 
         Raises:
             ValueError: If the setup produced a single level (nothing to coarsen).
@@ -544,7 +550,9 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         super().__init__(
             matrix=matrix,
             coarsening=PrebuiltCoarsening("adaptive SA"),
-            cycle=prebuilt_cycle(resolve_jacobi_default(smoother, smoother_omega)),
+            cycle=prebuilt_cycle(
+                resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
+            ),
             n_levels=len(result.matrices),
             linear=True,
         )
