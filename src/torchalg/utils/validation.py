@@ -36,7 +36,11 @@ def validate_matrix(A: torch.Tensor) -> None:
         raise ValueError(f"Matrix must be 2D, got {A.ndim}D")
     if A.shape[0] != A.shape[1]:
         raise ValueError(f"Matrix must be square, got shape {tuple(A.shape)}")
-    if not torch.isfinite(A).all():
+    # Regression: PCG rejected CSR inputs before its first iteration because
+    # PyTorch has no ``torch.isfinite`` CSR overload. Implicit sparse entries
+    # are mathematically zero (and finite), so validate just stored values.
+    values = A if A.layout == torch.strided else A.values()
+    if not torch.isfinite(values).all():
         raise ValueError("Matrix contains non-finite values")
 
 

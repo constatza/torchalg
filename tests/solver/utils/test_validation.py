@@ -29,6 +29,10 @@ class TestValidateMatrix:
         a, _, _ = valid_spd_system
         validate_matrix(a)
 
+    def test_valid_sparse_csr_matrix_passes(self, csr_spd_matrix: torch.Tensor) -> None:
+        """Finiteness validation inspects CSR stored values without densifying."""
+        validate_matrix(csr_spd_matrix)
+
     def test_non_square_matrix_raises(self, non_square_matrix: torch.Tensor) -> None:
         """A non-square matrix raises ``ValueError``."""
         with pytest.raises(ValueError, match="square"):
