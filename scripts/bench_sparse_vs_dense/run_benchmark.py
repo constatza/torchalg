@@ -6,18 +6,38 @@ Cartesian-product reductions applied before any cell runs (see
 
 1. GPU legs only run when ``torch.cuda.is_available()`` - otherwise skipped
    for lack of hardware, not eliminated by theory.
-2. Dense legs of the three families that are provably O(N^3) at full size
-   (Galerkin product, factorization, full eigh) are capped at
-   ``--dense-cubic-max-n`` and never attempted above it - a known
-   ~20GB/hours-long blowup at N=50k, not something worth discovering via a
-   live timeout. ``ic0`` gets a much lower, non-CLI-configurable cap of its
-   own (``DENSE_CUBIC_MAX_N_OVERRIDES``) - unlike the other two capped ops,
-   it's a Python-level loop rather than one BLAS/LAPACK call, and its
-   measured wall time grows far worse than N^3 in practice.
-3. A sparse/native leg that isn't available on this build/device (e.g.
-   ``torch.sparse.spsolve`` on CPU, or on CUDA without a cuDSS-enabled
-   PyTorch build - see ``operations.py`` for both) is caught and logged as
-   a skip, not a crash.
+2. Dense legs already proven unscalable are removed from the grid outright,
+   not capped-and-skipped: the dense Galerkin-formation leg ("formed_dense",
+   O(N^3), known ~20GB/hours-long blowup by N=50k), dense "ic0" (a
+   Python-level loop whose measured wall time grows far worse than N^3 -
+   18.5s already at N=3000), dense "eigvalsh" (O(N^3) full eigendecomposition),
+   and the native sparse triangular "spsolve" leg (unsupported on CPU and,
+   without a cuDSS-enabled build, on CUDA too - a complete capability gap at
+   every N, not a scale effect) all have well-established, previously-
+   measured results (see ``docs/plan.md``'s "At-scale evidence") that a
+   future benchmark run gains nothing by re-confirming; keeping them in the
+   grid only burns wall-clock time reaching the same already-known
+   conclusion (or, for "spsolve", produces nothing but an "unsupported" skip
+   row at every single cell). Each removed leg's family keeps its other,
+   genuinely informative legs (e.g. "galerkin_form" still compares
+   "matrix_free_dense"/"matrix_free_sparse"/"formed_spmm"/"formed_spgemm").
+3. A sparse/native leg that turns out unavailable for some other,
+   less-settled reason is still caught and logged as a skip, not a crash -
+   point 2 above only removes legs whose unsupportedness/blowup is already
+   fully established, not a general "catch everything" policy.
+
+With ``--compile``, every cell in a parallel-kernel-shaped family (``mv``,
+``galerkin_form``, ``triangular_apply`` - see ``COMPILABLE_FAMILIES``) gets a
+second, ``torch.compile``-wrapped sibling cell alongside its normal eager
+one, recorded as a ``mode`` column in the output CSV (``"eager"`` vs.
+``"compiled"``). Per ``docs/plan.md``'s "Next steps" (re-benchmark under
+``torch.compile()``): scoped to these families specifically because
+compilation can shift the calculus for parallel-kernel ops (kernel fusion
+changes per-call overhead), while the sequential-graph-construction-style
+ops this script measures elsewhere (e.g. ``factorize``'s Python-level
+per-level loop) would gain nothing - their control flow isn't the kind
+``torch.compile`` traces through. Off by default (``--compile`` not passed):
+behavior and output are unchanged from before this flag existed.
 
 Every surviving cell is timed with ``torch.utils.benchmark.Timer``
 (handles warm-up, repetition statistics, and CUDA synchronization
@@ -41,7 +61,6 @@ from typing import Self
 
 import torch
 from scipy.sparse import csr_matrix
-from scipy.sparse import tril as scipy_tril
 from torch.utils.benchmark import Timer
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -51,30 +70,9 @@ from bench_sparse_vs_dense import operations as ops
 
 DEFAULT_SIZES = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 50_000]
 DEFAULT_K_VALUES = [1, 5, 20, 100]
-DEFAULT_DENSE_CUBIC_MAX_N = 8_000
 DEFAULT_MAX_MEMORY_GB = 8.0
 DEFAULT_TIMEOUT_S = 60.0
 RESULTS_DIR = Path(__file__).with_name("results")
-
-# Specific ops provably O(N^3) at full matrix size - these are the only
-# ones a static size cap applies to (see module docstring point 2). Keyed
-# by op, not family: a family can mix a capped dense-formation leg
-# ("formed_dense") with an uncapped one that happens to also use dense
-# operands ("matrix_free_dense" is O(N^2), not O(N^3) - not capped;
-# "matrix_free_sparse" needs no dense A at all). Every other op runs the
-# full sweep.
-DENSE_CUBIC_OPS = {"formed_dense", "ic0", "eigvalsh"}
-
-# Per-op override of --dense-cubic-max-n, for ops whose measured cost grows
-# far worse than the other DENSE_CUBIC_OPS members at the same N.
-# "formed_dense"/"eigvalsh" are single BLAS/LAPACK calls, so the general
-# cap (tuned for an N^3 blowup, see module docstring point 2) fits them.
-# "ic0" (``dense_ic0``) is a Python-level ``for k in range(n)`` loop over
-# per-step tensor ops, not one fused kernel - measured wall time at
-# float64 (0.19s @ n=1024, 3.7s @ n=2048, 18.5s @ n=3000) grows far faster
-# than N^3 in practice, so it needs its own, much lower cap rather than
-# sharing the 8000 default meant for a single BLAS/LAPACK call.
-DENSE_CUBIC_MAX_N_OVERRIDES = {"ic0": 2_000}
 
 # Rough multiplier on a matrix's own storage size for the peak working
 # memory a family needs (factorization/eigh/svd allocate several
@@ -134,6 +132,9 @@ class Cell:
             the primary operand tensor (for storage-size measurement).
         k: Reuse count, only meaningful for ``family == "galerkin_form"``
             (formed-vs-matrix-free comparison); ``None`` otherwise.
+        mode_label: ``"eager"`` (default) or ``"compiled"`` - only cells in
+            ``COMPILABLE_FAMILIES`` ever get a ``"compiled"`` sibling, and
+            only when ``--compile`` is passed.
     """
 
     family: str
@@ -143,6 +144,7 @@ class Cell:
     n: int
     build: Callable[[], tuple[Callable[[], object], torch.Tensor]]
     k: int | None = None
+    mode_label: str = "eager"
 
 
 @dataclass
@@ -160,6 +162,7 @@ class CellResult:
     gpu_peak_bytes: int | None
     cpu_rss_delta_bytes: int | None
     skip_reason: str | None
+    mode_label: str = "eager"
 
 
 def devices() -> list[torch.device]:
@@ -225,6 +228,7 @@ def run_cell(cell: Cell, *, timeout_s: float, device_for_memory: torch.device) -
             None,
             None,
             "timeout",
+            cell.mode_label,
         )
     except (NotImplementedError, RuntimeError, ValueError) as error:
         return CellResult(
@@ -239,6 +243,7 @@ def run_cell(cell: Cell, *, timeout_s: float, device_for_memory: torch.device) -
             None,
             None,
             f"unsupported: {error}"[:200],
+            cell.mode_label,
         )
 
     return CellResult(
@@ -253,7 +258,84 @@ def run_cell(cell: Cell, *, timeout_s: float, device_for_memory: torch.device) -
         gpu_reading.peak_bytes,
         cpu_reading.peak_bytes,
         None,
+        cell.mode_label,
     )
+
+
+COMPILABLE_FAMILIES = {"mv", "galerkin_form", "triangular_apply"}
+"""Parallel-kernel-shaped families scoped for a compiled-vs-eager comparison
+(``docs/plan.md``'s "Next steps": "a compiled-vs-eager dimension for the
+parallel-kernel-shaped ops specifically"). Every other family this script
+measures is either sequential-graph-construction-shaped (``factorize``'s
+Python-level per-level loop) or a single BLAS/LAPACK/scipy call
+(``eigh``/``svd``/``transfer``/``convert``) that ``torch.compile`` has
+nothing useful to fuse.
+"""
+
+
+def _compiled(
+    build: Callable[[], tuple[Callable[[], object], torch.Tensor]],
+) -> Callable[[], tuple[Callable[[], object], torch.Tensor]]:
+    """Wrap a cell's ``build`` factory so its returned callable runs under ``torch.compile``.
+
+    ``run_cell`` already calls the returned callable once before starting
+    the ``Timer`` (for memory measurement) - that call doubles as the
+    compiled function's warm-up/trace, so no separate warm-up is needed
+    here. Known, accepted caveat: that warm-up call runs *inside* the
+    memory-measurement context, so a compiled cell's recorded peak memory
+    includes one-time compilation overhead (guards, kernel cache) on top of
+    steady-state execution - the timing comparison (this flag's actual
+    purpose) is unaffected, but the memory column isn't directly comparable
+    between a compiled and an eager cell at the same N.
+
+    Args:
+        build: A cell's existing zero-arg factory.
+
+    Returns:
+        Callable[[], tuple[Callable[[], object], torch.Tensor]]: A zero-arg
+            factory with the same return shape, whose callable is wrapped in
+            ``torch.compile``.
+    """
+
+    def compiled_build() -> tuple[Callable[[], object], torch.Tensor]:
+        fn, operand = build()
+        return torch.compile(fn), operand
+
+    return compiled_build
+
+
+def _emit(
+    family: str,
+    op: str,
+    fmt: str,
+    device_label: str,
+    n: int,
+    build: Callable[[], tuple[Callable[[], object], torch.Tensor]],
+    *,
+    k: int | None = None,
+    compile_modes: tuple[str, ...] = ("eager",),
+) -> Iterator[Cell]:
+    """Yield one cell per requested mode, ``torch.compile``-wrapping ``build`` for ``"compiled"``.
+
+    Args:
+        family: Same as ``Cell.family``.
+        op: Same as ``Cell.op``.
+        fmt: Same as ``Cell.format_label``.
+        device_label: Same as ``Cell.device_label``.
+        n: Same as ``Cell.n``.
+        build: Same as ``Cell.build``.
+        k: Same as ``Cell.k``.
+        compile_modes: Modes to emit - ``("eager",)`` by default,
+            ``("eager", "compiled")`` when ``--compile`` is passed. A
+            ``"compiled"`` sibling is only ever emitted when ``family`` is
+            also in ``COMPILABLE_FAMILIES``.
+
+    Yields:
+        Cell: One per requested mode actually applicable to ``family``.
+    """
+    yield Cell(family, op, fmt, device_label, n, build, k=k, mode_label="eager")
+    if "compiled" in compile_modes and family in COMPILABLE_FAMILIES:
+        yield Cell(family, op, fmt, device_label, n, _compiled(build), k=k, mode_label="compiled")
 
 
 def _cells_for_n_and_device(
@@ -263,6 +345,7 @@ def _cells_for_n_and_device(
     device: torch.device,
     dtype: torch.dtype,
     k_values: list[int],
+    compile_modes: tuple[str, ...] = ("eager",),
 ) -> Iterator[Cell]:
     """Every cell for one (N, device) combination.
 
@@ -281,9 +364,12 @@ def _cells_for_n_and_device(
         device: Target device for this batch of cells.
         dtype: Element dtype for all cells.
         k_values: Reuse counts for the family-3 formed-vs-matrix-free split.
+        compile_modes: Forwarded to ``_emit`` for every cell in
+            ``COMPILABLE_FAMILIES``.
 
     Yields:
-        Cell: One cell per (family, format, N[, K]) combination on this device.
+        Cell: One cell per (family, format, N[, K], mode) combination on
+            this device.
     """
     device_label = device.type
 
@@ -298,7 +384,7 @@ def _cells_for_n_and_device(
             vector = torch.randn(matrix.shape[0], dtype=dtype, device=matrix.device)
             return (lambda: ops.mv(matrix, vector)), matrix
 
-        yield Cell("mv", "mv", fmt, device_label, n, build)
+        yield from _emit("mv", "mv", fmt, device_label, n, build, compile_modes=compile_modes)
 
     # --- Family 2: elementwise (Jacobi apply) ---
     for fmt, matrix_builder in (
@@ -314,33 +400,16 @@ def _cells_for_n_and_device(
 
         yield Cell("elementwise", "jacobi_apply", fmt, device_label, n, build)
 
-    # --- Family 3: Galerkin form + apply, per K (formed) / matrix-free ---
-    # "formed_dense"/"matrix_free_dense" both need the full dense A
-    # materialized as setup, so both are subject to the same N cap as any
-    # other dense O(N^3)-adjacent leg (the cap check in `main` keys off
-    # `cell.op`, not the whole family, precisely so a family can mix
-    # capped and uncapped ops). "matrix_free_sparse" uses the sparse A
-    # instead - no dense materialization, no cap - this is the leg that
-    # actually demonstrates matrix-free's large-N advantage, since
-    # "matrix_free_dense" would otherwise need to build a 20GB dense A at
-    # N=50k just to set up the comparison, defeating its own point.
+    # --- Family 3: Galerkin form + apply, per K (matrix-free only - dense
+    # "formed_dense" removed, see module docstring point 2) ---
+    # "matrix_free_dense" needs the full dense A materialized as setup, same
+    # as any dense leg (protected by the memory guard below, not a cap).
+    # "matrix_free_sparse" uses the sparse A instead - no dense
+    # materialization at all - this is the leg that actually demonstrates
+    # matrix-free's large-N advantage, since "matrix_free_dense" would
+    # otherwise need to build a 20GB dense A at N=50k just to set up the
+    # comparison, defeating its own point.
     for k in k_values:
-
-        def build_formed_dense(k=k):
-            dense = matrices.to_torch_dense(scipy_matrix, dtype).to(device)
-            p = torch.randn(n, rank, dtype=dtype, device=device)
-            vectors = torch.randn(rank, k, dtype=dtype, device=device)
-
-            def run():
-                coarse = ops.form_galerkin_dense(p, dense)
-                for i in range(k):
-                    ops.apply_formed(coarse, vectors[:, i])
-
-            return run, dense
-
-        yield Cell(
-            "galerkin_form", "formed_dense", "dense", device_label, n, build_formed_dense, k=k
-        )
 
         def build_matrix_free_dense(k=k):
             dense = matrices.to_torch_dense(scipy_matrix, dtype).to(device)
@@ -353,7 +422,7 @@ def _cells_for_n_and_device(
 
             return run, dense
 
-        yield Cell(
+        yield from _emit(
             "galerkin_form",
             "matrix_free_dense",
             "dense",
@@ -361,6 +430,7 @@ def _cells_for_n_and_device(
             n,
             build_matrix_free_dense,
             k=k,
+            compile_modes=compile_modes,
         )
 
         def build_matrix_free_sparse(k=k):
@@ -374,7 +444,7 @@ def _cells_for_n_and_device(
 
             return run, sparse
 
-        yield Cell(
+        yield from _emit(
             "galerkin_form",
             "matrix_free_sparse",
             "sparse",
@@ -382,6 +452,7 @@ def _cells_for_n_and_device(
             n,
             build_matrix_free_sparse,
             k=k,
+            compile_modes=compile_modes,
         )
 
     def build_formed_spmm():
@@ -389,49 +460,61 @@ def _cells_for_n_and_device(
         p = torch.randn(n, rank, dtype=dtype, device=device)
         return (lambda: ops.form_galerkin_spmm(p, sparse)), sparse
 
-    yield Cell("galerkin_form", "formed_spmm", "sparse", device_label, n, build_formed_spmm)
+    yield from _emit(
+        "galerkin_form",
+        "formed_spmm",
+        "sparse",
+        device_label,
+        n,
+        build_formed_spmm,
+        compile_modes=compile_modes,
+    )
 
     def build_formed_spgemm():
         sparse = matrices.to_torch_sparse_csr(scipy_matrix, dtype).to(device)
         p_sparse = matrices.sparse_prolongation(n, rank, dtype=dtype).to(device)
         return (lambda: ops.form_galerkin_spgemm(p_sparse, sparse)), sparse
 
-    yield Cell("galerkin_form", "formed_spgemm", "sparse", device_label, n, build_formed_spgemm)
+    yield from _emit(
+        "galerkin_form",
+        "formed_spgemm",
+        "sparse",
+        device_label,
+        n,
+        build_formed_spgemm,
+        compile_modes=compile_modes,
+    )
 
-    # --- Family 4: triangular apply (factor already computed) ---
-    # The matrix's own lower triangle stands in for "an already-computed
-    # Cholesky-style factor": same shape/bandwidth, and a positive
-    # diagonal (true for this SPD lattice Laplacian), so it's a valid
-    # operand for timing the O(N^2) apply - computing a *real* Cholesky
-    # factor here would cost O(N^3) just to set up a benchmark meant to
-    # run the full 50k sweep uncapped, which defeats the point of family 4
-    # being apply-only.
+    # --- Family 4: triangular apply (factor already computed; dense only -
+    # native sparse "spsolve" removed, see module docstring point 2: a
+    # complete capability gap at every N on this build, not a scale effect,
+    # so it never produced a real measurement - `torchalg.sparse.kernels
+    # .triangular`'s own level-scheduled solve is the real replacement). The
+    # matrix's own lower triangle stands in for "an already-computed
+    # Cholesky-style factor": same shape/bandwidth, and a positive diagonal
+    # (true for this SPD lattice Laplacian), so it's a valid operand for
+    # timing the O(N^2) apply - computing a *real* Cholesky factor here
+    # would cost O(N^3) just to set up a benchmark meant to run the full
+    # 50k sweep uncapped, which defeats the point of family 4 being
+    # apply-only.
     def build_triangular_dense():
         dense = matrices.to_torch_dense(scipy_matrix, dtype).to(device)
         factor = torch.tril(dense)
         residual = torch.randn(n, dtype=dtype, device=device)
         return (lambda: ops.triangular_apply_dense(factor, residual)), factor
 
-    yield Cell(
-        "triangular_apply", "cholesky_solve", "dense", device_label, n, build_triangular_dense
+    yield from _emit(
+        "triangular_apply",
+        "cholesky_solve",
+        "dense",
+        device_label,
+        n,
+        build_triangular_dense,
+        compile_modes=compile_modes,
     )
 
-    def build_triangular_sparse():
-        factor_sparse = matrices.to_torch_sparse_csr(scipy_tril(scipy_matrix).tocsr(), dtype).to(
-            device
-        )
-        residual = torch.randn(n, dtype=dtype, device=device)
-        return (lambda: ops.triangular_apply_sparse(factor_sparse, residual)), factor_sparse
-
-    yield Cell("triangular_apply", "spsolve", "sparse", device_label, n, build_triangular_sparse)
-
-    # --- Family 5: factorization (dense capped by op, scipy uncapped) ---
-    def build_ic0():
-        dense = matrices.to_torch_dense(scipy_matrix, dtype).to(device)
-        return (lambda: ops.factorize_ic0(dense)), dense
-
-    yield Cell("factorize", "ic0", "dense", device_label, n, build_ic0)
-
+    # --- Family 5: factorization (dense "ic0" removed, see module docstring
+    # point 2; scipy/sparse legs uncapped) ---
     def build_spilu():
         sparse = matrices.to_torch_sparse_csr(scipy_matrix, dtype).to(device)
         csc = ops.to_scipy_csc(sparse)
@@ -439,13 +522,14 @@ def _cells_for_n_and_device(
 
     yield Cell("factorize", "spilu", "scipy", "cpu", n, build_spilu)
 
-    # --- Family 6: eigendecomposition (dense capped by op, lobpcg/scipy uncapped) ---
-    def build_eigh_dense():
-        dense = matrices.to_torch_dense(scipy_matrix, dtype).to(device)
-        return (lambda: ops.eigh_dense(dense)), dense
+    def build_sparse_ic0():
+        sparse = matrices.to_torch_sparse_csr(scipy_matrix, dtype).to(device)
+        return (lambda: ops.factorize_sparse_ic0(sparse)), sparse
 
-    yield Cell("eigh", "eigvalsh", "dense", device_label, n, build_eigh_dense)
+    yield Cell("factorize", "sparse_ic0", "sparse", device_label, n, build_sparse_ic0)
 
+    # --- Family 6: eigendecomposition (dense "eigvalsh" removed, see module
+    # docstring point 2; lobpcg/scipy legs uncapped) ---
     def build_lobpcg():
         sparse = matrices.to_torch_sparse_csr(scipy_matrix, dtype).to(device)
         return (lambda: ops.eigh_lobpcg(sparse, k=5)), sparse
@@ -503,27 +587,31 @@ def _cells_for_n_and_device(
 
 
 def build_grid(
-    sizes: list[int], k_values: list[int], dims: int, dtype: torch.dtype
+    sizes: list[int],
+    k_values: list[int],
+    dims: int,
+    dtype: torch.dtype,
+    compile_modes: tuple[str, ...] = ("eager",),
 ) -> Iterator[Cell]:
     """Construct every grid cell by sweeping N and device over :func:`_cells_for_n_and_device`.
-
-    The static O(N^3) dense-leg cap is applied by the caller (``main`` - see
-    module docstring point 2), not here.
 
     Args:
         sizes: Target matrix sizes to sweep.
         k_values: Reuse counts for the family-3 formed-vs-matrix-free split.
         dims: Grid dimensionality for the synthetic lattice Laplacian.
         dtype: Element dtype for all cells.
+        compile_modes: Forwarded to ``_cells_for_n_and_device``/``_emit``.
 
     Yields:
-        Cell: One cell per (family, format, device, N[, K]) combination.
+        Cell: One cell per (family, format, device, N[, K], mode) combination.
     """
     for target_n in sizes:
         scipy_matrix, n = matrices.synthetic_matrix(target_n, dims=dims)
         rank = max(2, n // 8)  # a representative coarsening ratio, not tuned per-N
         for device in devices():
-            yield from _cells_for_n_and_device(scipy_matrix, n, rank, device, dtype, k_values)
+            yield from _cells_for_n_and_device(
+                scipy_matrix, n, rank, device, dtype, k_values, compile_modes
+            )
 
 
 def write_results(results: list[CellResult], output_path: Path) -> None:
@@ -549,6 +637,7 @@ def write_results(results: list[CellResult], output_path: Path) -> None:
                 "gpu_peak_bytes",
                 "cpu_rss_delta_bytes",
                 "skip_reason",
+                "mode",
             ]
         )
         for r in results:
@@ -565,6 +654,7 @@ def write_results(results: list[CellResult], output_path: Path) -> None:
                     r.gpu_peak_bytes,
                     r.cpu_rss_delta_bytes,
                     r.skip_reason,
+                    r.mode_label,
                 ]
             )
 
@@ -575,37 +665,27 @@ def main() -> None:
     parser.add_argument("--sizes", type=int, nargs="+", default=DEFAULT_SIZES)
     parser.add_argument("--k-values", type=int, nargs="+", default=DEFAULT_K_VALUES)
     parser.add_argument("--dims", type=int, default=2, choices=(2, 3))
-    parser.add_argument("--dense-cubic-max-n", type=int, default=DEFAULT_DENSE_CUBIC_MAX_N)
     parser.add_argument("--max-memory-gb", type=float, default=DEFAULT_MAX_MEMORY_GB)
     parser.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--dtype", choices=("float64", "float32"), default="float64")
     parser.add_argument("--output", type=Path, default=RESULTS_DIR / "results.csv")
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help=(
+            "also run a torch.compile-wrapped sibling cell for every "
+            "parallel-kernel-shaped family (see COMPILABLE_FAMILIES)"
+        ),
+    )
     args = parser.parse_args()
 
     dtype = torch.float64 if args.dtype == "float64" else torch.float32
     max_memory_bytes = args.max_memory_gb * (1024**3)
+    compile_modes: tuple[str, ...] = ("eager", "compiled") if args.compile else ("eager",)
 
     results: list[CellResult] = []
     started = perf_counter()
-    for cell in build_grid(args.sizes, args.k_values, args.dims, dtype):
-        cell_max_n = DENSE_CUBIC_MAX_N_OVERRIDES.get(cell.op, args.dense_cubic_max_n)
-        if cell.op in DENSE_CUBIC_OPS and cell.n > cell_max_n:
-            results.append(
-                CellResult(
-                    cell.family,
-                    cell.op,
-                    cell.format_label,
-                    cell.device_label,
-                    cell.n,
-                    cell.k,
-                    None,
-                    None,
-                    None,
-                    None,
-                    "known-cubic-blowup",
-                )
-            )
-            continue
+    for cell in build_grid(args.sizes, args.k_values, args.dims, dtype, compile_modes):
         if estimate_memory_bytes(cell.n, cell.family, dtype) > max_memory_bytes:
             results.append(
                 CellResult(
@@ -620,6 +700,7 @@ def main() -> None:
                     None,
                     None,
                     "memory",
+                    cell.mode_label,
                 )
             )
             continue

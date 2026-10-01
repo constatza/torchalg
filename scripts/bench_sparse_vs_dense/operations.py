@@ -29,6 +29,7 @@ from scipy.sparse.linalg import eigsh, spilu, svds
 
 from torchalg.preconditioners.implementations._masked_factorization import dense_ic0, dense_ilu0
 from torchalg.preconditioners.implementations._triangular import cholesky_factor_solve
+from torchalg.sparse.preconditioners.ic0 import sparse_ic0
 
 # ---------------------------------------------------------------------------
 # Family 1: matvec + dot/AXPY (CG inner loop)
@@ -278,6 +279,19 @@ def factorize_ilu0(matrix: torch.Tensor) -> torch.Tensor:
         torch.Tensor: Combined dense ``L``/``U`` factor tensor.
     """
     return dense_ilu0(matrix)
+
+
+def factorize_sparse_ic0(matrix: torch.Tensor, threshold: float = 0.0) -> torch.Tensor:
+    """Sparse incomplete Cholesky factorization - reuses torchalg.sparse's own kernel.
+
+    Args:
+        matrix: Sparse CSR SPD ``(n, n)`` matrix.
+        threshold: Drop tolerance (see ``sparse_ic0``).
+
+    Returns:
+        torch.Tensor: Sparse CSR lower-triangular factor ``L``.
+    """
+    return sparse_ic0(matrix, threshold)
 
 
 def to_scipy_csc(matrix_sparse: torch.Tensor) -> scipy_sparse.csc_matrix:
