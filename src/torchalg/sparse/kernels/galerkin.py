@@ -3,9 +3,17 @@
 Promotes ``scripts/bench_sparse_vs_dense/operations.py``'s already-validated
 ``form_galerkin_spgemm``/``form_galerkin_spmm`` into production (see
 ``docs/plan.md``): both forms compute ``A_coarse = P.T @ A @ P`` without ever
-materializing the fine-grid ``(n, n)`` matrix densely - only the coarse
-operator, whose dimension is small by construction (bounded-nonzero-per-row
-``P`` for AMG, a truncated POD basis for POD), is returned dense.
+materializing the fine-grid ``(n, n)`` matrix densely.
+
+``form_sparse_sparse`` (AMG shape, both operands sparse) returns a sparse
+CSR coarse operator, matching every other kernel in this package - it must
+never densify, since a multi-level hierarchy (``n_levels > 2``) feeds its
+own output back in as the next level's fine-grid matrix, and ``AMGPreconditioner``
+itself is the one place that eventually densifies, at the coarsest level
+only (via ``torchalg.sparse.preconditioners.amg.coarse_solve
+.dense_coarse_solve``). ``form_sparse_dense`` (POD shape, dense basis) still
+returns dense, since a POD coarse operator is small and dense by
+construction (SVD right-singular vectors, no structural zeros).
 """
 
 from __future__ import annotations
@@ -27,12 +35,13 @@ def form_sparse_sparse(P: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
         A (torch.Tensor): Sparse CSR fine-grid matrix, shape ``(n, n)``.
 
     Returns:
-        torch.Tensor: Dense coarse operator, shape ``(n_coarse, n_coarse)``.
+        torch.Tensor: Sparse CSR coarse operator, shape
+            ``(n_coarse, n_coarse)``.
     """
     p_coo = P.to_sparse_coo()
     a_coo = A.to_sparse_coo()
     ap = torch.sparse.mm(a_coo, p_coo)
-    return torch.sparse.mm(p_coo.t(), ap).to_dense()
+    return torch.sparse.mm(p_coo.t(), ap).to_sparse_csr()
 
 
 def form_sparse_dense(A: torch.Tensor, Phi: torch.Tensor) -> torch.Tensor:

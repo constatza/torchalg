@@ -1,19 +1,15 @@
-"""Sparse-native strength-of-connection and aggregation for SA-AMG coarsening.
+"""Sparse-native SA-AMG aggregation algorithm: standard aggregation and prolongation smoothing.
 
-Companion to the dense
-``preconditioners.implementations.amg._aggregation.strength_of_connection``/
-``standard_aggregation`` (kept unmodified for comparison - see
-``docs/plan.md``'s "Correction: strength-of-connection/aggregation must be
-sparse-native too"): ``strength_of_connection`` only ever touches ``A``'s own
-existing nonzero entries (no multi-hop neighborhood, no fill-in), so a sparse
-version is a pure vectorized gather/compare over CSR's flat arrays - O(nnz),
-no ``(n, n)`` dense intermediate, no Python loop. ``standard_aggregation``'s
-three-pass greedy algorithm is inherently sequential regardless of storage
-format (a genuinely new, independent transcription here, not a port, per the
-same "new code, not shared code" precedent this plan uses for IC0 - the only
-thing sparse storage changes is how the per-node neighbor lists are built:
-directly from CSR's row-grouped ``col_indices()``, replacing the dense
-version's O(n^2) ``torch.nonzero()`` scan.
+Companion to the dense ``preconditioners.implementations.amg._aggregation``
+module (kept unmodified for comparison - see ``docs/plan.md``'s "Correction:
+strength-of-connection/aggregation must be sparse-native too"):
+``standard_aggregation``'s three-pass greedy algorithm is inherently
+sequential regardless of storage format (a genuinely new, independent
+transcription here, not a port, per the same "new code, not shared code"
+precedent this plan uses for IC0 - the only thing sparse storage changes is
+how the per-node neighbor lists are built: directly from CSR's row-grouped
+``col_indices()``, replacing the dense version's O(n^2) ``torch.nonzero()``
+scan.
 
 References:
     - Vanek, P., Mandel, J., & Brezina, M. (1996). Algebraic multigrid by
@@ -25,54 +21,22 @@ from __future__ import annotations
 
 import torch
 
-from .diagonal import sparse_diagonal
-from .rowscale import sparse_row_scale
+from torchalg.sparse.kernels.diagonal import sparse_diagonal
+from torchalg.sparse.kernels.rowscale import sparse_row_scale
 
 _NEAR_ZERO_DIAGONAL_TOL = 1e-14
 """Diagonal entries with magnitude below this are treated as 1.0 when
-normalizing strength-of-connection ratios (protects against division by
-near-zero) - matches the dense ``_aggregation.py`` constant."""
+normalizing (protects against division by near-zero) - matches the dense
+``_aggregation.py`` constant."""
 
-
-def sparse_strength_of_connection(matrix: torch.Tensor, theta: float) -> torch.Tensor:
-    """Build a sparse strength-of-connection graph from a sparse CSR matrix.
-
-    Entry (i, j) is strong if ``|a_ij| >= theta * sqrt(|a_ii| * |a_jj|)`` -
-    the same Cauchy-Schwarz measure as the dense
-    ``_aggregation.strength_of_connection`` - restricted to ``matrix``'s
-    already-stored nonzero entries (never a candidate pair outside that
-    pattern) and diagonal entries excluded.
-
-    Args:
-        matrix (torch.Tensor): Sparse CSR fine-grid matrix, shape ``(n, n)``.
-        theta (float): Strength-of-connection threshold theta in (0, 1).
-
-    Returns:
-        torch.Tensor: Sparse CSR boolean strength matrix, shape ``(n, n)``.
-    """
-    n = matrix.shape[0]
-    crow = matrix.crow_indices()
-    col = matrix.col_indices()
-    values = matrix.values()
-
-    diag = sparse_diagonal(matrix).abs()
-    diag_safe = torch.where(diag > _NEAR_ZERO_DIAGONAL_TOL, diag, torch.ones_like(diag))
-
-    row_nnz = crow[1:] - crow[:-1]
-    row_index = torch.repeat_interleave(torch.arange(n, device=matrix.device), row_nnz)
-
-    normalizer = torch.sqrt(diag_safe[row_index] * diag_safe[col])
-    strengths = values.abs() / normalizer
-    keep = (strengths >= theta) & (row_index != col) & (values != 0)
-
-    kept_row = row_index[keep]
-    kept_col = col[keep]
-    new_crow = torch.zeros(n + 1, dtype=torch.long, device=matrix.device)
-    new_crow[1:] = torch.cumsum(torch.bincount(kept_row, minlength=n), dim=0)
-
-    return torch.sparse_csr_tensor(
-        new_crow, kept_col, torch.ones_like(kept_col, dtype=torch.bool), size=(n, n)
-    )
+# TODO(parallel-algorithm): Add a distinct MIS-based aggregation coarsening
+# strategy for tensor-parallel CPU/GPU setup. Do not vectorize or replace this
+# VMB96 three-pass greedy algorithm: a parallel MIS aggregation has different
+# selection semantics and must be exposed as a separate coarsening strategy,
+# with convergence/operator-complexity validation rather than dense-output
+# parity. Brannick et al., "Parallel Unsmoothed Aggregation Algebraic
+# Multigrid Algorithms on GPUs," arXiv:1302.2547,
+# https://arxiv.org/abs/1302.2547.
 
 
 def sparse_standard_aggregation(strength: torch.Tensor) -> torch.Tensor:
@@ -146,35 +110,6 @@ def sparse_standard_aggregation(strength: torch.Tensor) -> torch.Tensor:
         next_aggregate += 1
 
     return torch.tensor(state, dtype=torch.long, device=strength.device)
-
-
-def sparse_piecewise_constant_prolongation(
-    aggregate: torch.Tensor, dtype: torch.dtype
-) -> torch.Tensor:
-    """Build the sparse piecewise-constant tentative prolongation P0.
-
-    One nonzero (1.0) per assigned row, at the column of that row's
-    aggregate - a scatter, cheap to construct sparse from the start rather
-    than building dense and converting. An isolated node (aggregate index
-    ``-1``, see ``sparse_standard_aggregation``) gets no stored entry in its
-    row, matching the dense reference's all-zero row.
-
-    Args:
-        aggregate (torch.Tensor): Long tensor of length n mapping each fine
-            node to its aggregate index, or ``-1`` if isolated.
-        dtype (torch.dtype): Floating dtype for the returned matrix.
-
-    Returns:
-        torch.Tensor: Sparse CSR indicator matrix, shape ``(n, n_coarse)``.
-    """
-    n = aggregate.shape[0]
-    n_coarse = int(aggregate.max().item()) + 1
-    assigned = aggregate >= 0
-    rows = torch.arange(n, device=aggregate.device)[assigned]
-    cols = aggregate[assigned]
-    values = torch.ones(rows.shape[0], dtype=dtype, device=aggregate.device)
-    indices = torch.stack([rows, cols])
-    return torch.sparse_coo_tensor(indices, values, size=(n, n_coarse)).to_sparse_csr()
 
 
 def sparse_smoothed_prolongation(

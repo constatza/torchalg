@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.sparse.diagonal import sparse_diagonal
+from torchalg.sparse.kernels.diagonal import sparse_diagonal
 
 
 class TestSparseDiagonal:
@@ -35,7 +35,11 @@ class TestSparseDiagonal:
         matrix = dense.to_sparse_csr()
         values = matrix.values().clone().requires_grad_(True)
         matrix = torch.sparse_csr_tensor(
-            matrix.crow_indices(), matrix.col_indices(), values, size=matrix.shape
+            matrix.crow_indices(),
+            matrix.col_indices(),
+            values,
+            size=matrix.shape,
+            check_invariants=False,
         )
         sparse_diagonal(matrix).sum().backward()
         assert values.grad is not None

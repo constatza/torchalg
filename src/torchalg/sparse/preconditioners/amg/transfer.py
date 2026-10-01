@@ -30,8 +30,13 @@ class SparseTransferOperator:
             P (torch.Tensor): Sparse CSR prolongation matrix (n_fine x
                 n_coarse).
         """
-        self._P = P
-        self._R = P.t().to_sparse_csr()
+        # Regression: lazy Bootstrap/adaptive sparse hierarchies built during
+        # PCG's default inference-mode execution failed at ``P.t()`` with
+        # "Cannot set version_counter for inference tensor". Cache ordinary
+        # tensors for the persistent transfer operator state.
+        with torch.inference_mode(False):
+            self._P = P.clone()
+            self._R = self._P.t().to_sparse_csr()
 
     def prolongate(self, coarse: torch.Tensor) -> torch.Tensor:
         """Interpolate coarse-grid vector to fine grid.

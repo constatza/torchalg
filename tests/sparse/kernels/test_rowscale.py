@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from torchalg.sparse.rowscale import sparse_row_scale
+from torchalg.sparse.kernels.rowscale import sparse_row_scale
 
 
 class TestSparseRowScale:

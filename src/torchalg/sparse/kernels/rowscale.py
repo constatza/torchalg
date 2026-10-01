@@ -30,4 +30,10 @@ def sparse_row_scale(matrix: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         torch.arange(matrix.shape[0], device=matrix.device), row_nnz
     )
     scaled_values = matrix.values() * scale[row_index]
-    return torch.sparse_csr_tensor(crow, matrix.col_indices(), scaled_values, size=matrix.shape)
+    return torch.sparse_csr_tensor(
+        crow,
+        matrix.col_indices(),
+        scaled_values,
+        size=matrix.shape,
+        check_invariants=False,
+    )

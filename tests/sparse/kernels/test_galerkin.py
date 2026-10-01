@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.sparse.galerkin import form_sparse_dense, form_sparse_sparse
+from torchalg.sparse.kernels.galerkin import form_sparse_dense, form_sparse_sparse
 
 _RANK = 4
 
@@ -37,14 +37,15 @@ class TestFormSparseSparse:
         )
         prolongation_sparse = aggregation_prolongation_dense.to_sparse_csr()
         actual = form_sparse_sparse(prolongation_sparse, poisson_1d_csr)
-        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(actual.to_dense(), expected)
 
-    def test_returns_dense_tensor(
+    def test_returns_sparse_csr_tensor(
         self, poisson_1d_csr: torch.Tensor, aggregation_prolongation_dense: torch.Tensor
     ) -> None:
-        """The (small) coarse operator is returned dense, not sparse."""
+        """The coarse operator stays sparse CSR, never densified - so a multi-level
+        hierarchy keeps every non-coarsest level sparse (see ``docs/plan.md``)."""
         actual = form_sparse_sparse(aggregation_prolongation_dense.to_sparse_csr(), poisson_1d_csr)
-        assert actual.layout == torch.strided
+        assert actual.layout == torch.sparse_csr
         assert actual.shape == (_RANK, _RANK)
 
 

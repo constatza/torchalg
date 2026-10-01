@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from torchalg.sparse.transfer import SparseTransferOperator
+from torchalg.sparse.preconditioners.amg.transfer import SparseTransferOperator
 
 _RANK = 4
 
