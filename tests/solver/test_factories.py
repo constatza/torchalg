@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -242,7 +243,9 @@ def test_pcg_differentiable_true_preserves_grad(
     matrix = to_torch(tridiagonal_spd_small).requires_grad_(True)
     rhs = to_torch(rhs_ones_small)
 
-    solution, _ = pcg(matrix, rhs, maxiter=20, differentiable=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        solution, _ = pcg(matrix, rhs, maxiter=20, differentiable=True)
 
     assert solution.requires_grad is True
     solution.sum().backward()
