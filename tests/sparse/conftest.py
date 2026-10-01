@@ -75,6 +75,36 @@ def poisson_1d_large_csr(poisson_1d_large_dense: torch.Tensor) -> torch.Tensor:
 
 
 @pytest.fixture
+def poisson_1d_xlarge_dense(poisson_1d_factory: Callable[[int], torch.Tensor]) -> torch.Tensor:
+    """Dense 300x300 1D Poisson matrix (tridiagonal [-1, 2, -1]).
+
+    Larger than ``poisson_1d_large_dense`` specifically to exercise
+    ``BAMGCoarsening._prolongation``'s vectorized candidate-gathering at a
+    scale where fine rows plausibly land with several distinct
+    coarse-neighbor candidate-set sizes (exercising the padded/masked
+    layout's ragged-to-padded packing, not just the uniform case a small
+    fixture could pass by accident).
+
+    Args:
+        poisson_1d_factory: Size-parametrized Poisson matrix factory
+            (``tests/conftest.py``).
+
+    Returns:
+        torch.Tensor: Dense 300x300 SPD tridiagonal matrix.
+    """
+    return poisson_1d_factory(300)
+
+
+@pytest.fixture
+def bamg_default_test_vectors(
+    poisson_1d_large_dense: torch.Tensor, torch_dtype: torch.dtype, test_seed: int
+) -> torch.Tensor:
+    """Seeded default-width BAMG vectors for dense/CSR value-parity checks."""
+    generator = torch.Generator().manual_seed(test_seed)
+    return torch.randn((poisson_1d_large_dense.shape[0], 8), dtype=torch_dtype, generator=generator)
+
+
+@pytest.fixture
 def poisson_1d_large_rhs(poisson_1d_large_dense: torch.Tensor) -> torch.Tensor:
     """Deterministic right-hand side for large sparse/dense solver parity tests."""
     return torch.ones(poisson_1d_large_dense.shape[0], dtype=poisson_1d_large_dense.dtype)

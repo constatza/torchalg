@@ -149,17 +149,17 @@ def triangular_solve(
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
         schedule (LevelSchedule): Matching ``direction``'s level schedule.
-        target (torch.Tensor): Right-hand side, shape ``(n,)``.
+        target (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
         direction (Literal["forward", "backward"]): Which triangular half to solve.
         diagonal_tol (float): Diagonal magnitude below this is treated as zero.
         active (torch.Tensor | None): Boolean mask of rows allowed to
             change, shape ``(n,)``. ``None`` (default) updates every row.
-        current (torch.Tensor | None): Current iterate, shape ``(n,)``,
-            required whenever ``active`` excludes at least one row - its
-            values are what those rows freeze to.
+        current (torch.Tensor | None): Current iterate, shape matching
+            ``target``, required whenever ``active`` excludes at least one
+            row - its values are what those rows freeze to.
 
     Returns:
-        torch.Tensor: Solution, shape ``(n,)``.
+        torch.Tensor: Solution, same shape as ``target``.
 
     Raises:
         ValueError: If ``matrix`` is not sparse CSR, or if ``active``
@@ -180,7 +180,9 @@ def triangular_solve(
     inactive = torch.zeros(n, dtype=torch.bool, device=matrix.device) if active is None else ~active
     if bool(inactive.any()) and current is None:
         raise ValueError("current is required when active excludes at least one row")
-    freeze_value = target if current is None else torch.where(inactive, current, target)
+    batched = target.ndim == 2
+    inactive_bc = inactive.unsqueeze(-1) if batched else inactive
+    freeze_value = target if current is None else torch.where(inactive_bc, current, target)
     frozen = frozen_diagonal | inactive
 
     is_offdiag_in_triangle = col < row_index if direction == "forward" else col > row_index
@@ -203,11 +205,21 @@ def triangular_solve(
         level_start += level_size
 
         mask = entry_level == level_idx
-        contribution = torch.zeros(n, dtype=target.dtype, device=target.device).scatter_add(
-            0, offdiag_row[mask], offdiag_val[mask] * x[offdiag_col[mask]]
-        )
-
-        solved = (target[rows] - contribution[rows]) / diag[rows]
-        x[rows] = torch.where(frozen[rows], freeze_value[rows], solved)
+        if batched:
+            k = target.shape[1]
+            masked_row = offdiag_row[mask]
+            contribution = torch.zeros(n, k, dtype=target.dtype, device=target.device).scatter_add(
+                0,
+                masked_row.unsqueeze(-1).expand(-1, k),
+                offdiag_val[mask].unsqueeze(-1) * x[offdiag_col[mask]],
+            )
+            solved = (target[rows] - contribution[rows]) / diag[rows].unsqueeze(-1)
+            x[rows] = torch.where(frozen[rows].unsqueeze(-1), freeze_value[rows], solved)
+        else:
+            contribution = torch.zeros(n, dtype=target.dtype, device=target.device).scatter_add(
+                0, offdiag_row[mask], offdiag_val[mask] * x[offdiag_col[mask]]
+            )
+            solved = (target[rows] - contribution[rows]) / diag[rows]
+            x[rows] = torch.where(frozen[rows], freeze_value[rows], solved)
 
     return x

@@ -60,9 +60,16 @@ from __future__ import annotations
 
 import torch
 
-from torchalg.utils.ls_interpolation import ls_interpolation_row, select_interpolatory_set
+from torchalg.utils.ls_interpolation import (
+    batched_ls_interpolation_rows,
+    batched_select_interpolatory_set,
+    ls_interpolation_row,
+    select_interpolatory_set,
+)
 
 __all__ = [
+    "batched_ls_interpolation_rows",
+    "batched_select_interpolatory_set",
     "ls_interpolation_row",
     "lsr_correction",
     "select_interpolatory_set",

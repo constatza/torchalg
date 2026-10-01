@@ -139,3 +139,28 @@ class TestLevelScheduleAndTriangularSolve:
 
         assert values.grad is not None
         assert target.grad is not None
+
+
+class TestTriangularSolveBatchedColumns:
+    """``triangular_solve`` on ``(n, k)`` targets matches the looped ``(n,)`` calls."""
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_matches_looped_unbatched_columns(
+        self,
+        poisson_1d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        """Each column of a batched solve matches an independent unbatched solve."""
+        torch.manual_seed(42)
+        n = poisson_1d_csr.shape[0]
+        k = 3
+        target = torch.randn(n, k, dtype=poisson_1d_csr.dtype)
+
+        schedule = level_schedule(poisson_1d_csr, direction=direction)
+        batched = triangular_solve(poisson_1d_csr, schedule, target, direction=direction)
+
+        for col in range(k):
+            expected = triangular_solve(
+                poisson_1d_csr, schedule, target[:, col], direction=direction
+            )
+            torch.testing.assert_close(batched[:, col], expected)

@@ -224,7 +224,12 @@ from ._algebraic_distance import (
     test_vector_weights,
 )
 from ._compatible_relaxation import compatible_relaxation_coarsening
-from ._least_squares import ls_interpolation_row, lsr_correction, select_interpolatory_set
+from ._least_squares import (
+    _NEAR_ZERO_DIAGONAL_TOL,
+    batched_ls_interpolation_rows,
+    batched_select_interpolatory_set,
+    ls_interpolation_row,
+)
 from ._mge import multigrid_eigensolver
 from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
 from .amg import AMGPreconditioner
@@ -248,6 +253,17 @@ confirmed, since [BAMG11] could not be fetched this session."""
 
 class BAMGCoarsening:
     """One coarse level of Bootstrap AMG (``docs/bootstrap-amg.md`` Sec. 5's per-level block).
+
+    This CR-based coarsening (and its sparse sibling,
+    ``torchalg.sparse.preconditioners.amg.bootstrap.BAMGCoarsening``) is this
+    codebase's dense-recommended Bootstrap AMG. Its coarse-point selection
+    (compatible relaxation's greedy, strict-priority-order independent set)
+    is sequential by the algorithm's own mathematical structure - each
+    decision depends on every earlier one - not an implementation gap, so it
+    does not batch the way ``torchalg...amg.bootcmatch``'s compatible
+    *weighted matching* coarsening does. The sparse sibling stays correct
+    and oracle-tested against this class, but for sparse/large-scale use,
+    prefer ``BootCMatchPreconditioner`` instead.
 
     Stateful ``CoarseningStrategy``: holds the current test vectors keyed by
     matrix dimension (coarsening strictly shrinks ``n``, so the dimension
@@ -504,14 +520,26 @@ class BAMGCoarsening:
         """
         if not self._use_lsr or fine_points.numel() == 0:
             return test_vectors
-        top_count = min(math.ceil(_LSR_TARGET_FRACTION * fine_points.numel()), fine_points.numel())
-        residual_magnitude = (A @ test_vectors)[fine_points].abs()
+        top_count = max(
+            min(math.ceil(_LSR_TARGET_FRACTION * fine_points.numel()), fine_points.numel()), 1
+        )
+        residual = A @ test_vectors
+        residual_magnitude = residual[fine_points].abs()
+        top_local = torch.topk(residual_magnitude, top_count, dim=0).indices
+        target_rows = fine_points[top_local]
+        diagonal = torch.diagonal(A)
+        diagonal_at_targets = diagonal[target_rows]
+        diagonal_safe = torch.where(
+            diagonal_at_targets.abs() > _NEAR_ZERO_DIAGONAL_TOL,
+            diagonal_at_targets,
+            torch.ones_like(diagonal_at_targets),
+        )
+        residual_at_targets = torch.gather(residual, 0, target_rows)
+        values_at_targets = (
+            torch.gather(test_vectors, 0, target_rows) - residual_at_targets / diagonal_safe
+        )
         corrected = test_vectors.clone()
-        for column in range(test_vectors.shape[1]):
-            top_local = torch.topk(residual_magnitude[:, column], max(top_count, 1)).indices
-            target_rows = fine_points[top_local]
-            corrected_column = lsr_correction(test_vectors[:, column : column + 1], A, target_rows)
-            corrected[:, column] = corrected_column[:, 0]
+        corrected.scatter_(0, target_rows, values_at_targets)
         return corrected
 
     @staticmethod
@@ -565,69 +593,150 @@ class BAMGCoarsening:
         weights = test_vector_weights(test_vectors, A, T=T)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = depth_neighborhood(A, self._depth + 2)
+        n_fine = fine_points.numel()
 
-        # One nonzero() + tolist() for every fine row's coarse-neighbor set
-        # up front, instead of one `torch.nonzero(...)` (a device sync) per
-        # fine point inside the loop below - same grouping the aggregation
-        # fix in `_aggregation.py::standard_aggregation` uses, for the same
-        # reason: nonzero() already returns (row, col) pairs in row-major
-        # order, so grouping them reproduces each row's original candidate
-        # order with one sync total instead of one per row.
+        # Build each fine row's coarse-neighbor candidate set as one padded
+        # `(n_fine, max_cand)` tensor instead of a Python list-of-lists: the
+        # growth loop that consumes this (`batched_select_interpolatory_set`)
+        # runs a fixed `range(caliber)` number of steps - `caliber` is a
+        # small hyperparameter (default 4), not a function of how many
+        # candidates a row has - so every row can be padded to the same
+        # `max_cand` width and advanced in lockstep without ever padding to
+        # a "worst-case trajectory" (there is no data-dependent trajectory
+        # length left to pad to). `torch.nonzero` already returns `(row,
+        # col)` pairs in row-major order, so `bincount`/`cumsum` recover
+        # each row's run of candidates with one sync total, the same
+        # grouping trick `_aggregation.py::standard_aggregation` uses.
         coarse_neighborhood = neighborhood[fine_points] & coarse_mask
-        candidate_lists: list[list[int]] = [[] for _ in range(fine_points.numel())]
-        for local_row, col in torch.nonzero(coarse_neighborhood, as_tuple=False).tolist():
-            candidate_lists[local_row].append(col)
+        pairs = torch.nonzero(coarse_neighborhood, as_tuple=False)
+        local_row, cand_col = pairs[:, 0], pairs[:, 1]
+        counts = torch.bincount(local_row, minlength=n_fine)
+        max_cand = int(counts.max().item()) if counts.numel() > 0 else 0
+        row_start = torch.cumsum(counts, 0) - counts
+        position_in_row = torch.arange(cand_col.numel(), device=device) - row_start[local_row]
+        width = max(max_cand, 1)
+        padded_candidates = torch.zeros(n_fine, width, dtype=torch.long, device=device)
+        candidate_mask = torch.zeros(n_fine, width, dtype=torch.bool, device=device)
+        padded_candidates[local_row, position_in_row] = cand_col
+        candidate_mask[local_row, position_in_row] = True
 
-        # `select_interpolatory_set`/`ls_interpolation_row` run once per
-        # fine point (thousands, for a real mesh), each a greedy loop with
-        # data-dependent stopping that does several `.item()`-synced tiny
-        # linear solves. That's thousands of host<->device round trips for
-        # genuinely tiny (caliber-sized) work if left on CUDA - each row's
-        # stopping point depends on the previous row's chosen set only
-        # through shared `fit_vectors`/`weights`, not through any cross-row
-        # state, so unlike `fit_candidates`' aggregate loop (batched in
-        # `_tentative.py`, all aggregates fit in lockstep) this loop's
-        # per-row variable trip count doesn't reduce to a fixed small
-        # number of batched steps without padding every row to the
-        # worst-case caliber-growth trajectory - not worth the complexity
-        # here. Running it CPU-resident instead removes the sync cost
-        # entirely (CPU `.item()` needs no device round trip), paying one
-        # one-time transfer of the row-loop's working tensors up front. `A`
-        # itself is NOT among those transfers: `select_interpolatory_set`
-        # accepts a `matrix` argument only for call-signature parity with
-        # every other per-row AMG kernel and never reads it (see its
-        # docstring), so shipping the whole dense (n, n) `A` to host on
-        # every call here would be a pure-waste PCIe transfer, dwarfing
-        # everything this loop actually saves. Pass `A` through unchanged.
+        # Rows with zero coarse-neighbor candidates fall back to the full
+        # `coarse_points` set (matching the old code's
+        # `candidates = coarse_points_cpu if not candidate_columns else ...`),
+        # applied with one vectorized boolean-indexed assignment rather than
+        # a per-row branch.
+        needs_fallback = counts == 0
+        if n_coarse > 0 and bool(needs_fallback.any()):
+            if n_coarse > padded_candidates.shape[1]:
+                pad_width = n_coarse - padded_candidates.shape[1]
+                padded_candidates = torch.cat(
+                    [
+                        padded_candidates,
+                        torch.zeros(n_fine, pad_width, dtype=torch.long, device=device),
+                    ],
+                    dim=1,
+                )
+                candidate_mask = torch.cat(
+                    [
+                        candidate_mask,
+                        torch.zeros(n_fine, pad_width, dtype=torch.bool, device=device),
+                    ],
+                    dim=1,
+                )
+            padded_candidates[needs_fallback, :n_coarse] = coarse_points.unsqueeze(0)
+            candidate_mask[needs_fallback, :n_coarse] = True
+            candidate_mask[needs_fallback, n_coarse:] = False
+
+        # Running the batched growth loop CPU-resident removes the
+        # `.item()`-sync cost that originally motivated host residency here
+        # (CPU `.item()` needs no device round trip), paying one one-time
+        # transfer of the row-loop's working tensors up front. `A` itself is
+        # NOT among those transfers: `select_interpolatory_set`'s `matrix`
+        # argument (unused by the batched path at all) only ever existed for
+        # call-signature parity with every other per-row AMG kernel and is
+        # never read by the actual computation (see its docstring), so
+        # shipping the whole dense `(n, n)` `A` to host would be a
+        # pure-waste PCIe transfer, dwarfing everything this saves.
         fit_vectors_cpu = fit_vectors.cpu()
         weights_cpu = weights.cpu()
         distance_cpu = distance.cpu()
         coarse_index_cpu = coarse_index.cpu()
         coarse_points_cpu = coarse_points.cpu()
+        fine_points_cpu = fine_points.cpu()
+        padded_candidates_cpu = padded_candidates.cpu()
+        candidate_mask_cpu = candidate_mask.cpu()
 
         prolongation = torch.zeros(n, n_coarse, dtype=A.dtype)
         prolongation[coarse_points_cpu, torch.arange(n_coarse)] = 1.0
-        for local_row, i in enumerate(fine_points.tolist()):
-            candidate_columns = candidate_lists[local_row]
-            candidates = (
-                torch.tensor(candidate_columns, dtype=torch.long)
-                if candidate_columns
-                else coarse_points_cpu
+
+        if n_fine == 0:
+            return prolongation.to(device)
+
+        chosen, chosen_mask = batched_select_interpolatory_set(
+            padded_candidates_cpu,
+            candidate_mask_cpu,
+            fit_vectors_cpu,
+            fine_points_cpu,
+            weights_cpu,
+            self._caliber,
+            gamma=self._gamma,
+        )
+        rows = batched_ls_interpolation_rows(
+            fit_vectors_cpu, fine_points_cpu, chosen, chosen_mask, weights_cpu
+        )
+
+        # Empty-interpolatory-set fallback (rows whose growth loop rejected
+        # every candidate but still had candidates available): the single
+        # strongest-connected candidate, matching `_strongest_candidate`'s
+        # masked-argmax restriction. The argmax over each row's own padded
+        # candidate strengths vectorizes cleanly (dense rows need no CSR
+        # unpacking); re-solving that single-candidate LS row is left as a
+        # small Python loop restricted to only the affected (expected rare)
+        # rows, mirroring `ls_interpolation_row`'s own single-row call
+        # pattern rather than reimplementing a one-candidate special case of
+        # the batched solver.
+        empty_mask = (chosen_mask.sum(dim=-1) == 0) & candidate_mask_cpu.any(dim=-1)
+        if bool(empty_mask.any()):
+            affected_local = torch.nonzero(empty_mask).flatten()
+            affected_targets = fine_points_cpu[affected_local]
+            strengths = distance_cpu[affected_targets]
+            cand = padded_candidates_cpu[affected_local]
+            mask = candidate_mask_cpu[affected_local]
+            cand_strengths = torch.gather(strengths, 1, cand)
+            cand_strengths = torch.where(
+                mask, cand_strengths, torch.full_like(cand_strengths, float("-inf"))
             )
-            interp_set = select_interpolatory_set(
-                candidates, fit_vectors_cpu, A, i, weights_cpu, self._caliber, gamma=self._gamma
-            )
-            if interp_set.numel() == 0 and candidates.numel() > 0:
-                interp_set = self._strongest_candidate(candidates, distance_cpu[i])
-            if interp_set.numel() == 0:
-                continue
-            row = ls_interpolation_row(fit_vectors_cpu, i, interp_set, weights_cpu)
-            prolongation[i, coarse_index_cpu[interp_set]] = row
+            best_slot = cand_strengths.argmax(dim=-1)
+            best_candidate = cand.gather(1, best_slot.unsqueeze(-1)).squeeze(-1)
+            chosen[affected_local, 0] = best_candidate
+            chosen_mask[affected_local, 0] = True
+            for local_idx, target_idx, candidate_idx in zip(
+                affected_local.tolist(), affected_targets.tolist(), best_candidate.tolist()
+            ):
+                interp_set = torch.tensor([candidate_idx], dtype=torch.long)
+                rows[local_idx, 0] = ls_interpolation_row(
+                    fit_vectors_cpu, target_idx, interp_set, weights_cpu
+                )[0]
+
+        # Scatter the batched (chosen, rows) result into the final
+        # prolongation with one flatten-through-mask index assignment,
+        # replacing the old per-row `prolongation[i, ...] = row` loop.
+        flat_local_rows, flat_slots = torch.nonzero(chosen_mask, as_tuple=True)
+        fine_rows_flat = fine_points_cpu[flat_local_rows]
+        coarse_cols_flat = coarse_index_cpu[chosen[flat_local_rows, flat_slots]]
+        values_flat = rows[flat_local_rows, flat_slots]
+        prolongation[fine_rows_flat, coarse_cols_flat] = values_flat
         return prolongation.to(device)
 
 
 class BootstrapAMGPreconditioner(AMGPreconditioner):
     """Bootstrap AMG preconditioner (BAMG), ``docs/bootstrap-amg.md``.
+
+    This codebase's dense-recommended Bootstrap AMG - see ``BAMGCoarsening``
+    above for why its sparse sibling (``torchalg.sparse.preconditioners.amg
+    .bootstrap.BootstrapAMGPreconditioner``) is kept for correctness/parity
+    but ``BootCMatchPreconditioner`` (``torchalg...amg.bootcmatch``) is the
+    one to prefer for sparse/large-scale use.
 
     Runs ``BootstrapSetup.run`` at construction, then applies one
     V(1,1)-cycle with weighted-Jacobi smoothing by default and a

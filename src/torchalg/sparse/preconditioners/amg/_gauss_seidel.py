@@ -28,12 +28,12 @@ def _strict_side_matvec(
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
-        x (torch.Tensor): Vector to multiply, shape ``(n,)``.
+        x (torch.Tensor): Vector to multiply, shape ``(n,)`` or ``(n, k)``.
         side (Literal["upper", "lower"]): Strict upper (``col > row``) or
             strict lower (``col < row``) part.
 
     Returns:
-        torch.Tensor: ``(n,)`` result of the restricted matvec.
+        torch.Tensor: Result of the restricted matvec, same shape as ``x``.
     """
     n = matrix.shape[0]
     crow = matrix.crow_indices()
@@ -47,8 +47,13 @@ def _strict_side_matvec(
     selected_col = col[mask]
     selected_val = values[mask]
 
-    return torch.zeros(n, dtype=x.dtype, device=x.device).scatter_add(
-        0, selected_row, selected_val * x[selected_col]
+    if x.ndim == 1:
+        return torch.zeros(n, dtype=x.dtype, device=x.device).scatter_add(
+            0, selected_row, selected_val * x[selected_col]
+        )
+    k = x.shape[1]
+    return torch.zeros(n, k, dtype=x.dtype, device=x.device).scatter_add(
+        0, selected_row.unsqueeze(-1).expand(-1, k), selected_val.unsqueeze(-1) * x[selected_col]
     )
 
 
@@ -64,8 +69,8 @@ def sparse_symmetric_gauss_seidel(
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
-        x (torch.Tensor): Initial iterate, shape ``(n,)``.
-        rhs (torch.Tensor): Right-hand side, shape ``(n,)``.
+        x (torch.Tensor): Initial iterate, shape ``(n,)`` or ``(n, k)``.
+        rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
         iterations (int): Number of symmetric iterations.
         rows (torch.Tensor | None): If given, only these rows (indices) are
             updated - sparse-CSR sibling of the dense
@@ -74,7 +79,7 @@ def sparse_symmetric_gauss_seidel(
             frozen at their current value for the whole call.
 
     Returns:
-        torch.Tensor: Updated iterate, shape ``(n,)``.
+        torch.Tensor: Updated iterate, same shape as ``x``.
     """
     forward_schedule: LevelSchedule = level_schedule(matrix, direction="forward")
     backward_schedule: LevelSchedule = level_schedule(matrix, direction="backward")

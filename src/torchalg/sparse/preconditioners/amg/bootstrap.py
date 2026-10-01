@@ -1,5 +1,24 @@
 """Bootstrap AMG (BAMG) coarsening strategy, sparse-CSR sibling.
 
+**Recommended for dense use; prefer** ``BootCMatchPreconditioner``
+(``torchalg.sparse.preconditioners.amg.bootcmatch``) **for sparse/large-scale
+use.** This class's coarsening is driven by compatible-relaxation's greedy,
+strict-priority-order selection (``_compatible_relaxation
+._independent_set_of``) - each decision depends on every earlier one, so it
+is a CPU-resident Python loop with no batched-tensor reformulation, by the
+algorithm's own mathematical structure, not an implementation gap (see that
+module's own docstring). It remains correct and is kept here - dense and
+sparse stay full siblings, oracle-tested against each other, per this
+project's own convention - but it does not scale the way BootCMatch's
+round-based parallel matching does: BootCMatch is a different,
+also-published Bootstrap AMG coarsening (compatible *weighted matching*
+rather than compatible relaxation) whose coarse-point selection is a fixed
+number of fully-batched rounds instead of one Python iteration per node,
+and it is the preconditioner to reach for once a sparse system is large
+enough that setup time matters (measured ~100x+ faster setup at N=15,876 in
+this codebase's own benchmark). See ``bootcmatch.py``'s module docstring for
+the paper references.
+
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg.bootstrap.BAMGCoarsening`` (dense;
 kept unmodified for comparison - see ``docs/plan.md``'s "Correction: dense
@@ -95,12 +114,16 @@ from torchalg.multigrid import AMGPreconditioner
 from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
 from torchalg.sparse.kernels.algebraic_distance import sparse_algebraic_distance
 from torchalg.sparse.kernels.depth_neighborhood import sparse_depth_neighborhood
+from torchalg.sparse.kernels.diagonal import sparse_diagonal
 from torchalg.sparse.kernels.galerkin import form_sparse_sparse
-from torchalg.sparse.kernels.lsr_correction import sparse_lsr_correction
+from torchalg.sparse.kernels.lsr_correction import _NEAR_ZERO_DIAGONAL_TOL
 from torchalg.sparse.kernels.prolongation import sparse_interpolation_prolongation
 from torchalg.sparse.kernels.strength import sparse_strength_graph
 from torchalg.sparse.preconditioners.amg.transfer import SparseTransferOperator
-from torchalg.utils.ls_interpolation import ls_interpolation_row, select_interpolatory_set
+from torchalg.utils.ls_interpolation import (
+    batched_ls_interpolation_rows,
+    batched_select_interpolatory_set,
+)
 from torchalg.utils.test_vector_weights import test_vector_weights
 
 from ._compatible_relaxation import compatible_relaxation_coarsening
@@ -362,16 +385,26 @@ class BAMGCoarsening:
         """
         if not self._use_lsr or fine_points.numel() == 0:
             return test_vectors
-        top_count = min(math.ceil(_LSR_TARGET_FRACTION * fine_points.numel()), fine_points.numel())
-        residual_magnitude = (A @ test_vectors)[fine_points].abs()
+        top_count = max(
+            min(math.ceil(_LSR_TARGET_FRACTION * fine_points.numel()), fine_points.numel()), 1
+        )
+        residual = A @ test_vectors
+        residual_magnitude = residual[fine_points].abs()
+        top_local = torch.topk(residual_magnitude, top_count, dim=0).indices
+        target_rows = fine_points[top_local]
+        diagonal = sparse_diagonal(A)
+        diagonal_at_targets = diagonal[target_rows]
+        diagonal_safe = torch.where(
+            diagonal_at_targets.abs() > _NEAR_ZERO_DIAGONAL_TOL,
+            diagonal_at_targets,
+            torch.ones_like(diagonal_at_targets),
+        )
+        residual_at_targets = torch.gather(residual, 0, target_rows)
+        values_at_targets = (
+            torch.gather(test_vectors, 0, target_rows) - residual_at_targets / diagonal_safe
+        )
         corrected = test_vectors.clone()
-        for column in range(test_vectors.shape[1]):
-            top_local = torch.topk(residual_magnitude[:, column], max(top_count, 1)).indices
-            target_rows = fine_points[top_local]
-            corrected_column = sparse_lsr_correction(
-                test_vectors[:, column : column + 1], A, target_rows
-            )
-            corrected[:, column] = corrected_column[:, 0]
+        corrected.scatter_(0, target_rows, values_at_targets)
         return corrected
 
     @staticmethod
@@ -445,6 +478,7 @@ class BAMGCoarsening:
         device = A.device
         coarse_points = torch.nonzero(coarse_mask).flatten()
         fine_points = torch.nonzero(~coarse_mask).flatten()
+        n_fine = fine_points.numel()
         n_coarse = coarse_points.numel()
         coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
         coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
@@ -453,57 +487,187 @@ class BAMGCoarsening:
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = sparse_depth_neighborhood(A, self._depth + 2)
 
-        neighborhood_cpu = neighborhood.cpu()
-        neighborhood_crow = neighborhood_cpu.crow_indices()
-        neighborhood_col = neighborhood_cpu.col_indices()
-        coarse_mask_cpu = coarse_mask.cpu()
+        row_indices: list[torch.Tensor] = [coarse_points]
+        col_indices: list[torch.Tensor] = [torch.arange(n_coarse, device=device)]
+        values: list[torch.Tensor] = [torch.ones(n_coarse, dtype=A.dtype, device=device)]
 
-        distance_cpu = distance.cpu()
-        distance_crow = distance_cpu.crow_indices()
-        distance_col = distance_cpu.col_indices()
-        distance_values = distance_cpu.values()
-
-        fit_vectors_cpu = fit_vectors.cpu()
-        weights_cpu = weights.cpu()
-        coarse_index_cpu = coarse_index.cpu()
-        coarse_points_cpu = coarse_points.cpu()
-
-        row_indices: list[int] = coarse_points_cpu.tolist()
-        col_indices: list[int] = list(range(n_coarse))
-        values: list[float] = [1.0] * n_coarse
-
-        for i in fine_points.tolist():
-            n_start, n_end = int(neighborhood_crow[i]), int(neighborhood_crow[i + 1])
-            row_cols_all = neighborhood_col[n_start:n_end]
-            candidate_columns = row_cols_all[coarse_mask_cpu[row_cols_all]]
-            candidates = candidate_columns if candidate_columns.numel() > 0 else coarse_points_cpu
-
-            interp_set = select_interpolatory_set(
-                candidates, fit_vectors_cpu, A, i, weights_cpu, self._caliber, gamma=self._gamma
+        if n_fine > 0:
+            fine_row, fine_col, fine_value = self._fine_interpolation_triples(
+                neighborhood=neighborhood,
+                coarse_mask=coarse_mask,
+                coarse_points=coarse_points,
+                coarse_index=coarse_index,
+                fine_points=fine_points,
+                fit_vectors=fit_vectors,
+                weights=weights,
+                distance=distance,
+                n=n,
+                device=device,
             )
-            if interp_set.numel() == 0 and candidates.numel() > 0:
-                d_start, d_end = int(distance_crow[i]), int(distance_crow[i + 1])
-                interp_set = self._strongest_candidate_sparse(
-                    candidates, distance_col[d_start:d_end], distance_values[d_start:d_end]
-                )
-            if interp_set.numel() == 0:
-                continue
-            row = ls_interpolation_row(fit_vectors_cpu, i, interp_set, weights_cpu)
-            cols = coarse_index_cpu[interp_set]
-            row_indices.extend([i] * interp_set.numel())
-            col_indices.extend(cols.tolist())
-            values.extend(row.tolist())
+            row_indices.append(fine_row)
+            col_indices.append(fine_col)
+            values.append(fine_value)
 
-        row_tensor = torch.tensor(row_indices, dtype=torch.long, device=device)
-        col_tensor = torch.tensor(col_indices, dtype=torch.long, device=device)
-        value_tensor = torch.tensor(values, dtype=A.dtype, device=device)
+        row_tensor = torch.cat(row_indices)
+        col_tensor = torch.cat(col_indices)
+        value_tensor = torch.cat(values).to(A.dtype)
         return sparse_interpolation_prolongation(
             row_tensor, col_tensor, value_tensor, (n, n_coarse)
         )
 
+    def _fine_interpolation_triples(
+        self,
+        *,
+        neighborhood: torch.Tensor,
+        coarse_mask: torch.Tensor,
+        coarse_points: torch.Tensor,
+        coarse_index: torch.Tensor,
+        fine_points: torch.Tensor,
+        fit_vectors: torch.Tensor,
+        weights: torch.Tensor,
+        distance: torch.Tensor,
+        n: int,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Vectorized ``(row, col, value)`` triples for every fine row's LS-fitted entries.
+
+        Replaces the old per-fine-row Python loop: one CSR-to-COO expansion
+        of ``neighborhood`` to gather every fine row's coarse-neighbor
+        candidates in a single pass, one padded-batch call each to
+        ``batched_select_interpolatory_set``/``batched_ls_interpolation_rows``,
+        and a vectorized mask-based scatter - see this module's caller
+        docstring/the originating plan for the full derivation.
+
+        Args:
+            neighborhood (torch.Tensor): Sparse CSR LS-ring neighborhood,
+                shape ``(n, n)``.
+            coarse_mask (torch.Tensor): Boolean coarse mask, shape ``(n,)``.
+            coarse_points (torch.Tensor): Long tensor of coarse indices.
+            coarse_index (torch.Tensor): Long tensor, shape ``(n,)``, mapping
+                a global coarse index to its column in ``P``.
+            fine_points (torch.Tensor): Long tensor of fine indices.
+            fit_vectors (torch.Tensor): Test vectors the LS fit uses, shape
+                ``(n, k)``.
+            weights (torch.Tensor): Per-test-vector weights, shape ``(k,)``.
+            distance (torch.Tensor): Sparse CSR algebraic-distance matrix,
+                shape ``(n, n)``, used only by the empty-interpolatory-set
+                fallback.
+            n (int): Fine-level dimension.
+            device (torch.device): Common device of all of the above.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: ``(row, col,
+            value)`` triples, each a 1-D tensor, ready to concatenate with
+            the coarse-identity-row triples and pass to
+            ``sparse_interpolation_prolongation``.
+        """
+        n_fine = fine_points.numel()
+        n_coarse = coarse_points.numel()
+
+        crow = neighborhood.crow_indices()
+        col = neighborhood.col_indices()
+        row_nnz = crow[1:] - crow[:-1]
+        all_row = torch.repeat_interleave(torch.arange(n, device=device), row_nnz)
+        all_col = col
+
+        keep = (~coarse_mask)[all_row] & coarse_mask[all_col]
+        cand_row = all_row[keep]
+        cand_col = all_col[keep]
+
+        fine_index = torch.full((n,), -1, dtype=torch.long, device=device)
+        fine_index[fine_points] = torch.arange(n_fine, device=device)
+        local_row = fine_index[cand_row]
+
+        counts = torch.bincount(local_row, minlength=n_fine)
+        max_cand = int(counts.max().item()) if counts.numel() > 0 else 0
+        row_start = torch.cumsum(counts, 0) - counts
+        position_in_row = torch.arange(cand_row.numel(), device=device) - row_start[local_row]
+        width = max(max_cand, 1)
+        padded_candidates = torch.zeros(n_fine, width, dtype=torch.long, device=device)
+        candidate_mask = torch.zeros(n_fine, width, dtype=torch.bool, device=device)
+        padded_candidates[local_row, position_in_row] = cand_col
+        candidate_mask[local_row, position_in_row] = True
+
+        # Fallback: fine rows with zero coarse-neighbor candidates in the
+        # LS-ring neighborhood get the full coarse-point set as candidates
+        # instead (matches the old per-row `candidates = ... if ... else
+        # coarse_points_cpu` fallback).
+        needs_fallback = counts == 0
+        if n_coarse > 0 and bool(needs_fallback.any()):
+            if n_coarse > padded_candidates.shape[1]:
+                pad_width = n_coarse - padded_candidates.shape[1]
+                padded_candidates = torch.cat(
+                    [
+                        padded_candidates,
+                        torch.zeros(n_fine, pad_width, dtype=torch.long, device=device),
+                    ],
+                    dim=1,
+                )
+                candidate_mask = torch.cat(
+                    [
+                        candidate_mask,
+                        torch.zeros(n_fine, pad_width, dtype=torch.bool, device=device),
+                    ],
+                    dim=1,
+                )
+            padded_candidates[needs_fallback, :n_coarse] = coarse_points.unsqueeze(0)
+            candidate_mask[needs_fallback, :n_coarse] = True
+            if padded_candidates.shape[1] > n_coarse:
+                candidate_mask[needs_fallback, n_coarse:] = False
+
+        targets = fine_points
+        chosen, chosen_mask = batched_select_interpolatory_set(
+            padded_candidates,
+            candidate_mask,
+            fit_vectors,
+            targets,
+            weights,
+            self._caliber,
+            gamma=self._gamma,
+        )
+        rows = batched_ls_interpolation_rows(fit_vectors, targets, chosen, chosen_mask, weights)
+
+        had_candidates = candidate_mask.any(dim=-1)
+        empty_selection = (chosen_mask.sum(dim=-1) == 0) & had_candidates
+
+        # Empty-interpolatory-set fallback (candidates existed but the
+        # greedy batched selection accepted none): restricted to the rare
+        # rows that actually need it rather than every fine row, since each
+        # such row needs its own ragged, differently-sized slice of
+        # `distance`'s CSR storage - not worth a second full batched
+        # ragged-to-padded pass for what is, in practice, a handful of
+        # rows. `_strongest_candidate_sparse`'s existing per-row
+        # searchsorted logic is reused as-is.
+        if bool(empty_selection.any()):
+            distance_crow = distance.crow_indices()
+            distance_col = distance.col_indices()
+            distance_values = distance.values()
+            for local_idx in torch.nonzero(empty_selection).flatten().tolist():
+                i = int(fine_points[local_idx].item())
+                candidates = padded_candidates[local_idx][candidate_mask[local_idx]]
+                d_start, d_end = int(distance_crow[i]), int(distance_crow[i + 1])
+                interp_set = self._strongest_candidate_sparse(
+                    candidates, distance_col[d_start:d_end], distance_values[d_start:d_end]
+                )
+                chosen[local_idx, 0] = interp_set[0]
+                chosen_mask[local_idx, 0] = True
+                chosen_mask[local_idx, 1:] = False
+            rows = batched_ls_interpolation_rows(fit_vectors, targets, chosen, chosen_mask, weights)
+
+        flat_row = fine_points.unsqueeze(1).expand(-1, chosen.shape[1])[chosen_mask]
+        flat_col = coarse_index[chosen[chosen_mask]]
+        flat_value = rows[chosen_mask]
+        return flat_row, flat_col, flat_value
+
 
 class BootstrapAMGPreconditioner(AMGPreconditioner):
     """Bootstrap AMG preconditioner (BAMG) for sparse CSR systems, sparse-CSR sibling.
+
+    **Recommended for dense use; prefer** ``BootCMatchPreconditioner``
+    (``torchalg.sparse.preconditioners.amg.bootcmatch``) **for sparse/
+    large-scale use** - see this module's own ``BAMGCoarsening`` docstring
+    for why (compatible relaxation's coarse-point selection is sequential by
+    the algorithm's own structure, not an implementation gap).
 
     Sparse-CSR counterpart of
     ``preconditioners.implementations.amg.bootstrap.BootstrapAMGPreconditioner``

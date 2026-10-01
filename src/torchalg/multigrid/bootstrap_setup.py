@@ -166,19 +166,24 @@ def _relax_columns(
 ) -> torch.Tensor:
     """Relax every column of ``vectors`` on ``matrix @ x = 0`` ([STATUS14] eq. 4.1).
 
+    Each test-vector column is independent of every other (``relaxation``
+    never couples columns), so all ``k`` columns are relaxed in one batched
+    call rather than a Python loop - both the dense and sparse
+    ``GaussSeidelSmoother.smooth`` (the ``relaxation`` this is always
+    injected with) accept a ``(n, k)`` ``x``/``rhs`` directly.
+
     Args:
         matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
         vectors (torch.Tensor): Test vectors, shape ``(n, k)``.
         relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x``.
+            -> x``, batched over ``x``'s trailing dimension.
         sweeps (int): Number of sweeps ``eta``.
 
     Returns:
         torch.Tensor: Relaxed test vectors, shape ``(n, k)``.
     """
-    zero_rhs = torch.zeros(matrix.shape[0], dtype=matrix.dtype, device=matrix.device)
-    columns = [relaxation(matrix, zero_rhs, vectors[:, k], sweeps) for k in range(vectors.shape[1])]
-    return torch.stack(columns, dim=1)
+    zero_rhs = torch.zeros_like(vectors)
+    return relaxation(matrix, zero_rhs, vectors, sweeps)
 
 
 def _improve_test_vectors(
@@ -191,7 +196,14 @@ def _improve_test_vectors(
     """Improve ``vectors`` by running ``setup_cycle`` on ``matrix @ x = 0`` ([STATUS14] Sec. 4).
 
     Uses linearity of the cycle for a zero right-hand side: one cycle from
-    ``x`` is ``x - setup_cycle.apply(hierarchy, matrix @ x)``.
+    ``x`` is ``x - setup_cycle.apply(hierarchy, matrix @ x)``. All ``k``
+    columns are improved in one batched pass rather than a Python loop:
+    every step inside ``setup_cycle.apply`` is either the (now batched)
+    smoother or a plain matrix product - ``matrix @ x``, the transfer
+    operators' ``P @ x``/``P.T @ x``, and the coarse solvers
+    (``torch.linalg.solve``/``torch.linalg.pinv(...) @ rhs``) - all of which
+    already operate columnwise for a ``(n, k)`` right-hand side with no
+    further changes.
 
     Args:
         matrix (torch.Tensor): Finest-level matrix, shape ``(n, n)``.
@@ -204,13 +216,10 @@ def _improve_test_vectors(
     Returns:
         torch.Tensor: Improved test vectors, shape ``(n, k)``.
     """
-    columns = []
-    for k in range(vectors.shape[1]):
-        x = vectors[:, k]
-        for _ in range(iterations):
-            x = x - setup_cycle.apply(hierarchy, matrix @ x)
-        columns.append(x)
-    return torch.stack(columns, dim=1)
+    x = vectors
+    for _ in range(iterations):
+        x = x - setup_cycle.apply(hierarchy, matrix @ x)
+    return x
 
 
 def _hierarchy_of(

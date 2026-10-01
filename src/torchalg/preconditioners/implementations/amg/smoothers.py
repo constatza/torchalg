@@ -149,12 +149,12 @@ class GaussSeidelSmoother(SmootherBase):
 
         Args:
             A (torch.Tensor): System matrix (n x n), dense.
-            rhs (torch.Tensor): Right-hand side vector (n,).
-            x (torch.Tensor): Current iterate (n,).
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, shape ``(n,)`` or ``(n, k)``.
             steps (int): Number of symmetric iterations.
 
         Returns:
-            torch.Tensor: Updated iterate.
+            torch.Tensor: Updated iterate, same shape as ``x``.
         """
         return symmetric_gauss_seidel(A, x, rhs, steps)
 

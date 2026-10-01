@@ -102,6 +102,32 @@ class TestBAMGCoarseningBuildTransfer:
             sparse_transfer.restrict(fine_vector), dense_transfer.restrict(fine_vector)
         )
 
+    def test_default_parameter_level_matches_dense_values(
+        self,
+        poisson_1d_large_dense: torch.Tensor,
+        bamg_default_test_vectors: torch.Tensor,
+        seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    ) -> None:
+        """Default benchmark-level BAMG setup preserves dense coarse and P values."""
+        dense_coarsening = DenseBAMGCoarsening(
+            bamg_default_test_vectors.clone(),
+            DenseGaussSeidelSmoother().smooth,
+            draw=seeded_draw_factory(0),
+        )
+        sparse_coarsening = BAMGCoarsening(
+            bamg_default_test_vectors.clone(),
+            GaussSeidelSmoother().smooth,
+            draw=seeded_draw_factory(0),
+        )
+
+        dense_coarse, _ = dense_coarsening.build_transfer(poisson_1d_large_dense)
+        sparse_coarse, _ = sparse_coarsening.build_transfer(poisson_1d_large_dense.to_sparse_csr())
+
+        torch.testing.assert_close(sparse_coarse.to_dense(), dense_coarse)
+        torch.testing.assert_close(
+            sparse_coarsening.last_prolongation.to_dense(), dense_coarsening.last_prolongation
+        )
+
     def test_matches_dense_across_two_levels(
         self,
         poisson_1d_large_dense: torch.Tensor,
@@ -137,6 +163,61 @@ class TestBAMGCoarseningBuildTransfer:
         dense_level2, _ = dense_coarsening.build_transfer(dense_level1)
         sparse_level2, _ = sparse_coarsening.build_transfer(sparse_level1)
         torch.testing.assert_close(sparse_level2.to_dense(), dense_level2)
+
+    def test_matches_dense_at_larger_scale(
+        self,
+        poisson_1d_xlarge_dense: torch.Tensor,
+        seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    ) -> None:
+        """A 300-dof system to exercise the vectorized padded-candidate gathering.
+
+        ``poisson_1d_large_dense`` (64 dofs) is small enough that every
+        fine row's coarse-neighbor candidate set tends to land at the same
+        size; at 300 dofs, fine rows plausibly see several distinct
+        candidate-set sizes (including the all-coarse-points fallback for
+        rows whose LS-ring neighborhood has no coarse neighbor yet) - this
+        is exactly the padding/masking edge case the vectorized gather in
+        ``BAMGCoarsening._prolongation`` could get subtly wrong without
+        tripping the smaller fixtures above.
+        """
+        torch.manual_seed(6)
+        n = poisson_1d_xlarge_dense.shape[0]
+        test_vectors = torch.randn(n, 6, dtype=poisson_1d_xlarge_dense.dtype)
+        sparse_matrix = poisson_1d_xlarge_dense.to_sparse_csr()
+
+        dense_coarsening = DenseBAMGCoarsening(
+            test_vectors.clone(),
+            DenseGaussSeidelSmoother().smooth,
+            nu=3,
+            delta=0.7,
+            caliber=4,
+            draw=seeded_draw_factory(7),
+        )
+        sparse_coarsening = BAMGCoarsening(
+            test_vectors.clone(),
+            GaussSeidelSmoother().smooth,
+            nu=3,
+            delta=0.7,
+            caliber=4,
+            draw=seeded_draw_factory(7),
+        )
+
+        dense_coarse, dense_transfer = dense_coarsening.build_transfer(poisson_1d_xlarge_dense)
+        sparse_coarse, sparse_transfer = sparse_coarsening.build_transfer(sparse_matrix)
+
+        torch.testing.assert_close(sparse_coarse.to_dense(), dense_coarse)
+        torch.testing.assert_close(
+            sparse_coarsening.last_prolongation.to_dense(), dense_coarsening.last_prolongation
+        )
+
+        coarse_vector = torch.randn(dense_coarse.shape[0], dtype=poisson_1d_xlarge_dense.dtype)
+        torch.testing.assert_close(
+            sparse_transfer.prolongate(coarse_vector), dense_transfer.prolongate(coarse_vector)
+        )
+        fine_vector = torch.randn(n, dtype=poisson_1d_xlarge_dense.dtype)
+        torch.testing.assert_close(
+            sparse_transfer.restrict(fine_vector), dense_transfer.restrict(fine_vector)
+        )
 
     def test_test_vectors_for_and_set_test_vectors(self, poisson_1d_csr: torch.Tensor) -> None:
         torch.manual_seed(4)
