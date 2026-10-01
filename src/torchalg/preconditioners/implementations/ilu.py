@@ -82,12 +82,10 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """Compute the dense ILU(0) factorization of the system matrix.
 
         Args:
-            matrix (torch.Tensor): System matrix ``A``.
+            matrix (torch.Tensor): Dense system matrix ``A``.
 
         Returns:
-            torch.Tensor: Combined ``L``/``U`` factor tensor (strictly-lower
-                part is ``L`` with an implicit unit diagonal; upper part
-                including the diagonal is ``U``).
+            torch.Tensor: Combined ``L``/``U`` factor tensor.
         """
         return dense_ilu0(matrix)
 

@@ -106,10 +106,10 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         self.register_buffer("_operator", self._compute_operator(matrix))
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
-        """Compute the IC(0) factorization of the system matrix.
+        """Compute the dense IC(0) factorization of the system matrix.
 
         Args:
-            matrix (torch.Tensor): Symmetric positive-definite system
+            matrix (torch.Tensor): Symmetric positive-definite dense system
                 matrix ``A``.
 
         Returns:
