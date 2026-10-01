@@ -51,18 +51,39 @@ AMG's own strength test, ``-a_ij >= theta * max_{k!=i}(-a_ik)``
 (``docs/boomeramg.md`` Sec. 2.1), which is likewise a per-row threshold and
 not symmetric in ``i, j``. Nothing in [AD11] claims or requires
 ``r_ij == r_ji``; callers must not assume symmetry.
+
+``test_vector_weights`` has since been promoted to
+``torchalg.utils.test_vector_weights`` (re-exported here for every existing
+``from ...amg._algebraic_distance import test_vector_weights`` call site) -
+it was already fully format-agnostic (only ``matrix @ test_vectors``/``T @
+test_vectors``, which dispatch correctly for dense or sparse CSR), the same
+"one legitimate shared edge" precedent as ``torchalg.utils.spectral``'s
+``approximate_spectral_radius`` - see ``docs/plan.md``'s "Correction: dense
+and sparse must be separate implementations" section. ``algebraic_distance``/
+``strength_graph`` themselves remain dense-only here; their sparse siblings
+live in ``torchalg.sparse.kernels``.
 """
 
 from __future__ import annotations
 
 import torch
 
+from torchalg.utils.test_vector_weights import test_vector_weights
+
 from ._graph import depth_neighborhood
 from ._least_squares import lsr_correction
 
+__all__ = [
+    "algebraic_distance",
+    "strength_graph",
+    "test_vector_weights",
+]
+
 _NEAR_ZERO_ENERGY_TOL = 1e-14
-"""Test-vector energies with magnitude below this are treated as 1.0 when
-computing weights, protecting against division by near-zero."""
+"""Predictor energies with magnitude below this are treated as 1.0,
+protecting against division by near-zero (shares its value, not its
+definition, with ``torchalg.utils.test_vector_weights``'s own copy of this
+tolerance - the two guard different quantities)."""
 
 _MIN_RESIDUAL_RTOL = 1e-14
 """Floor applied to the caliber-one LS residual before inversion, *relative*
@@ -93,42 +114,6 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
     """
     all_rows = torch.arange(matrix.shape[0], device=matrix.device)
     return lsr_correction(test_vectors, matrix, all_rows)
-
-
-def test_vector_weights(
-    test_vectors: torch.Tensor, matrix: torch.Tensor, T: torch.Tensor | None = None
-) -> torch.Tensor:
-    """Per-test-vector weights ``omega_kappa``.
-
-    ``omega_kappa = <T v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>``.
-    ``T`` is the composite-interpolation Gram operator ``P_l^H P_l``
-    (``docs/bootstrap-amg.md`` Sec. 4.2); ``T = None`` uses the ``T = I``
-    reduction to a pure ``A``-energy weighting, valid "on the finest level,
-    or before any MGE enrichment" (line 234) - i.e. whenever no composite
-    interpolation has been built yet, which is every level when MGE
-    (``_mge.py``, ``k_e``) is disabled, and the finest level regardless.
-    **TODO(bamg-fidelity, needs-check):** the ``T``-weighted generalization
-    used here for ``k_e > 0`` is not confirmed against [STATUS14], which
-    states ``omega_kappa`` only via ``||v||_A^2`` (no ``T`` term); see
-    ``_mge.py``'s module docstring for the full status of this gap.
-
-    Args:
-        test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
-        matrix (torch.Tensor): Dense matrix ``A``, shape ``(n, n)``.
-        T (torch.Tensor | None): Composite-interpolation Gram operator,
-            shape ``(n, n)``; ``None`` for the ``T = I`` reduction.
-
-    Returns:
-        torch.Tensor: Weight vector, shape ``(k,)``.
-    """
-    energy = (test_vectors * (matrix @ test_vectors)).sum(dim=0)
-    energy_safe = torch.where(energy.abs() > _NEAR_ZERO_ENERGY_TOL, energy, torch.ones_like(energy))
-    numerator = (
-        (test_vectors**2).sum(dim=0)
-        if T is None
-        else (test_vectors * (T @ test_vectors)).sum(dim=0)
-    )
-    return numerator / energy_safe
 
 
 def algebraic_distance(

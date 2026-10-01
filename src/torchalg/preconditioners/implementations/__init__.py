@@ -23,9 +23,9 @@ Populated incrementally, stage by stage (see ``docs/plan.md``). So far
   measure and interpolation all derived from test vectors via compatible
   relaxation, algebraic distance and weighted least squares, see
   ``.amg.bootstrap``.
-- ``POD2GPreconditioner``: Proper Orthogonal Decomposition two-grid
-  preconditioner, reusing the ``.amg`` engine with POD-basis coarsening; see
-  ``.pod`` for the full public API.
+- ``pod2g_preconditioner``: Proper Orthogonal Decomposition two-grid
+  preconditioner factory, reusing the ``.amg`` engine with POD-basis
+  coarsening; see ``.pod`` for the full public API.
 - ``NeuralPreconditioner``: Wraps a caller-supplied predictor (via
   ``preconditioners.ports.PredictorAdapter``/``ExtraInputPredictorPort``)
   as a non-linear preconditioner.
@@ -40,7 +40,7 @@ from .ilu import ILUPreconditioner
 from .jacobi import JacobiPreconditioner
 from .linear_operator import LinearOperatorPreconditioner
 from .neural import NeuralPreconditioner
-from .pod import POD2GPreconditioner
+from .pod import pod2g_preconditioner
 from .scheduled import ScheduledPreconditioner
 
 __all__ = [
@@ -55,6 +55,6 @@ __all__ = [
     "JacobiPreconditioner",
     "LinearOperatorPreconditioner",
     "NeuralPreconditioner",
-    "POD2GPreconditioner",
     "ScheduledPreconditioner",
+    "pod2g_preconditioner",
 ]

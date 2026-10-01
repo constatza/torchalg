@@ -2,64 +2,32 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.transfer``
 (see ``docs/plan.md``'s dense-only directive). ``SparseTransferOperator``
-(scipy-sparse-backed in the reference) is renamed to ``DenseTransferOperator``
+(scipy-sparse-backed in the reference) was renamed to ``DenseTransferOperator``
 and now wraps a dense ``torch.Tensor`` prolongation matrix ``P`` instead of a
 ``scipy.sparse`` matrix - the algorithm (Galerkin restriction ``R = P.T``) is
-unchanged, only the storage. The name also anticipates Stage 6 (POD), whose
+unchanged, only the storage. ``DenseTransferOperator`` itself has since been
+promoted to ``torchalg.utils.dense_transfer`` (it was already fully
+format-agnostic - see that module's docstring) and is re-exported here so
+every existing ``from ...amg.transfer import DenseTransferOperator`` call
+site keeps working unchanged. The name also anticipated Stage 6 (POD), whose
 reference README already calls its own dense-P/R wrapper
-``DenseTransferOperator``.
+``DenseTransferOperator`` - and indeed the sparse POD sibling
+(``torchalg.sparse.preconditioners.pod.coarsening``) reuses the very same
+promoted class, since a POD basis is always dense.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from torchalg.utils.dense_transfer import DenseTransferOperator
+
 if TYPE_CHECKING:
     import torch
 
     from ...ports import ExtraInputPredictorPort
 
-
-class DenseTransferOperator:
-    """Transfer operator backed by a dense prolongation matrix P.
-
-    Prolongation: ``P @ coarse`` (inject coarse correction to fine grid).
-    Restriction: ``P.T @ fine`` (Galerkin restriction, R = P^T).
-
-    Args:
-        P (torch.Tensor): Prolongation matrix (n_fine x n_coarse), dense.
-    """
-
-    def __init__(self, P: torch.Tensor) -> None:
-        """Store the prolongation matrix and its transpose (Galerkin restriction).
-
-        Args:
-            P (torch.Tensor): Prolongation matrix (n_fine x n_coarse), dense.
-        """
-        self._P = P
-        self._R = P.T
-
-    def prolongate(self, coarse: torch.Tensor) -> torch.Tensor:
-        """Interpolate coarse-grid vector to fine grid.
-
-        Args:
-            coarse (torch.Tensor): Coarse-grid vector of length n_coarse.
-
-        Returns:
-            torch.Tensor: Fine-grid vector of length n_fine.
-        """
-        return self._P @ coarse
-
-    def restrict(self, fine: torch.Tensor) -> torch.Tensor:
-        """Restrict fine-grid vector to coarse grid (R = P^T).
-
-        Args:
-            fine (torch.Tensor): Fine-grid vector of length n_fine.
-
-        Returns:
-            torch.Tensor: Coarse-grid vector of length n_coarse.
-        """
-        return self._R @ fine
+__all__ = ["DenseTransferOperator", "NeuralTransferOperator"]
 
 
 class NeuralTransferOperator:

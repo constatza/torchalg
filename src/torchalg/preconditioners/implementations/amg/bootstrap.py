@@ -211,10 +211,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
+
+from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
 
 from ._algebraic_distance import (
     algebraic_distance,
@@ -227,7 +228,7 @@ from ._least_squares import ls_interpolation_row, lsr_correction, select_interpo
 from ._mge import multigrid_eigensolver
 from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
 from .amg import AMGPreconditioner
-from .hierarchy import MultigridHierarchy, MultigridLevel
+from .hierarchy import MultigridHierarchy
 from .smoothers import GaussSeidelSmoother, resolve_jacobi_default
 from .transfer import DenseTransferOperator
 
@@ -243,167 +244,6 @@ this practical 20%/largest-residual schedule; [STATUS14] Sec. 3's own text
 attributes the same result to "[7]" ([BAMG11]) but the exact section within
 [BAMG11] (previously cited here as "Sec. 4") was never independently
 confirmed, since [BAMG11] could not be fetched this session."""
-
-
-def _random_test_vectors(
-    matrix: torch.Tensor, k: int, draw: Callable[[int], torch.Tensor]
-) -> torch.Tensor:
-    """``k`` random test vectors on ``matrix``'s grid ([STATUS14] Sec. 4: TVs start random).
-
-    Args:
-        matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
-        k (int): Number of test vectors.
-        draw (Callable[[int], torch.Tensor]): Uniform ``[0, 1)`` random-vector
-            source, ``n -> tensor of length n``.
-
-    Returns:
-        torch.Tensor: Test vectors, shape ``(n, k)``.
-    """
-    columns = [draw(matrix.shape[0]).to(dtype=matrix.dtype, device=matrix.device) for _ in range(k)]
-    return torch.stack(columns, dim=1)
-
-
-def _seeded_test_vectors(
-    matrix: torch.Tensor,
-    k_r: int,
-    draw: Callable[[int], torch.Tensor],
-    seed_vectors: torch.Tensor | None,
-) -> torch.Tensor:
-    """``k_r`` random test vectors, plus known near-null vectors if given ([STATUS14] Table 3).
-
-    [STATUS14] Table 3 seeds a known near-null vector (e.g. the constant
-    vector ``1``) *alongside* the random draws, not instead of them -
-    deliberately different from ``adaptive.py``'s ``initial_candidates``,
-    which replaces the initial random start: that asymmetry follows the two
-    papers' own conventions, not an inconsistency between the two presets.
-
-    Args:
-        matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
-        k_r (int): Number of random test vectors to draw.
-        draw (Callable[[int], torch.Tensor]): Uniform ``[0, 1)`` random-vector
-            source, ``n -> tensor of length n``.
-        seed_vectors (torch.Tensor | None): Known near-null vectors, shape
-            ``(n, k_seed)``; ``None`` for no seeding (the historical
-            behavior).
-
-    Returns:
-        torch.Tensor: Test vectors, shape ``(n, k_r + k_seed)`` (or
-        ``(n, k_r)`` when ``seed_vectors`` is ``None``).
-    """
-    random_vectors = _random_test_vectors(matrix, k_r, draw)
-    if seed_vectors is None:
-        return random_vectors
-    return torch.cat(
-        [random_vectors, seed_vectors.to(dtype=matrix.dtype, device=matrix.device)], dim=1
-    )
-
-
-def _relax_columns(
-    matrix: torch.Tensor, vectors: torch.Tensor, relaxation: _Relaxation, sweeps: int
-) -> torch.Tensor:
-    """Relax every column of ``vectors`` on ``matrix @ x = 0`` ([STATUS14] eq. 4.1, confirmed - ``docs/bamg/status14_raw.md``).
-
-    Args:
-        matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
-        vectors (torch.Tensor): Test vectors, shape ``(n, k)``.
-        relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x``.
-        sweeps (int): Number of sweeps ``eta``.
-
-    Returns:
-        torch.Tensor: Relaxed test vectors, shape ``(n, k)``.
-    """
-    zero_rhs = torch.zeros(matrix.shape[0], dtype=matrix.dtype, device=matrix.device)
-    columns = [relaxation(matrix, zero_rhs, vectors[:, k], sweeps) for k in range(vectors.shape[1])]
-    return torch.stack(columns, dim=1)
-
-
-def _improve_test_vectors(
-    matrix: torch.Tensor,
-    vectors: torch.Tensor,
-    hierarchy: MultigridHierarchy,
-    iterations: int,
-) -> torch.Tensor:
-    """Improve ``vectors`` by running the current AMG cycle on ``matrix @ x = 0`` ([STATUS14] Sec. 4: "repeated with the current AMG method applied... as the solver for the homogeneous systems").
-
-    Uses linearity of the cycle for a zero right-hand side: one cycle from
-    ``x`` is ``x - cycle.apply(hierarchy, matrix @ x)`` (``adaptive.py``'s
-    ``_solve`` uses the same identity).
-
-    Args:
-        matrix (torch.Tensor): Finest-level matrix, shape ``(n, n)``.
-        vectors (torch.Tensor): Test vectors to improve, shape ``(n, k)``.
-        hierarchy (MultigridHierarchy): Current (partial) hierarchy.
-        iterations (int): Number of cycles per test vector.
-
-    Returns:
-        torch.Tensor: Improved test vectors, shape ``(n, k)``.
-    """
-    columns = []
-    for k in range(vectors.shape[1]):
-        x = vectors[:, k]
-        for _ in range(iterations):
-            x = x - GS_SETUP_CYCLE.apply(hierarchy, matrix @ x)
-        columns.append(x)
-    return torch.stack(columns, dim=1)
-
-
-def _hierarchy_of(
-    levels: list[torch.Tensor] | tuple[torch.Tensor, ...],
-    prolongations: list[torch.Tensor] | tuple[torch.Tensor, ...],
-) -> MultigridHierarchy:
-    """Engine hierarchy over plain level-matrix/prolongation lists.
-
-    Args:
-        levels (list[torch.Tensor] | tuple[torch.Tensor, ...]): Level
-            matrices, finest first.
-        prolongations (list[torch.Tensor] | tuple[torch.Tensor, ...]):
-            Prolongations, one per level except the coarsest.
-
-    Returns:
-        MultigridHierarchy: Hierarchy sharing the given tensors.
-    """
-    last = len(levels) - 1
-    return MultigridHierarchy(
-        tuple(
-            MultigridLevel(
-                matrix=matrix,
-                transfer=None if index == last else DenseTransferOperator(prolongations[index]),
-            )
-            for index, matrix in enumerate(levels)
-        )
-    )
-
-
-@dataclass(frozen=True)
-class BootstrapAMGResult:
-    """Result of the Bootstrap AMG setup.
-
-    Mirrors ``adaptive.py``'s ``AdaptiveSAResult`` shape (same field names
-    where the concept matches), so ``BootstrapAMGPreconditioner._make_hierarchy``
-    can be nearly identical code to ``AdaptiveSAPreconditioner._make_hierarchy``.
-
-    Attributes:
-        matrices (tuple[torch.Tensor, ...]): Level matrices ``A_l``, finest
-            first.
-        prolongations (tuple[torch.Tensor, ...]): ``P_l`` mapping level
-            ``l+1`` to level ``l`` (``R = P^T``).
-        candidates (torch.Tensor): Finest-level test vectors after the final
-            bootstrap cycle, shape ``(n, k_r)``.
-    """
-
-    matrices: tuple[torch.Tensor, ...]
-    prolongations: tuple[torch.Tensor, ...]
-    candidates: torch.Tensor
-
-    @property
-    def hierarchy(self) -> MultigridHierarchy:
-        """The multigrid hierarchy for the engine's cycles.
-
-        Returns:
-            MultigridHierarchy: Levels with dense transfer operators.
-        """
-        return _hierarchy_of(self.matrices, self.prolongations)
 
 
 class BAMGCoarsening:
@@ -786,350 +626,6 @@ class BAMGCoarsening:
         return prolongation.to(device)
 
 
-@dataclass(frozen=True)
-class BootstrapSetup:
-    """Bootstrap AMG setup parameters and the outer setup loop.
-
-    Implements ``docs/bootstrap-amg.md`` Sec. 4.1/Sec. 5: builds one
-    hierarchy from ``k_r`` random test vectors relaxed ``eta`` sweeps per
-    level, coarsening while ``len(levels) < max_levels and
-    levels[-1].shape[0] > max_coarse`` (the same stopping-condition shape as
-    ``adaptive.py``'s ``_smoothed_aggregation_levels``), then for
-    ``n_bootstrap_cycles`` cycles replaces plain relaxation with a full
-    ``VCycle.apply`` on ``A x = 0`` to improve the **finest** level's test
-    vectors and rebuilds the whole hierarchy from them. Each coarse level's
-    vectors are re-derived from scratch during that rebuild (restriction by
-    ``P^T`` plus ``eta`` relaxation sweeps in ``_build_levels``), not
-    improved in place - see the module docstring's scope note.
-
-    Attributes:
-        nu (int): CR sweeps per stage.
-        delta (float): CR stopping tolerance.
-        theta_ad (float): Algebraic-distance strength threshold.
-        caliber (int): Maximum interpolatory-set size.
-        gamma (float): Caliber-growth penalization exponent.
-        eta (int): Relaxation sweeps per test vector per level.
-        k_r (int): Number of relaxation-derived test vectors.
-        use_lsr (bool): Apply the LSR residual correction before fitting.
-        k_e (int): Number of multigrid-eigensolver (MGE) eigenvector
-            approximations per bootstrap cycle (``_mge.py``; ``k_r``/``k_e``
-            naming, and the combined-total convention below, both directly
-            confirmed against [STATUS14] Sec. 4's ``V^r``/``V^e`` sets and
-            Tables 4-5's ``k_r = k_e = 8``); ``0`` disables MGE (the
-            historical behavior - [STATUS14] frames MGE as an optional
-            enhancement over an already-valid relaxation-only baseline, not
-            a requirement).
-        n_bootstrap_cycles (int): Number of bootstrap-cycle passes.
-        max_levels (int): Maximum number of levels.
-        max_coarse (int): Stop coarsening at this many coarse nodes.
-    """
-
-    nu: int = 5
-    delta: float = 0.7
-    theta_ad: float = 0.5
-    caliber: int = 4
-    gamma: float = 1.5
-    eta: int = 4
-    k_r: int = 8
-    use_lsr: bool = True
-    k_e: int = 0
-    n_bootstrap_cycles: int = 2
-    max_levels: int = 10
-    max_coarse: int = 10
-
-    def _coarsening_from(
-        self,
-        vectors: torch.Tensor,
-        relaxation: _Relaxation,
-        draw: Callable[[int], torch.Tensor],
-    ) -> BAMGCoarsening:
-        """Build a fresh ``BAMGCoarsening`` seeded with ``vectors``.
-
-        Args:
-            vectors (torch.Tensor): Finest-level test vectors.
-            relaxation (_Relaxation): Relaxation callable used by CR.
-            draw (Callable[[int], torch.Tensor]): Uniform ``[0, 1)``
-                random-vector source for CR.
-
-        Returns:
-            BAMGCoarsening: Fresh coarsening strategy.
-        """
-        return BAMGCoarsening(
-            vectors,
-            relaxation,
-            nu=self.nu,
-            delta=self.delta,
-            theta_ad=self.theta_ad,
-            caliber=self.caliber,
-            gamma=self.gamma,
-            use_lsr=self.use_lsr,
-            draw=draw,
-        )
-
-    def _improve_levels(
-        self,
-        levels: list[torch.Tensor],
-        prolongations: list[torch.Tensor],
-        level_vectors: dict[int, torch.Tensor],
-    ) -> dict[int, torch.Tensor]:
-        """Improve every level's relaxation-derived test vectors via its own sub-hierarchy cycle.
-
-        [STATUS14] Sec. 4's base bootstrap loop (independent of MGE) -
-        "repeated with the current AMG method applied in addition to (or
-        replacing) relaxation as the solver for the homogeneous systems" -
-        improves the test vectors on *every* level each bootstrap cycle,
-        replacing plain relaxation for the ``for l=0,...,L-1: relax on
-        A_l x_l=0`` step ([STATUS14] eq. 4.1, confirmed). A prior read of
-        this module attributed the same outer loop to "[BAMG11] Sec. 5";
-        [BAMG11] could not be fetched this session, so that specific section
-        number is unconfirmed (STATUS14's own restatement is in its flat,
-        unsectioned Sec. 4, not a "Sec. 5"). This applies that replacement
-        at every level ``l`` that has a
-        coarser level below it (``0..len(levels)-2``), rooting the cycle at
-        ``levels[l]`` with the sub-hierarchy from ``l`` down to the
-        coarsest - the same linearity identity ``_improve_test_vectors``
-        already uses, just no longer hardcoded to level ``0``. The coarsest
-        level is excluded: it has no coarser level to correct with, so a
-        "cycle" rooted there is just a direct solve, not an improvement step.
-
-        Takes ``level_vectors`` directly (the relaxation-derived family
-        ``V^r`` alone) rather than reading a ``BAMGCoarsening``'s stored
-        state, because that state may also carry MGE's ``V^e`` columns
-        appended for the *previous* cycle's LS/LSR fit ([STATUS14] Sec. 4:
-        "the sets V^r and V^e are then combined to form the set of TVs V
-        that is used to compute the least squares interpolation operator on
-        each level", confirmed) - ``V^r`` must keep exactly ``run``'s
-        original column count across
-        every cycle, or MGE columns would compound cycle over cycle instead
-        of being freshly recomputed each time (``multigrid_eigensolver``
-        never "improves" a stored eigenvector across cycles; it re-solves
-        the coarsest eigenproblem from scratch every call).
-
-        Args:
-            levels (list[torch.Tensor]): Level matrices, finest first.
-            prolongations (list[torch.Tensor]): Prolongations, one per level
-                except the coarsest.
-            level_vectors (dict[int, torch.Tensor]): Each level's current
-                ``V^r`` test vectors, keyed by matrix dimension (every level
-                except the coarsest).
-
-        Levels whose dimension has no entry in ``level_vectors`` are skipped
-        (not included in the returned dict) rather than raising: coarsening
-        decisions can shift between cycles (they are guided by the test
-        vectors, which change), so an intermediate level from the previous
-        cycle's hierarchy is not guaranteed to reappear at the same
-        dimension. The finest level's dimension never changes, so it is
-        always present.
-
-        Returns:
-            dict[int, torch.Tensor]: Improved ``V^r`` test vectors keyed by
-            each improved level's matrix dimension (every level except the
-            coarsest, and skipping any level whose dimension is not found).
-        """
-        return {
-            levels[index].shape[0]: _improve_test_vectors(
-                levels[index],
-                level_vectors[levels[index].shape[0]],
-                _hierarchy_of(levels[index:], prolongations[index:]),
-                self.eta,
-            )
-            for index in range(len(levels) - 1)
-            if levels[index].shape[0] in level_vectors
-        }
-
-    def _merge_level_vectors(
-        self, relaxed: dict[int, torch.Tensor], enriched: dict[int, torch.Tensor]
-    ) -> dict[int, torch.Tensor]:
-        """Concatenate MGE eigenvector columns onto the relaxation-improved vectors, per level.
-
-        [STATUS14] Sec. 4: "the sets V^r and V^e are then combined to form
-        the set of TVs V" (``k = k_r + k_e`` total for the LS/LSR fit,
-        confirmed) - ``relaxed`` and ``enriched`` share the same keys
-        (``BootstrapSetup._improve_levels`` and ``multigrid_eigensolver``
-        both cover every level except the coarsest, for the same reason).
-
-        Args:
-            relaxed (dict[int, torch.Tensor]): Per-level vectors from
-                ``_improve_levels``, keyed by matrix dimension.
-            enriched (dict[int, torch.Tensor]): Per-level MGE eigenvector
-                approximations from ``multigrid_eigensolver``, same keys.
-
-        Returns:
-            dict[int, torch.Tensor]: Concatenated per-level vectors, same
-            keys as both inputs.
-        """
-        return {
-            dimension: torch.cat([vectors, enriched[dimension]], dim=1)
-            for dimension, vectors in relaxed.items()
-        }
-
-    @staticmethod
-    def _v_r_after_build(
-        coarsening: BAMGCoarsening, levels: list[torch.Tensor], k_r_total: int
-    ) -> dict[int, torch.Tensor]:
-        """The ``V^r`` (relaxation-derived) columns of every level's post-``_build_levels`` vectors.
-
-        ``_build_levels`` applies its own leading ``eta``-sweep relaxation to
-        whatever is stored per level (Sec. 5's per-level block), independent
-        of any MGE columns a cycle may have appended for the LS/LSR fit
-        (``_merge_level_vectors``). Concatenation order is fixed (``V^r``
-        first, then ``V^e``) and relaxation is column-independent
-        (``_relax_columns`` relaxes one column at a time), so slicing to the
-        first ``k_r_total`` columns after the build recovers exactly ``V^r``
-        with that leading relaxation applied - the correct starting point
-        for the *next* cycle's ``_improve_levels`` call, matching what a
-        single shared, mutated ``coarsening`` object would have given before
-        MGE made "the vectors currently stored per level" ambiguous between
-        ``V^r`` alone and ``V^r`` concatenated with a transient ``V^e``.
-
-        Args:
-            coarsening (BAMGCoarsening): Coarsening strategy just returned
-                from a ``_build_levels`` call.
-            levels (list[torch.Tensor]): That same call's returned levels.
-            k_r_total (int): ``V^r``'s fixed column count (``k_r`` plus any
-                ``seed_vectors``), constant for the whole ``run`` call.
-
-        Returns:
-            dict[int, torch.Tensor]: ``V^r`` columns per level, keyed by
-            matrix dimension (every level except the coarsest).
-        """
-        return {
-            level.shape[0]: coarsening.test_vectors_for(level)[:, :k_r_total]
-            for level in levels[:-1]
-        }
-
-    def _build_levels(
-        self,
-        matrix: torch.Tensor,
-        coarsening: BAMGCoarsening,
-        relaxation: _Relaxation,
-        level_vectors: dict[int, torch.Tensor] | None = None,
-    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Coarsen ``matrix`` down to ``max_levels``/``max_coarse``.
-
-        Compatible relaxation can legitimately converge with ``C = empty
-        set`` on an already-coarsened level (``rho_f <= delta`` from the
-        start, [AD11] Algorithm 1's own valid stopping case) - producing a
-        zero-column prolongation and a zero-size coarse matrix that would
-        contribute exactly zero coarse-grid correction. A coarsening pass is
-        discarded, and the loop stops with ``current`` standing as the
-        final, coarsest level, whenever it is degenerate in either
-        direction: ``coarse_matrix.shape[0] == 0`` (the empty-``C`` case
-        above) or ``coarse_matrix.shape[0] >= current.shape[0]`` (no real
-        coarsening happened at all). This is a stopping-condition fix, not a
-        change to ``compatible_relaxation_coarsening``'s own semantics.
-
-        Args:
-            matrix (torch.Tensor): Finest-level matrix.
-            coarsening (BAMGCoarsening): Coarsening strategy, already seeded
-                with the finest-level test vectors.
-            relaxation (_Relaxation): Relaxation callable applied to the test
-                vectors before each level is coarsened.
-            level_vectors (dict[int, torch.Tensor] | None): Per-level
-                test vectors from ``_improve_levels``, keyed by matrix
-                dimension, overriding ``coarsening``'s restriction-derived
-                starting vectors for that level before its leading
-                ``eta``-sweep relaxation; ``None`` on the very first
-                hierarchy build, which has no prior levels to improve.
-
-        Returns:
-            tuple[list[torch.Tensor], list[torch.Tensor]]: Level matrices
-            (finest first) and prolongations.
-        """
-        levels = [matrix]
-        prolongations: list[torch.Tensor] = []
-        while len(levels) < self.max_levels and levels[-1].shape[0] > self.max_coarse:
-            current = levels[-1]
-            if level_vectors is not None and current.shape[0] in level_vectors:
-                coarsening.set_test_vectors(current, level_vectors[current.shape[0]])
-            relaxed = _relax_columns(
-                current, coarsening.test_vectors_for(current), relaxation, self.eta
-            )
-            coarsening.set_test_vectors(current, relaxed)
-            coarse_matrix, _ = coarsening.build_transfer(current)
-            if coarse_matrix.shape[0] == 0 or coarse_matrix.shape[0] >= current.shape[0]:
-                break
-            levels.append(coarse_matrix)
-            prolongations.append(coarsening.last_prolongation)
-        return levels, prolongations
-
-    def run(
-        self,
-        matrix: torch.Tensor,
-        draw: Callable[[int], torch.Tensor],
-        seed_vectors: torch.Tensor | None = None,
-        test_vector_draw: Callable[[int], torch.Tensor] | None = None,
-    ) -> BootstrapAMGResult:
-        """Run the Bootstrap AMG setup algorithm.
-
-        Args:
-            matrix (torch.Tensor): SPD system matrix, shape ``(n, n)``.
-            draw (Callable[[int], torch.Tensor]): Uniform ``[0, 1)``
-                random-vector source for compatible relaxation's own
-                internal convergence-rate probe (``cr_rate``); CR's finite,
-                ``nu``-sweep power-iteration-style estimate is documented to
-                expect this specific distribution (a uniform start is
-                biased toward the near-constant/smooth mode CR's rate
-                measures alignment with) - passing a signed distribution
-                here (e.g. N(0,1)) can make CR's stopping criterion misfire
-                and collapse coarsening to a single level, independent of
-                what distribution the test vectors themselves come from.
-            seed_vectors (torch.Tensor | None): Known near-null vectors,
-                shape ``(n, k_seed)``, seeded alongside the ``k_r`` random
-                draws ([STATUS14] Table 3); ``None`` for no seeding.
-            test_vector_draw (Callable[[int], torch.Tensor] | None):
-                Random-vector source for the initial ``k_r`` test vectors
-                specifically ([STATUS14] Sec. 3's Table 1 uses N(0,1) here,
-                a different distribution than CR needs); ``None`` reuses
-                ``draw`` for this too, the historical behavior.
-
-        Returns:
-            BootstrapAMGResult: Level matrices, prolongations and the final
-            finest-level test vectors.
-        """
-        relaxation = GaussSeidelSmoother().smooth
-        vectors = _seeded_test_vectors(
-            matrix,
-            self.k_r,
-            test_vector_draw if test_vector_draw is not None else draw,
-            seed_vectors,
-        )
-        k_r_total = vectors.shape[1]
-        coarsening = self._coarsening_from(vectors, relaxation, draw)
-        levels, prolongations = self._build_levels(matrix, coarsening, relaxation)
-        vectors = coarsening.test_vectors_for(matrix)
-        # V^r only (no MGE columns yet) - the persistent state `_improve_levels`
-        # improves cycle over cycle; kept separate from whatever combined
-        # (V^r + V^e) vectors a given cycle feeds to `_build_levels` for
-        # fitting, so MGE columns never compound across cycles (see
-        # `_improve_levels`'s docstring).
-        relaxed_level_vectors = self._v_r_after_build(coarsening, levels, k_r_total)
-
-        for _ in range(self.n_bootstrap_cycles):
-            if len(levels) < 2:
-                break
-            relaxed_level_vectors = self._improve_levels(
-                levels, prolongations, relaxed_level_vectors
-            )
-            level_vectors = relaxed_level_vectors
-            if self.k_e > 0:
-                enriched = multigrid_eigensolver(
-                    levels, prolongations, self.k_e, relaxation, self.eta
-                )
-                level_vectors = self._merge_level_vectors(relaxed_level_vectors, enriched)
-            vectors = level_vectors[matrix.shape[0]]
-            coarsening = self._coarsening_from(vectors, relaxation, draw)
-            levels, prolongations = self._build_levels(
-                matrix, coarsening, relaxation, level_vectors=level_vectors
-            )
-            vectors = coarsening.test_vectors_for(matrix)
-            relaxed_level_vectors = self._v_r_after_build(coarsening, levels, k_r_total)
-
-        return BootstrapAMGResult(
-            matrices=tuple(levels), prolongations=tuple(prolongations), candidates=vectors
-        )
-
-
 class BootstrapAMGPreconditioner(AMGPreconditioner):
     """Bootstrap AMG preconditioner (BAMG), ``docs/bootstrap-amg.md``.
 
@@ -1253,15 +749,24 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
                 coarsen).
         """
         setup = BootstrapSetup(
-            nu=nu,
-            delta=delta,
-            theta_ad=theta_ad,
-            caliber=caliber,
-            gamma=gamma,
+            coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
+                vectors,
+                relaxation,
+                nu=nu,
+                delta=delta,
+                theta_ad=theta_ad,
+                caliber=caliber,
+                gamma=gamma,
+                use_lsr=use_lsr,
+                draw=draw,
+            ),
+            transfer_operator_factory=DenseTransferOperator,
+            relaxation=GaussSeidelSmoother().smooth,
+            setup_cycle=GS_SETUP_CYCLE,
             eta=eta,
             k_r=k_r,
-            use_lsr=use_lsr,
             k_e=k_e,
+            eigensolver=multigrid_eigensolver if k_e > 0 else None,
             n_bootstrap_cycles=n_bootstrap_cycles,
             max_levels=max_levels,
             max_coarse=max_coarse,
@@ -1321,5 +826,6 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             matrices=tuple(m.to(self._matrix) for m in self._result.matrices),
             prolongations=tuple(p.to(self._matrix) for p in self._result.prolongations),
             candidates=self._result.candidates,
+            transfer_operator_factory=self._result.transfer_operator_factory,
         )
         return moved.hierarchy

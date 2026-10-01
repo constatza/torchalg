@@ -39,10 +39,10 @@ from torchalg.preconditioners.implementations.amg._prolongation import (
     make_bridge,
 )
 from torchalg.preconditioners.implementations.amg._relaxation import symmetric_gauss_seidel
-from torchalg.preconditioners.implementations.amg._spectral import approximate_spectral_radius
-from torchalg.preconditioners.implementations.amg._tentative import fit_candidates
 from torchalg.preconditioners.implementations.amg.adaptive import adaptive_sa_hierarchy
 from torchalg.preconditioners.implementations.amg.smoothers import JacobiSmoother
+from torchalg.utils.spectral import approximate_spectral_radius
+from torchalg.utils.tentative import fit_candidates
 
 ATOL = 1e-11
 SOLVE_OMEGA = 0.67

@@ -2,16 +2,17 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.variants``
 (see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``. Each
-class bundles a fixed multigrid cycle and smoothed-aggregation coarsening with
-a weighted-Jacobi smoother by default. Use these parametrizable presets
-instead of wiring ``AMGPreconditioner`` manually when the standard SA-AMG
-configuration suffices.
+factory function bundles a fixed multigrid cycle and smoothed-aggregation
+coarsening with a weighted-Jacobi smoother by default, returning a plain
+``AMGPreconditioner``. Use these parametrizable presets instead of wiring
+``AMGPreconditioner`` manually when the standard SA-AMG configuration
+suffices.
 
 Note (DIP):
-    These are preset/factory leaf classes - they wire concrete domain objects
-    in their ``__init__``, the same pattern as ``JacobiPreconditioner``.
-    For custom wiring (neural coarsening, polynomial smoothers, etc.) use
-    ``AMGPreconditioner`` directly.
+    These are preset/factory functions - they wire concrete domain objects
+    and forward them to ``AMGPreconditioner``, the same pattern as
+    ``JacobiPreconditioner``. For custom wiring (neural coarsening,
+    polynomial smoothers, etc.) use ``AMGPreconditioner`` directly.
 
 References:
     - Vanek, P., Mandel, J., & Brezina, M. (1996). Algebraic multigrid by
@@ -38,12 +39,21 @@ if TYPE_CHECKING:
     from .protocols import MultigridSmoother
 
 
-class VCycleAMG(AMGPreconditioner):
-    """AMG preconditioner with V-cycle and smoothed aggregation (SA-AMG).
+def vcycle_amg(
+    matrix: torch.Tensor,
+    n_levels: int = 3,
+    smoother_omega: float | None = None,
+    prolongation_omega: float | None = None,
+    n_pre: int = 2,
+    n_post: int = 2,
+    theta: float = 0.25,
+    smoother: MultigridSmoother | None = None,
+) -> AMGPreconditioner:
+    """Build an AMG preconditioner with V-cycle and smoothed aggregation (SA-AMG).
 
     Standard choice for SPD problems arising from elliptic PDEs. One coarse-grid
     correction per level (gamma = 1). Optimal for isotropic problems; use
-    ``WCycleAMG`` when the convergence factor is poor.
+    ``wcycle_amg`` when the convergence factor is poor.
 
     Args:
         matrix (torch.Tensor): System matrix A (n x n), SPD.
@@ -70,55 +80,41 @@ class VCycleAMG(AMGPreconditioner):
             ``None`` selects weighted Jacobi. When supplied,
             ``smoother_omega`` must remain ``None``.
 
+    Returns:
+        AMGPreconditioner: Wired with smoothed-aggregation coarsening and a
+        V-cycle.
+
     References:
         - Vanek, Mandel & Brezina (1996), Sections 3-4 (SA-AMG, V-cycle
           convergence).
         - Briggs, Henson & McCormick (2000), Algorithm 3.7 (V-cycle).
     """
-
-    def __init__(
-        self,
-        matrix: torch.Tensor,
-        n_levels: int = 3,
-        smoother_omega: float | None = None,
-        prolongation_omega: float | None = None,
-        n_pre: int = 2,
-        n_post: int = 2,
-        theta: float = 0.25,
-        smoother: MultigridSmoother | None = None,
-    ) -> None:
-        """Wire smoothed-aggregation coarsening and a V-cycle into an AMGPreconditioner.
-
-        Args:
-            matrix (torch.Tensor): System matrix A (n x n), SPD.
-            n_levels (int): Number of hierarchy levels; must be at least 2.
-            smoother_omega (float | None): Relaxation damping; ``None`` is
-                ``1 / rho(D^-1 A)``.
-            prolongation_omega (float | None): Prolongation-smoothing damping;
-                ``None`` is ``(4/3) / rho(D^-1 A)``.
-            n_pre (int): Pre-smoothing steps.
-            n_post (int): Post-smoothing steps.
-            theta (float): Strength-of-connection threshold theta in (0, 1).
-            smoother (MultigridSmoother | None): Explicit solve-time
-                smoother, or ``None`` for weighted Jacobi.
-        """
-        super().__init__(
-            matrix=matrix,
-            coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
-            cycle=VCycle(
-                resolve_jacobi_default(smoother, smoother_omega),
-                n_pre=n_pre,
-                n_post=n_post,
-            ),
-            n_levels=n_levels,
-            linear=True,
-        )
+    return AMGPreconditioner(
+        matrix=matrix,
+        coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
+        cycle=VCycle(
+            resolve_jacobi_default(smoother, smoother_omega),
+            n_pre=n_pre,
+            n_post=n_post,
+        ),
+        n_levels=n_levels,
+        linear=True,
+    )
 
 
-class WCycleAMG(AMGPreconditioner):
-    """AMG preconditioner with W-cycle and smoothed aggregation (SA-AMG).
+def wcycle_amg(
+    matrix: torch.Tensor,
+    n_levels: int = 3,
+    smoother_omega: float | None = None,
+    prolongation_omega: float | None = None,
+    n_pre: int = 2,
+    n_post: int = 2,
+    theta: float = 0.25,
+    smoother: MultigridSmoother | None = None,
+) -> AMGPreconditioner:
+    """Build an AMG preconditioner with W-cycle and smoothed aggregation (SA-AMG).
 
-    More robust than ``VCycleAMG``: applies two coarse-grid corrections per
+    More robust than ``vcycle_amg``: applies two coarse-grid corrections per
     level (gamma = 2), recomputing the fine-grid residual between them. Better
     convergence factors for anisotropic problems at roughly twice the coarse-grid
     cost. For isotropic SPD problems the iteration counts will be similar to or
@@ -128,15 +124,19 @@ class WCycleAMG(AMGPreconditioner):
         matrix (torch.Tensor): System matrix A (n x n), SPD.
         n_levels (int): Number of hierarchy levels; must be at least 2.
         smoother_omega (float | None): Relaxation damping (same role as in
-            ``VCycleAMG``).
+            ``vcycle_amg``).
         prolongation_omega (float | None): Prolongation-smoothing damping
-            (same role as in ``VCycleAMG``).
+            (same role as in ``vcycle_amg``).
         n_pre (int): Pre-smoothing steps.
         n_post (int): Post-smoothing steps.
         theta (float): Strength-of-connection threshold theta in (0, 1).
         smoother (MultigridSmoother | None): Explicit solve-time smoother.
             ``None`` selects weighted Jacobi. When supplied,
             ``smoother_omega`` must remain ``None``.
+
+    Returns:
+        AMGPreconditioner: Wired with smoothed-aggregation coarsening and a
+        W-cycle.
 
     References:
         - Briggs, Henson & McCormick (2000), Section 3.3 (W-cycle /
@@ -151,41 +151,14 @@ class WCycleAMG(AMGPreconditioner):
           number for this citation was not independently verified against
           the paper text (paywalled) - cited for the general topic only.
     """
-
-    def __init__(
-        self,
-        matrix: torch.Tensor,
-        n_levels: int = 3,
-        smoother_omega: float | None = None,
-        prolongation_omega: float | None = None,
-        n_pre: int = 2,
-        n_post: int = 2,
-        theta: float = 0.25,
-        smoother: MultigridSmoother | None = None,
-    ) -> None:
-        """Wire smoothed-aggregation coarsening and a W-cycle into an AMGPreconditioner.
-
-        Args:
-            matrix (torch.Tensor): System matrix A (n x n), SPD.
-            n_levels (int): Number of hierarchy levels; must be at least 2.
-            smoother_omega (float | None): Relaxation damping; ``None`` is
-                ``1 / rho(D^-1 A)``.
-            prolongation_omega (float | None): Prolongation-smoothing damping;
-                ``None`` is ``(4/3) / rho(D^-1 A)``.
-            n_pre (int): Pre-smoothing steps.
-            n_post (int): Post-smoothing steps.
-            theta (float): Strength-of-connection threshold theta in (0, 1).
-            smoother (MultigridSmoother | None): Explicit solve-time
-                smoother, or ``None`` for weighted Jacobi.
-        """
-        super().__init__(
-            matrix=matrix,
-            coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
-            cycle=WCycle(
-                resolve_jacobi_default(smoother, smoother_omega),
-                n_pre=n_pre,
-                n_post=n_post,
-            ),
-            n_levels=n_levels,
-            linear=True,
-        )
+    return AMGPreconditioner(
+        matrix=matrix,
+        coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
+        cycle=WCycle(
+            resolve_jacobi_default(smoother, smoother_omega),
+            n_pre=n_pre,
+            n_post=n_post,
+        ),
+        n_levels=n_levels,
+        linear=True,
+    )

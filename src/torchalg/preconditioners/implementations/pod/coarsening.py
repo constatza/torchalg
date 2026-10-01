@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 from torch import nn
 
-from ..amg.transfer import DenseTransferOperator
-from .basis import compute_pod_basis
+from torchalg.utils.dense_transfer import DenseTransferOperator
+from torchalg.utils.pod_basis import compute_pod_basis
 
 if TYPE_CHECKING:
     import torch

@@ -1,4 +1,4 @@
-"""Fixtures for ``torchalg.utils`` (numerics/validation) tests.
+"""Fixtures for ``torchalg.utils`` (numerics/validation/pod_basis) tests.
 
 Modular, composable fixtures per project convention — no inline test data.
 Builds on the session-wide ``torch_dtype``/``to_torch`` fixtures from
@@ -12,10 +12,106 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
+from torchalg.utils.pod_basis import compute_pod_basis
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from numpy.typing import NDArray
+
+# =============================================================================
+# pod_basis / dense_transfer fixtures
+#
+# Deliberately self-contained (derived only from the root
+# ``poisson_1d_factory`` fixture, not reused from
+# ``tests/solver/preconditioners/conftest.py``'s equivalents): this mirrors
+# ``torchalg.utils.pod_basis``/``torchalg.utils.dense_transfer`` themselves
+# being dependency-free leaves, so their tests shouldn't reach into the
+# preconditioners test tree either.
+# =============================================================================
+
+
+@pytest.fixture
+def pod_poisson_1d(poisson_1d_factory: Callable[[int], torch.Tensor]) -> torch.Tensor:
+    """20x20 1D Poisson matrix (tridiagonal [-1, 2, -1]) for POD-basis tests.
+
+    Args:
+        poisson_1d_factory: Size-parametrized Poisson matrix factory
+            (``tests/conftest.py``).
+
+    Returns:
+        torch.Tensor: Dense 20x20 SPD tridiagonal matrix.
+    """
+    return poisson_1d_factory(20)
+
+
+@pytest.fixture
+def poisson_snapshots(pod_poisson_1d: torch.Tensor, test_seed: int) -> torch.Tensor:
+    """Snapshot ensemble spanning ``pod_poisson_1d``'s solution space.
+
+    Solves ``pod_poisson_1d @ x = b_i`` for several random RHS vectors, so a
+    full-rank POD basis recovers the solution space exactly and a truncated
+    basis approximates it.
+
+    Args:
+        pod_poisson_1d: The 20x20 Poisson matrix fixture.
+        test_seed: Fixed random seed for reproducibility.
+
+    Returns:
+        torch.Tensor: Snapshot ensemble, shape (15, 20) - one solution
+            vector per row.
+    """
+    generator = torch.Generator().manual_seed(test_seed)
+    n = pod_poisson_1d.shape[0]
+    rhs_batch = torch.randn(15, n, dtype=pod_poisson_1d.dtype, generator=generator)
+    return torch.linalg.solve(pod_poisson_1d, rhs_batch.T).T
+
+
+@pytest.fixture
+def pod_basis(poisson_snapshots: torch.Tensor) -> torch.Tensor:
+    """POD basis (rank 10) built from ``poisson_snapshots``.
+
+    Args:
+        poisson_snapshots: Snapshot ensemble fixture.
+
+    Returns:
+        torch.Tensor: Phi_r, shape (20, 10).
+    """
+    return compute_pod_basis(poisson_snapshots, rank=10)
+
+
+@pytest.fixture
+def snapshot_row_scales(poisson_snapshots: torch.Tensor) -> torch.Tensor:
+    """Distinct, strictly positive per-snapshot row scales for weighted-POD tests.
+
+    Args:
+        poisson_snapshots: Snapshot ensemble fixture.
+
+    Returns:
+        torch.Tensor: Shape (15,), values spread over [0.5, 2.0] so no two
+            snapshots carry the same weight.
+    """
+    return torch.linspace(0.5, 2.0, poisson_snapshots.shape[0], dtype=poisson_snapshots.dtype)
+
+
+@pytest.fixture
+def single_dominant_row_scales(poisson_snapshots: torch.Tensor) -> torch.Tensor:
+    """Row scales that leave only the first snapshot with meaningful weight.
+
+    Makes the weighted covariance effectively rank-1, so the leading POD mode
+    must align with the first snapshot's direction - the sharpest observable
+    consequence of row weighting reaching the SVD.
+
+    Args:
+        poisson_snapshots: Snapshot ensemble fixture.
+
+    Returns:
+        torch.Tensor: Shape (15,), ``[1.0, 1e-8, 1e-8, ...]``.
+    """
+    scales = torch.full((poisson_snapshots.shape[0],), 1e-8, dtype=poisson_snapshots.dtype)
+    scales[0] = 1.0
+    return scales
+
 
 # =============================================================================
 # stable_dot_product fixtures
@@ -78,6 +174,16 @@ def valid_spd_system(
     """
     a, b, x_exact = tridiagonal_system_known_solution
     return to_torch(a), to_torch(b), to_torch(x_exact)
+
+
+@pytest.fixture
+def csr_spd_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
+    """A finite SPD CSR matrix for sparse solver-validation coverage."""
+    matrix = torch.tensor(
+        [[2.0, -1.0, 0.0], [-1.0, 2.0, -1.0], [0.0, -1.0, 2.0]],
+        dtype=torch_dtype,
+    )
+    return matrix.to_sparse_csr()
 
 
 @pytest.fixture

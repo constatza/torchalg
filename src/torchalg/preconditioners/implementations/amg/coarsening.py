@@ -16,14 +16,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from torchalg.sparse import (
-    SparseTransferOperator,
-    form_sparse_sparse,
-    sparse_piecewise_constant_prolongation,
-    sparse_smoothed_prolongation,
-    sparse_standard_aggregation,
-    sparse_strength_of_connection,
-)
+from torchalg.utils.theta_search import adaptive_theta_scan
 
 from ._aggregation import (
     piecewise_constant_prolongation,
@@ -32,7 +25,6 @@ from ._aggregation import (
     strength_of_connection,
 )
 from ._jacobi_omega import PROLONGATION_NOMINAL, jacobi_omega
-from ._theta_search import adaptive_theta_scan
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 
 if TYPE_CHECKING:
@@ -42,7 +34,7 @@ if TYPE_CHECKING:
 @lru_cache(maxsize=1024)
 def _cached_aggregation_build_transfer(
     A: torch.Tensor, theta: float, omega: float | None
-) -> tuple[torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
+) -> tuple[torch.Tensor, DenseTransferOperator]:
     """Build (and cache) one `AggregationCoarsening` candidate for `(A, theta, omega)`.
 
     `A` hashes and compares by object identity (the default for
@@ -56,6 +48,13 @@ def _cached_aggregation_build_transfer(
 
 class AggregationCoarsening:
     """Smoothed aggregation AMG coarsening using dense tensors (SA-AMG).
+
+    Dense-only. See ``torchalg.sparse.preconditioners.amg.coarsening
+    .AggregationCoarsening`` for the sparse-CSR sibling (same name,
+    disambiguated by package, per ``docs/plan.md``'s "Correction: dense and
+    sparse must be separate implementations, not an internal branch") - the
+    caller picks which one to construct based on their matrix's actual
+    format, this class never imports or dispatches to the sparse one.
 
     Implements the five-step coarsening algorithm from Vanek, Mandel & Brezina
     (1996):
@@ -144,40 +143,25 @@ class AggregationCoarsening:
         omega_text = "auto" if omega is None else f"{omega:.3g}"
         return f"AggregationCoarsening(theta={self._theta:.3g}, omega={omega_text})"
 
-    def build_transfer(
-        self, A: torch.Tensor
-    ) -> tuple[torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
-        """Build one coarse level from fine-grid matrix A.
+    def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
+        """Build one coarse level from a dense fine-grid matrix A.
 
-        Dispatches on ``A.is_sparse_csr`` (format-follows-input, not a size
-        threshold - see ``docs/plan.md``'s "Wiring into existing
-        preconditioners"): sparse ``A`` in builds the strength/aggregation/
-        prolongation chain via ``torchalg.sparse``'s sparse-native kernels
-        end to end, never densifying ``A``; dense ``A`` in is the original,
-        unmodified path.
+        Dense-only - see ``torchalg.sparse.preconditioners.amg.coarsening
+        .AggregationCoarsening`` for the sparse-CSR sibling, per
+        ``docs/plan.md``'s "Correction: dense and sparse must be separate
+        implementations, not an internal branch".
 
         Args:
-            A (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``, dense
-                or sparse CSR. Named to match the ``CoarseningStrategy``
+            A (torch.Tensor): Dense fine-grid matrix ``A``, shape
+                ``(n, n)``. Named to match the ``CoarseningStrategy``
                 protocol's parameter name exactly (structural typing checks
                 parameter names for positional-or-keyword parameters).
 
         Returns:
-            tuple[torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
-                ``(A_coarse, transfer)`` where ``A_coarse`` is a dense
-                ``(n_c, n_c)`` tensor (the coarse dimension is small by
-                construction in both branches).
+            tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse,
+                transfer)`` where ``A_coarse`` is a dense ``(n_c, n_c)``
+                tensor (the coarse dimension is small by construction).
         """
-        if A.is_sparse_csr:
-            strength = sparse_strength_of_connection(A, self._theta)
-            aggregate = sparse_standard_aggregation(strength)
-            tentative = sparse_piecewise_constant_prolongation(aggregate, dtype=A.dtype)
-            omega = jacobi_omega(A, PROLONGATION_NOMINAL, self._omega)
-            prolongation = sparse_smoothed_prolongation(A, tentative, omega)
-
-            coarse_matrix = form_sparse_sparse(prolongation, A)
-            return coarse_matrix, SparseTransferOperator(prolongation)
-
         strength = strength_of_connection(A, self._theta)
         aggregate = standard_aggregation(strength)
         tentative = piecewise_constant_prolongation(aggregate, dtype=A.dtype)
@@ -354,9 +338,7 @@ class TargetDimensionCoarsening:
             f"realized_coarse_dim={self._realized_coarse_dim})"
         )
 
-    def build_transfer(
-        self, A: torch.Tensor
-    ) -> tuple[torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
+    def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
         """Search `theta`, then build the coarse level at the closest-matching value.
 
         The winning `theta` and its realized coarse dimension are cached as
@@ -372,7 +354,7 @@ class TargetDimensionCoarsening:
                 positional-or-keyword parameters).
 
         Returns:
-            tuple[torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
+            tuple[torch.Tensor, DenseTransferOperator]:
                 ``(A_coarse, transfer)`` from the `AggregationCoarsening`
                 candidate whose realized coarse dimension is closest to
                 ``target_coarse_dim``.
@@ -382,9 +364,7 @@ class TargetDimensionCoarsening:
         self._realized_coarse_dim = int(a_coarse.shape[0])
         return a_coarse, transfer
 
-    def _search(
-        self, A: torch.Tensor
-    ) -> tuple[float, torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
+    def _search(self, A: torch.Tensor) -> tuple[float, torch.Tensor, DenseTransferOperator]:
         """Adaptively scan the `theta` grid, keeping the closest match to `target_coarse_dim`.
 
         The sole extension point for swapping the search algorithm (e.g.
@@ -393,30 +373,29 @@ class TargetDimensionCoarsening:
         this class (`build_transfer`'s caching, the constructor) is
         independent of how the search itself is performed.
 
-        Sampling uses a cheap dimension-only probe (strength + aggregation,
-        skipping prolongation smoothing and the Galerkin product) for every
-        candidate `theta`, dispatching on ``A.is_sparse_csr`` the same way
-        `AggregationCoarsening.build_transfer` does; the full
+        Dense: builds against dense `AggregationCoarsening`. See
+        ``torchalg.sparse.preconditioners.amg.coarsening
+        .TargetDimensionCoarsening`` for the sparse-CSR sibling (same
+        search algorithm, via the shared `torchalg.utils.theta_search
+        .adaptive_theta_scan`, built against the sparse `AggregationCoarsening`
+        instead). Sampling uses a cheap dimension-only probe (strength +
+        aggregation, skipping prolongation smoothing and the Galerkin
+        product) for every candidate `theta`; the full
         `AggregationCoarsening.build_transfer` is called exactly once, at
         the winning `theta`.
 
         Args:
-            A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``, dense or
-                sparse CSR.
+            A (torch.Tensor): Dense fine-grid matrix, shape ``(n, n)``.
 
         Returns:
-            tuple[float, torch.Tensor, DenseTransferOperator | SparseTransferOperator]:
+            tuple[float, torch.Tensor, DenseTransferOperator]:
                 ``(theta, A_coarse, transfer)`` for the candidate whose
                 realized coarse dimension is closest to
                 ``target_coarse_dim``.
         """
 
         def realized_dimension(theta: float) -> int:
-            aggregate = (
-                sparse_standard_aggregation(sparse_strength_of_connection(A, theta))
-                if A.is_sparse_csr
-                else standard_aggregation(strength_of_connection(A, theta))
-            )
+            aggregate = standard_aggregation(strength_of_connection(A, theta))
             return int(aggregate.max().item()) + 1 if aggregate.numel() else 0
 
         samples = adaptive_theta_scan(

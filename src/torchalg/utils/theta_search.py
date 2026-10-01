@@ -1,9 +1,19 @@
 """Adaptive theta sampling for `TargetDimensionCoarsening`'s search.
 
-Isolated here, separate from `TargetDimensionCoarsening` (`coarsening.py`),
-per the project's helpers-isolated-in-their-own-file convention: the
-branchy adaptive-refinement loop lives here, the strategy class stays
-declarative orchestration.
+A dependency-free leaf under `torchalg.utils` (mirroring
+`torchalg.utils.spectral`'s precedent): this module operates purely on
+`float`s and a `Callable[[float], int]`, with no `torch` import and no
+dense/sparse assumption anywhere in it, so both the dense
+`torchalg.preconditioners.implementations.amg.coarsening.TargetDimensionCoarsening`
+and its sparse-CSR sibling in
+`torchalg.sparse.preconditioners.amg.coarsening` share this single
+implementation of the search itself, rather than each carrying (or
+duplicating) their own copy.
+
+Isolated here, separate from either `TargetDimensionCoarsening`, per the
+project's helpers-isolated-in-their-own-file convention: the branchy
+adaptive-refinement loop lives here, the strategy classes stay declarative
+orchestration.
 
 **The problem.** `theta -> realized coarse dimension` is a step function
 with plateaus of wildly varying width (a fraction of `step` to most of
