@@ -55,6 +55,15 @@ import torch
 
 from .triangular import _expand_row_index, _require_csr
 
+_SYNC_CHECK_STRIDE = 4
+"""Host-sync the round-loop's stop condition every this many rounds, not every round.
+
+See the ``bootcmatch_parallel_matching`` round loop for why this is safe:
+every round past true convergence is a provable no-op, so this only trades
+a few extra cheap tensor-op rounds (at most ``_SYNC_CHECK_STRIDE - 1``) for
+far fewer host-device round trips - the result is identical either way.
+"""
+
 
 def bootcmatch_parallel_matching(
     weights: torch.Tensor, fine_only_mask: torch.Tensor
@@ -95,7 +104,17 @@ def bootcmatch_parallel_matching(
     sentinel_col = n
     neg_inf = float("-inf")
 
-    while bool(active.any()):
+    # Host syncs (the `bool(...)` pull below) are themselves a measured
+    # setup-time bottleneck at scale (see docs/plan.md): checking every
+    # round forces one per round, and this loop runs once per coarsening
+    # level per hierarchy. Checking only every `_SYNC_CHECK_STRIDE` rounds
+    # cuts that by ~4x without changing `match_of`: once `active` is truly
+    # empty, every further round body is a no-op (`active[row]`/`active[col]`
+    # are all-False, so `valid` is all-False and nothing updates) - so the
+    # worst case is up to `_SYNC_CHECK_STRIDE - 1` extra no-op rounds, never
+    # a different result.
+    round_index = 0
+    while round_index % _SYNC_CHECK_STRIDE != 0 or bool(active.any()):
         valid = not_self_loop & active[row] & active[col]
         val_masked = torch.where(valid, val, torch.full_like(val, neg_inf))
 
@@ -122,5 +141,6 @@ def bootcmatch_parallel_matching(
         # (without it, a vertex with an exhausted neighborhood stays
         # `active` forever and the loop never ends).
         active = active & ~matched & has_valid
+        round_index += 1
 
     return match_of

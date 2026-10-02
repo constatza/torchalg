@@ -127,14 +127,20 @@ class BootCMatchSetup:
         max_coarse (int): Stop coarsening at this many coarse nodes.
         k_max (int): Power-iteration sweeps per outer-loop round.
         rho_desired (float): Target asymptotic convergence rate; the loop
-            stops adding hierarchies once the composite meets it.
+            stops adding hierarchies once the composite meets it. Default
+            0.8 matches the paper's own composite-AMG experiments (Section
+            7.3: "a bootstrap AMG when a convergence ratio p = 0.8 is
+            prescribed"), looser than this package's prior 0.7 default -
+            which was tighter than anything the paper itself used, and
+            therefore tended to burn through ``max_hierarchies`` on harder
+            problems instead of stopping early.
         max_hierarchies (int): Hard cap on the number of hierarchies in the
             composite, regardless of ``rho_desired``.
 
     References:
         - D'Ambra, Filippone, Vassilevski (2018). BootCMatch: a Software
           Package for Bootstrap AMG Based on Graph Weighted Matching.
-          ACM TOMS 44(4). Section 5.
+          ACM TOMS 44(4). Sections 5, 7.3.
     """
 
     coarsening_factory: _CoarseningFactory
@@ -143,7 +149,7 @@ class BootCMatchSetup:
     max_levels: int = 10
     max_coarse: int = 10
     k_max: int = 10
-    rho_desired: float = 0.7
+    rho_desired: float = 0.8
     max_hierarchies: int = 5
 
     def run(

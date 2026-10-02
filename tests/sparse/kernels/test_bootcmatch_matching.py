@@ -163,3 +163,32 @@ def test_dense_sparse_parity(
         _dense_to_sparse_edges(random_small_graph_dense), no_fine_only_small
     )
     assert torch.equal(dense_result, sparse_result)
+
+
+@pytest.fixture
+def random_large_graph_dense(torch_dtype: torch.dtype) -> torch.Tensor:
+    """100-vertex random weighted adjacency.
+
+    Large enough that the round-based matching needs more rounds than
+    ``_SYNC_CHECK_STRIDE``, exercising the batched host-sync path (not just
+    its first, always-checked round).
+    """
+    return _random_weighted_adjacency(100, seed=0, dtype=torch_dtype)
+
+
+@pytest.fixture
+def no_fine_only_large(torch_dtype: torch.dtype) -> torch.Tensor:
+    return torch.zeros(100, dtype=torch.bool)
+
+
+def test_dense_sparse_parity_multi_round(
+    random_large_graph_dense: torch.Tensor, no_fine_only_large: torch.Tensor
+) -> None:
+    """Batched sync-check must not change the result once it actually spans multiple checks."""
+    dense_result = dense_bootcmatch_parallel_matching(random_large_graph_dense, no_fine_only_large)
+    sparse_result = sparse_bootcmatch_parallel_matching(
+        _dense_to_sparse_edges(random_large_graph_dense), no_fine_only_large
+    )
+    assert torch.equal(dense_result, sparse_result)
+    matched = sparse_result != -1
+    assert torch.equal(sparse_result[sparse_result[matched]], torch.arange(100)[matched])

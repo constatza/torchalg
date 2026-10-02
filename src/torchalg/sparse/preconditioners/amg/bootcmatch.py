@@ -68,7 +68,8 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
         max_levels (int): Maximum number of levels per hierarchy.
         max_coarse (int): Stop coarsening at this many coarse nodes.
         k_max (int): Power-iteration sweeps per outer-loop round.
-        rho_desired (float): Target asymptotic convergence rate.
+        rho_desired (float): Target asymptotic convergence rate; see
+            ``BootCMatchSetup``'s docstring for the 0.8 default's rationale.
         max_hierarchies (int): Hard cap on the number of hierarchies in the
             composite.
         smoother (MultigridSmoother | None): Explicit solve-time smoother;
@@ -92,7 +93,7 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
         max_levels: int = 10,
         max_coarse: int = 10,
         k_max: int = 10,
-        rho_desired: float = 0.7,
+        rho_desired: float = 0.8,
         max_hierarchies: int = 5,
         smoother: MultigridSmoother | None = None,
         smoother_omega: float | None = None,

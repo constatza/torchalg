@@ -45,6 +45,15 @@ from __future__ import annotations
 
 import torch
 
+_SYNC_CHECK_STRIDE = 4
+"""Host-sync the round-loop's stop condition every this many rounds, not every round.
+
+See the sparse sibling's identical constant/comment
+(``torchalg.sparse.kernels.bootcmatch_matching``) for the no-op argument:
+this only trades a few extra cheap tensor-op rounds for far fewer
+host-device round trips, never a different result.
+"""
+
 
 def bootcmatch_parallel_matching(
     weights: torch.Tensor, fine_only_mask: torch.Tensor
@@ -77,7 +86,8 @@ def bootcmatch_parallel_matching(
 
     neg_inf = torch.full_like(weights, float("-inf"))
 
-    while bool(active.any()):
+    round_index = 0
+    while round_index % _SYNC_CHECK_STRIDE != 0 or bool(active.any()):
         row_mask = active.unsqueeze(0) & active.unsqueeze(1)
         masked = torch.where(row_mask, weights, neg_inf)
         masked = masked.clone()
@@ -101,5 +111,6 @@ def bootcmatch_parallel_matching(
         # exhausted forever - without this, such a vertex would keep
         # `active` true indefinitely and the loop would never terminate.
         active = active & ~matched & has_valid
+        round_index += 1
 
     return match_of

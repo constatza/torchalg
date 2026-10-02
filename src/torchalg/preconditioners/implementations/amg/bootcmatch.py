@@ -126,7 +126,7 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
         max_levels: int = 10,
         max_coarse: int = 10,
         k_max: int = 10,
-        rho_desired: float = 0.7,
+        rho_desired: float = 0.8,
         max_hierarchies: int = 5,
         smoother: MultigridSmoother | None = None,
         smoother_omega: float | None = None,
