@@ -44,3 +44,7 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 .claude/
+
+# Generated benchmark artefacts
+/artifacts/benchmarks/
+/benchmarks/**/results/

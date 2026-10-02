@@ -41,13 +41,14 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from torchalg.utils.spectral import approximate_spectral_radius
+from torchalg.utils.tentative import fit_candidates
+
 from ._aggregation import standard_aggregation
 from ._node_strength import node_strength
 from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
 from ._prolongation import jacobi_prolongation, make_bridge
 from ._relaxation import symmetric_gauss_seidel
-from ._spectral import approximate_spectral_radius
-from ._tentative import fit_candidates
 from .amg import AMGPreconditioner
 from .cycle import pseudo_inverse_solve
 from .hierarchy import MultigridHierarchy, MultigridLevel
@@ -484,8 +485,11 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         n_post (int): Solve-time post-smoothing sweeps.
 
     Note (DIP):
-        Preset/factory leaf class, same pattern as ``VCycleAMG`` and
-        ``POD2GPreconditioner``.
+        Preset/factory leaf class; unlike ``vcycle_amg`` and
+        ``pod2g_preconditioner`` (plain factory functions), this one
+        overrides ``_make_hierarchy()`` with genuinely different
+        hierarchy-construction logic, so it remains a subclass of
+        ``AMGPreconditioner``.
 
     References:
         - Brezina et al. (2005), SIAM Review 47(2); PyAMG 5.3.0.

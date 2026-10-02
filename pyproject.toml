@@ -15,11 +15,12 @@ dev = [
     "tach>=0.29.0",
     "ty>=0.0.22",
 ]
+benchmark = ["matplotlib>=3.10.0"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src", "tests"]
+src = ["src", "tests", "benchmarks"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -40,7 +41,7 @@ ignore = ["RUF022"]
 convention = "google"
 
 [tool.ty.src]
-include = ["src/torchalg", "tests"]
+include = ["src/torchalg", "tests", "benchmarks"]
 respect-ignore-files = true
 
 [tool.ty.rules]
@@ -59,7 +60,7 @@ include = ["tests/**"]
 no-matching-overload = "warn"
 
 [tool.ty.environment]
-root = ["src", "."]
+root = ["src", ".", "benchmarks"]
 python-version = "3.14"
 python-platform = "all"
 

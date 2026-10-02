@@ -68,16 +68,19 @@ def _apply_sweep(prepared: _PreparedSweep, x: torch.Tensor, rhs: torch.Tensor) -
 
     Args:
         prepared (_PreparedSweep): Direction's fixed triangular system.
-        x (torch.Tensor): Current iterate, shape ``(n,)``.
-        rhs (torch.Tensor): Right-hand side, shape ``(n,)``.
+        x (torch.Tensor): Current iterate, shape ``(n,)`` or ``(n, k)``.
+        rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
 
     Returns:
-        torch.Tensor: Iterate after the sweep.
+        torch.Tensor: Iterate after the sweep, same shape as ``x``.
     """
-    target = torch.where(prepared.frozen, x, rhs - prepared.other @ x)
-    return torch.linalg.solve_triangular(
-        prepared.triangle, target.unsqueeze(1), upper=prepared.upper
-    ).squeeze(1)
+    was_1d = x.ndim == 1
+    x2d = x.unsqueeze(-1) if was_1d else x
+    rhs2d = rhs.unsqueeze(-1) if was_1d else rhs
+    frozen = prepared.frozen.unsqueeze(-1)
+    target = torch.where(frozen, x2d, rhs2d - prepared.other @ x2d)
+    result = torch.linalg.solve_triangular(prepared.triangle, target, upper=prepared.upper)
+    return result.squeeze(-1) if was_1d else result
 
 
 def symmetric_gauss_seidel(
@@ -92,18 +95,19 @@ def symmetric_gauss_seidel(
 
     Args:
         matrix (torch.Tensor): Dense matrix ``A``, shape ``(n, n)``.
-        x (torch.Tensor): Initial iterate, shape ``(n,)``.
-        rhs (torch.Tensor): Right-hand side, shape ``(n,)``.
+        x (torch.Tensor): Initial iterate, shape ``(n,)`` or ``(n, k)``.
+        rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
         iterations (int): Number of symmetric iterations.
         rows (torch.Tensor | None): If given, only these rows (ascending
             indices) are updated - PyAMG's ``gauss_seidel_indexed``.
 
     Returns:
-        torch.Tensor: Updated iterate, shape ``(n,)``.
+        torch.Tensor: Updated iterate, same shape as ``x``.
     """
-    active = torch.ones_like(x, dtype=torch.bool)
+    n = x.shape[0]
+    active = torch.ones(n, dtype=torch.bool, device=x.device)
     if rows is not None:
-        active = torch.zeros_like(x, dtype=torch.bool)
+        active = torch.zeros(n, dtype=torch.bool, device=x.device)
         active[rows] = True
     forward_sweep = _prepare_sweep(matrix, forward=True, active=active)
     backward_sweep = _prepare_sweep(matrix, forward=False, active=active)

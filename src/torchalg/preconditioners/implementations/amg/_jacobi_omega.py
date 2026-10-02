@@ -27,7 +27,7 @@ import weakref
 
 import torch
 
-from ._spectral import approximate_spectral_radius
+from torchalg.utils.spectral import approximate_spectral_radius
 
 RELAXATION_NOMINAL = 1.0
 """Nominal Jacobi damping for relaxation: ``omega = 1 / rho``."""
@@ -42,11 +42,15 @@ _cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], torch.Tensor]] = {}
 def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     """``D^-1 A`` with ``D^-1`` zero where the diagonal is zero (PyAMG's ``get_diagonal(inv=True)``).
 
+    Dense-only - see ``torchalg.sparse.preconditioners.amg._jacobi_omega``
+    for the sparse-CSR sibling, per ``docs/plan.md``'s "Correction: dense
+    and sparse must be separate implementations, not an internal branch".
+
     Args:
-        matrix (torch.Tensor): Square matrix ``A``.
+        matrix (torch.Tensor): Square dense matrix ``A``.
 
     Returns:
-        torch.Tensor: Row-scaled matrix.
+        torch.Tensor: Row-scaled matrix, same format as ``matrix``.
     """
     diagonal = torch.diagonal(matrix)
     inverse = torch.where(diagonal != 0, 1.0 / diagonal, torch.zeros_like(diagonal))

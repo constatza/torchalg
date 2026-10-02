@@ -15,8 +15,8 @@ import torch
 from torchalg.preconditioners.implementations.amg import (
     AggregationCoarsening,
     JacobiSmoother,
-    VCycleAMG,
-    WCycleAMG,
+    vcycle_amg,
+    wcycle_amg,
 )
 from torchalg.preconditioners.implementations.amg import _jacobi_omega as jacobi_omega_module
 from torchalg.preconditioners.implementations.amg._jacobi_omega import (
@@ -25,7 +25,8 @@ from torchalg.preconditioners.implementations.amg._jacobi_omega import (
     jacobi_omega,
     jacobi_spectral_radius,
 )
-from torchalg.preconditioners.implementations.pod import POD2GPreconditioner
+from torchalg.preconditioners.implementations.amg.amg import AMGPreconditioner
+from torchalg.preconditioners.implementations.pod import pod2g_preconditioner
 from torchalg.preconditioners.implementations.pod.weighting import (
     apply_jacobi_damping,
     smoother_persistence_scales,
@@ -153,9 +154,9 @@ class TestProlongationSmoothing:
 
 
 class TestPresets:
-    @pytest.mark.parametrize("preset", [VCycleAMG, WCycleAMG])
+    @pytest.mark.parametrize("preset", [vcycle_amg, wcycle_amg])
     def test_split_parameters_replace_the_shared_omega(
-        self, preset: type, poisson_matrix: torch.Tensor
+        self, preset: Callable[..., AMGPreconditioner], poisson_matrix: torch.Tensor
     ) -> None:
         with pytest.raises(TypeError):
             preset(poisson_matrix, omega=0.67)
@@ -167,7 +168,7 @@ class TestPresets:
     def test_estimation_is_shared_and_not_repeated_per_apply(
         self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
-        precond = VCycleAMG(poisson_matrix.clone(), n_levels=3)
+        precond = vcycle_amg(poisson_matrix.clone(), n_levels=3)
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
         precond.apply(residual)
         after_first = len(estimator_calls)
@@ -183,10 +184,10 @@ class TestPresets:
             5, 64, generator=torch.Generator().manual_seed(4), dtype=torch_dtype
         )
         with pytest.raises(TypeError):
-            POD2GPreconditioner(poisson_matrix, snapshots, rank=3, omega=0.67)  # ty: ignore[unknown-argument]
+            pod2g_preconditioner(poisson_matrix, snapshots, rank=3, omega=0.67)  # ty: ignore[unknown-argument]
         residual = torch.ones(64, dtype=torch_dtype)
-        explicit = POD2GPreconditioner(poisson_matrix, snapshots, rank=3, smoother_omega=0.67)
-        default = POD2GPreconditioner(poisson_matrix, snapshots, rank=3)
+        explicit = pod2g_preconditioner(poisson_matrix, snapshots, rank=3, smoother_omega=0.67)
+        default = pod2g_preconditioner(poisson_matrix, snapshots, rank=3)
         assert not torch.allclose(explicit.apply(residual), default.apply(residual))
 
 

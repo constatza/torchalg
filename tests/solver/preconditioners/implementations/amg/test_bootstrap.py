@@ -10,22 +10,59 @@ consumer exists.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 import torch
 
 from torchalg import pcg
+from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
+from torchalg.preconditioners.implementations.amg._presets import GS_SETUP_CYCLE
 from torchalg.preconditioners.implementations.amg.bootstrap import (
     BAMGCoarsening,
     BootstrapAMGPreconditioner,
-    BootstrapAMGResult,
-    BootstrapSetup,
 )
 from torchalg.preconditioners.implementations.amg.protocols import MultigridSmoother
 from torchalg.preconditioners.implementations.amg.smoothers import (
     GaussSeidelSmoother,
     JacobiSmoother,
 )
+from torchalg.preconditioners.implementations.amg.transfer import DenseTransferOperator
+
+
+def _dense_bootstrap_setup(
+    *,
+    nu: int = 5,
+    delta: float = 0.7,
+    theta_ad: float = 0.5,
+    caliber: int = 4,
+    gamma: float = 1.5,
+    use_lsr: bool = True,
+    **other_setup_kwargs: Any,
+) -> BootstrapSetup:
+    """Build a dense ``BootstrapSetup``, mirroring ``BootstrapAMGPreconditioner.__init__``'s
+    own ``coarsening_factory``/``transfer_operator_factory`` wiring - the test-side
+    equivalent of what the preset builds internally, now that ``BAMGCoarsening``-specific
+    parameters (``nu``/``delta``/``theta_ad``/``caliber``/``gamma``/``use_lsr``) live only
+    in the injected factory closure, not as ``BootstrapSetup`` fields (see
+    ``torchalg.multigrid.bootstrap_setup``'s module docstring)."""
+    return BootstrapSetup(
+        coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
+            vectors,
+            relaxation,
+            nu=nu,
+            delta=delta,
+            theta_ad=theta_ad,
+            caliber=caliber,
+            gamma=gamma,
+            use_lsr=use_lsr,
+            draw=draw,
+        ),
+        transfer_operator_factory=DenseTransferOperator,
+        relaxation=GaussSeidelSmoother().smooth,
+        setup_cycle=GS_SETUP_CYCLE,
+        **other_setup_kwargs,
+    )
 
 
 @pytest.fixture
@@ -280,15 +317,15 @@ def test_bamg_coarsening_prolongation_has_no_all_zero_rows_for_tiny_test_vectors
 @pytest.fixture
 def bootstrap_setup_small() -> BootstrapSetup:
     """``BootstrapSetup`` with small counts, fast enough for a unit test."""
-    return BootstrapSetup(
+    return _dense_bootstrap_setup(
         nu=5,
         delta=0.7,
         theta_ad=0.5,
         caliber=3,
         gamma=1.5,
+        use_lsr=True,
         eta=2,
         k_r=4,
-        use_lsr=True,
         n_bootstrap_cycles=1,
         max_levels=4,
         max_coarse=4,
@@ -332,15 +369,15 @@ def test_bootstrap_setup_improve_levels_improves_every_level_except_coarsest(
     real simplification of Sec. 5 this module used to make (see ``run``'s previous
     ``TODO(bamg-fidelity, mandatory)`` marker).
     """
-    from torchalg.preconditioners.implementations.amg.bootstrap import (
+    from torchalg.multigrid.bootstrap_setup import (
         _hierarchy_of,
         _improve_test_vectors,
         _random_test_vectors,
     )
 
-    relaxation = GaussSeidelSmoother().smooth
+    relaxation = bootstrap_setup_small.relaxation
     vectors = _random_test_vectors(poisson_16, bootstrap_setup_small.k_r, bootstrap_draw)
-    coarsening = bootstrap_setup_small._coarsening_from(vectors, relaxation, bootstrap_draw)
+    coarsening = bootstrap_setup_small._coarsening_from(vectors, bootstrap_draw)
     levels, prolongations = bootstrap_setup_small._build_levels(poisson_16, coarsening, relaxation)
     assert len(levels) >= 3, "fixture must build >= 3 levels to distinguish per-level improvement"
     before = {level.shape[0]: coarsening.test_vectors_for(level) for level in levels[:-1]}
@@ -357,9 +394,15 @@ def test_bootstrap_setup_improve_levels_improves_every_level_except_coarsest(
         "implementation left every coarser level's improvement step a no-op"
     )
 
-    full_hierarchy = _hierarchy_of(levels, prolongations)
+    full_hierarchy = _hierarchy_of(
+        levels, prolongations, bootstrap_setup_small.transfer_operator_factory
+    )
     expected_finest = _improve_test_vectors(
-        poisson_16, before[poisson_16.shape[0]], full_hierarchy, bootstrap_setup_small.eta
+        poisson_16,
+        before[poisson_16.shape[0]],
+        full_hierarchy,
+        bootstrap_setup_small.eta,
+        bootstrap_setup_small.setup_cycle,
     )
     assert torch.equal(improved[poisson_16.shape[0]], expected_finest)
 
@@ -368,11 +411,8 @@ def test_seeded_test_vectors_concatenates_seed_columns_after_random_draws(
     poisson_16: torch.Tensor,
 ) -> None:
     """[STATUS14] Table 3 seeds a known near-null vector alongside ``k_r`` random draws, not instead of them."""
+    from torchalg.multigrid.bootstrap_setup import _random_test_vectors, _seeded_test_vectors
     from torchalg.preconditioners.implementations.amg._presets import seeded_draw
-    from torchalg.preconditioners.implementations.amg.bootstrap import (
-        _random_test_vectors,
-        _seeded_test_vectors,
-    )
 
     seed_vectors = torch.ones(poisson_16.shape[0], 1, dtype=poisson_16.dtype)
 
@@ -459,7 +499,9 @@ def test_bootstrap_setup_run_includes_mge_eigenvector_columns(
     TVs (``k = k_r + k_e``), not built in v1 but opt-in via ``k_e``."""
     from dataclasses import replace
 
-    setup = replace(bootstrap_setup_small, k_e=2)
+    from torchalg.preconditioners.implementations.amg._mge import multigrid_eigensolver
+
+    setup = replace(bootstrap_setup_small, k_e=2, eigensolver=multigrid_eigensolver)
 
     result = setup.run(poisson_16, bootstrap_draw)
 
@@ -501,7 +543,7 @@ def bootstrap_draw_seed0() -> Callable[[int], torch.Tensor]:
 @pytest.fixture
 def bootstrap_setup_default() -> BootstrapSetup:
     """``BootstrapSetup`` with the class's own defaults - matches the degenerate-level repro's parameters."""
-    return BootstrapSetup()
+    return _dense_bootstrap_setup()
 
 
 def test_bootstrap_setup_run_never_appends_a_degenerate_empty_coarse_level(

@@ -10,8 +10,8 @@ not scipy-sparse-backed.
 
 Public API:
     Presets (recommended entry points):
-        - VCycleAMG: SA-AMG with V-cycle; standard default.
-        - WCycleAMG: SA-AMG with W-cycle; more robust, higher cost per cycle.
+        - vcycle_amg: SA-AMG with V-cycle; standard default.
+        - wcycle_amg: SA-AMG with W-cycle; more robust, higher cost per cycle.
         - AdaptiveSAPreconditioner: alpha-SA, a port of PyAMG's
           ``adaptive_sa_solver``; learns the near-null-space candidates from A
           (``adaptive_sa_hierarchy``) instead of assuming constants. Setup
@@ -71,12 +71,12 @@ from .hierarchy import MultigridHierarchy, MultigridLevel
 from .protocols import CoarseningStrategy, MultigridCycle, MultigridSmoother, TransferOperator
 from .smoothers import GaussSeidelSmoother, JacobiSmoother, SmootherBase
 from .transfer import DenseTransferOperator, NeuralTransferOperator
-from .variants import VCycleAMG, WCycleAMG
+from .variants import vcycle_amg, wcycle_amg
 
 __all__ = [
     # Presets
-    "VCycleAMG",
-    "WCycleAMG",
+    "vcycle_amg",
+    "wcycle_amg",
     "AdaptiveSAPreconditioner",
     "AdaptiveSAResult",
     "adaptive_sa_hierarchy",

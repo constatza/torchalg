@@ -18,3 +18,18 @@ The solver layer is split into explicit dependency boundaries:
 
 Public solver entry points are `pcg()`, `flexible_cg()`, and
 `run_cg_comparison()`.
+
+`pcg()` and `flexible_cg()` run under inference mode by default; callers
+request autograd through an unrolled solve with `differentiable=True`.
+Returned `SolverResult` norms and histories are detached scalar telemetry,
+while the returned solution retains its gradient graph in differentiable
+mode.
+
+System validation accepts dense and PyTorch sparse tensors. For sparse
+matrices it validates stored values, since implicit entries are finite zeros
+and PyTorch does not implement `torch.isfinite` directly for CSR tensors.
+
+Sparse AMG keeps its existing greedy and compatible-relaxation coarsening
+algorithms as correctness baselines. Any tensor-parallel coarsening path is
+a separate algorithm and strategy, not an alternate implementation expected
+to reproduce the baseline's aggregate assignments.

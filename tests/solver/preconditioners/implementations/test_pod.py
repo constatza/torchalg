@@ -8,12 +8,13 @@ numpy to torch tensors, using the shared ``poisson_1d``/``poisson_rhs``/
 construction.
 
 Deviations from the reference:
-    - ``TestDenseTransferOperator`` imports ``DenseTransferOperator`` from
-      ``preconditioners.implementations.amg`` rather than
-      ``preconditioners.implementations.pod``: the POD package does not
-      define its own transfer-operator class (see
-      ``preconditioners.implementations.pod``'s module docstring) - the POD
-      basis is passed directly into the same dense P/R wrapper AMG uses.
+    - ``TestComputePodBasis`` and ``TestDenseTransferOperator`` have moved to
+      ``tests/solver/utils/test_pod_basis.py`` and
+      ``tests/solver/utils/test_dense_transfer.py`` respectively, mirroring
+      ``compute_pod_basis``/``DenseTransferOperator`` themselves being
+      promoted to dependency-free leaves under ``torchalg.utils`` (see
+      ``docs/plan.md``). This file keeps only the POD-2G-specific tests
+      (``PODCoarseningStrategy``, ``pod2g_preconditioner``).
     - ``TestPOD2GWithFCGSolver`` is active now that
       ``torchalg.flexible_cg`` has landed.
     - ``TestPOD2GConfigParsing``/``TestPOD2GFactory`` (TOML/Pydantic config
@@ -28,137 +29,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.preconditioners.implementations.amg import DenseTransferOperator, MultigridSmoother
+from torchalg.preconditioners.implementations.amg import MultigridSmoother
 from torchalg.preconditioners.implementations.pod import (
-    POD2GPreconditioner,
     PODCoarseningStrategy,
     compute_pod_basis,
+    pod2g_preconditioner,
 )
-
-# ---------------------------------------------------------------------------
-# compute_pod_basis
-# ---------------------------------------------------------------------------
-
-
-class TestComputePodBasis:
-    def test_output_shape(self, poisson_snapshots: torch.Tensor) -> None:
-        """Basis shape must be (n_dofs, rank)."""
-        basis = compute_pod_basis(poisson_snapshots, rank=10)
-        assert basis.shape == (20, 10)
-
-    def test_columns_orthonormal(self, pod_basis: torch.Tensor) -> None:
-        """Phi_r^T Phi_r must equal the identity (snapshot-method POD property)."""
-        gram = pod_basis.T @ pod_basis
-        torch.testing.assert_close(gram, torch.eye(10, dtype=pod_basis.dtype), atol=1e-8, rtol=0.0)
-
-    def test_rank_exceeds_samples_raises(self, poisson_snapshots: torch.Tensor) -> None:
-        """rank > n_samples must raise ValueError."""
-        with pytest.raises(ValueError, match="rank"):
-            compute_pod_basis(poisson_snapshots, rank=poisson_snapshots.shape[0] + 1)
-
-    def test_dtype_preserved_float32(self, poisson_snapshots: torch.Tensor) -> None:
-        """float32 input must produce a float32 basis (no silent upcast)."""
-        basis = compute_pod_basis(poisson_snapshots.to(torch.float32), rank=10)
-        assert basis.dtype == torch.float32
-
-    def test_dtype_preserved_float64(self, poisson_snapshots: torch.Tensor) -> None:
-        """float64 input must produce a float64 basis (no silent downcast)."""
-        basis = compute_pod_basis(poisson_snapshots.to(torch.float64), rank=10)
-        assert basis.dtype == torch.float64
-
-    def test_explicit_dtype_override(self, poisson_snapshots: torch.Tensor) -> None:
-        """An explicit dtype argument must override the input tensor's dtype."""
-        basis = compute_pod_basis(poisson_snapshots.to(torch.float64), rank=10, dtype=torch.float32)
-        assert basis.dtype == torch.float32
-
-    def test_energy_threshold_selects_fewer_modes_than_full_rank(
-        self, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """A energy threshold < 1.0 must retain strictly fewer modes than the full rank."""
-        basis = compute_pod_basis(poisson_snapshots, rank=0.999)
-        assert 0 < basis.shape[1] < poisson_snapshots.shape[0]
-
-    def test_energy_threshold_one_retains_full_rank(self, poisson_snapshots: torch.Tensor) -> None:
-        """rank=1.0 (100% energy) must retain min(n_samples, n_dofs) modes."""
-        basis = compute_pod_basis(poisson_snapshots, rank=1.0)
-        assert basis.shape[1] == min(poisson_snapshots.shape)
-
-    def test_energy_threshold_out_of_range_raises(self, poisson_snapshots: torch.Tensor) -> None:
-        """An energy threshold outside (0, 1] must raise ValueError."""
-        with pytest.raises(ValueError, match="energy threshold"):
-            compute_pod_basis(poisson_snapshots, rank=1.5)
-
-    def test_row_scales_none_matches_unweighted_basis(
-        self, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """``row_scales=None`` must reproduce today's exact unweighted basis."""
-        weighted = compute_pod_basis(poisson_snapshots, rank=10, row_scales=None)
-        unweighted = compute_pod_basis(poisson_snapshots, rank=10)
-        torch.testing.assert_close(weighted, unweighted)
-
-    def test_uniform_row_scales_leave_basis_unchanged(
-        self, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """A constant row scale rescales the covariance uniformly - same basis, up to sign."""
-        uniform = torch.full((poisson_snapshots.shape[0],), 3.0, dtype=poisson_snapshots.dtype)
-        weighted = compute_pod_basis(poisson_snapshots, rank=10, row_scales=uniform)
-        unweighted = compute_pod_basis(poisson_snapshots, rank=10)
-        torch.testing.assert_close(weighted.abs(), unweighted.abs(), atol=1e-6, rtol=1e-6)
-
-    def test_row_scales_still_orthonormal(
-        self, poisson_snapshots: torch.Tensor, snapshot_row_scales: torch.Tensor
-    ) -> None:
-        """Weighted-covariance POD must still return an orthonormal basis."""
-        basis = compute_pod_basis(poisson_snapshots, rank=10, row_scales=snapshot_row_scales)
-        gram = basis.T @ basis
-        torch.testing.assert_close(gram, torch.eye(10, dtype=basis.dtype), atol=1e-6, rtol=0.0)
-
-    def test_row_scales_reweight_the_svd(
-        self, poisson_snapshots: torch.Tensor, single_dominant_row_scales: torch.Tensor
-    ) -> None:
-        """Concentrating weight on one snapshot must align the leading mode with it.
-
-        Directly exercises the write-up's central claim: row scaling changes
-        *which* directions the SVD favors (unlike normalizing a snapshot's own
-        magnitude, which does not preferentially amplify any component).
-        """
-        basis = compute_pod_basis(poisson_snapshots, rank=1, row_scales=single_dominant_row_scales)
-        dominant_direction = poisson_snapshots[0] / poisson_snapshots[0].norm()
-        cosine = (basis[:, 0] @ dominant_direction).abs()
-        assert cosine > 0.999
-
-    def test_row_scales_shape_mismatch_raises(self, poisson_snapshots: torch.Tensor) -> None:
-        """``row_scales`` with the wrong length must raise ValueError, not broadcast silently."""
-        wrong_length = torch.ones(poisson_snapshots.shape[0] + 1, dtype=poisson_snapshots.dtype)
-        with pytest.raises(ValueError, match="row_scales"):
-            compute_pod_basis(poisson_snapshots, rank=10, row_scales=wrong_length)
-
-
-# ---------------------------------------------------------------------------
-# DenseTransferOperator (reused from amg, backed by a POD basis)
-# ---------------------------------------------------------------------------
-
-
-class TestDenseTransferOperator:
-    def test_prolongate_shape(self, pod_basis: torch.Tensor) -> None:
-        """Prolongate maps coarse (rank) -> fine (n_dofs)."""
-        transfer = DenseTransferOperator(pod_basis)
-        fine = transfer.prolongate(torch.ones(10, dtype=pod_basis.dtype))
-        assert fine.shape == (20,)
-
-    def test_restrict_shape(self, pod_basis: torch.Tensor) -> None:
-        """Restrict maps fine (n_dofs) -> coarse (rank)."""
-        transfer = DenseTransferOperator(pod_basis)
-        coarse = transfer.restrict(torch.ones(20, dtype=pod_basis.dtype))
-        assert coarse.shape == (10,)
-
-    def test_restrict_prolongate_consistency(self, pod_basis: torch.Tensor) -> None:
-        """restrict(prolongate(x)) == x since Phi_r^T Phi_r = I for orthonormal Phi_r."""
-        transfer = DenseTransferOperator(pod_basis)
-        x = torch.arange(10, dtype=pod_basis.dtype)
-        roundtrip = transfer.restrict(transfer.prolongate(x))
-        torch.testing.assert_close(roundtrip, x, atol=1e-8, rtol=0.0)
-
 
 # ---------------------------------------------------------------------------
 # PODCoarseningStrategy
@@ -227,7 +103,7 @@ class TestPODCoarseningStrategy:
         ``AMGPreconditioner`` changes required - this test proves that wiring
         actually works end-to-end, not just in isolation.
         """
-        precond = POD2GPreconditioner(poisson_1d.double(), poisson_snapshots.double(), rank=10)
+        precond = pod2g_preconditioner(poisson_1d.double(), poisson_snapshots.double(), rank=10)
 
         precond.to(dtype=torch.float32)
 
@@ -351,12 +227,15 @@ class TestPODCoarseningStrategyLifecycle:
 
 
 class TestPOD2GPreconditioner:
-    def test_string_is_owned_by_pod_preset(
+    def test_string_uses_generic_amg_format(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
-        """POD labeling does not require the generic AMG engine to know POD."""
-        precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
-        assert str(precond) == "POD-2G(rank=10)"
+        """pod2g_preconditioner returns a plain AMGPreconditioner, so its
+        __str__ is the generic AMG format embedding the POD coarsening's
+        own string, not a POD-specific override.
+        """
+        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        assert str(precond) == "AMG(n_levels=2, POD-2G(rank=10))"
 
     def test_apply_returns_correct_shape(
         self,
@@ -365,7 +244,7 @@ class TestPOD2GPreconditioner:
         poisson_snapshots: torch.Tensor,
     ) -> None:
         """apply() output must match residual shape."""
-        precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
         z = precond.apply(poisson_rhs)
         assert z.shape == poisson_rhs.shape
 
@@ -376,7 +255,7 @@ class TestPOD2GPreconditioner:
         poisson_snapshots: torch.Tensor,
     ) -> None:
         """apply() output dtype must match the working dtype (no float64 hardcode)."""
-        precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
         assert precond.apply(poisson_rhs).dtype == poisson_1d.dtype
 
     def test_uses_configured_smoother(
@@ -387,7 +266,7 @@ class TestPOD2GPreconditioner:
         raising_smoother: MultigridSmoother,
     ) -> None:
         """POD-2G must delegate solve-time smoothing to the injected strategy."""
-        precond = POD2GPreconditioner(
+        precond = pod2g_preconditioner(
             poisson_1d,
             snapshots=poisson_snapshots,
             rank=10,
@@ -400,7 +279,7 @@ class TestPOD2GPreconditioner:
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
         """POD-2G is a linear preconditioner and must not request FCG."""
-        precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
         assert precond.requires_flexible_cg is False
 
     def test_rejects_single_level_hierarchy(
@@ -408,7 +287,7 @@ class TestPOD2GPreconditioner:
     ) -> None:
         """POD-2G must keep its two-grid contract explicit."""
         with pytest.raises(ValueError, match="n_levels"):
-            POD2GPreconditioner(
+            pod2g_preconditioner(
                 poisson_1d,
                 snapshots=poisson_snapshots,
                 rank=10,
@@ -431,7 +310,7 @@ class TestPOD2GWithFCGSolver:
         """POD-2G-preconditioned FCG must converge on 1D Poisson."""
         from torchalg import flexible_cg
 
-        precond = POD2GPreconditioner(poisson_1d, snapshots=poisson_snapshots, rank=15)
+        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=15)
         x, info = flexible_cg(poisson_1d, poisson_rhs, preconditioner=precond, rtol=1e-8)
         assert info.converged, f"FCG+POD-2G did not converge: {info}"
         torch.testing.assert_close(poisson_1d @ x, poisson_rhs, rtol=1e-6, atol=1e-6)

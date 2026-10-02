@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
-from torchalg.preconditioners.implementations.amg import VCycleAMG, WCycleAMG
+from torchalg.preconditioners.implementations.amg import vcycle_amg, wcycle_amg
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,8 +45,8 @@ TEST_CASES = [
 ]
 
 AMG_CLASSES = [
-    pytest.param(VCycleAMG, id="VCycleAMG"),
-    pytest.param(WCycleAMG, id="WCycleAMG"),
+    pytest.param(vcycle_amg, id="vcycle_amg"),
+    pytest.param(wcycle_amg, id="wcycle_amg"),
 ]
 
 
@@ -69,7 +69,7 @@ def test_amg_variant_converges(
     Args:
         n: Problem size.
         n_levels: Hierarchy depth.
-        amg_class: VCycleAMG or WCycleAMG.
+        amg_class: vcycle_amg or wcycle_amg.
         request: Pytest fixture request.
         poisson_1d_factory: Size-parametrized Poisson matrix factory.
     """
@@ -116,10 +116,10 @@ def test_wcycle_iters_not_worse_than_vcycle(
     b = torch.ones(n, dtype=a.dtype)
 
     _, info_v = flexible_cg(
-        a, b, preconditioner=VCycleAMG(a, n_levels=n_levels), rtol=1e-8, maxiter=200
+        a, b, preconditioner=vcycle_amg(a, n_levels=n_levels), rtol=1e-8, maxiter=200
     )
     _, info_w = flexible_cg(
-        a, b, preconditioner=WCycleAMG(a, n_levels=n_levels), rtol=1e-8, maxiter=200
+        a, b, preconditioner=wcycle_amg(a, n_levels=n_levels), rtol=1e-8, maxiter=200
     )
 
     assert info_v.converged and info_w.converged, "At least one variant did not converge"

@@ -109,6 +109,18 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     IKJ loop, so results are bit-identical; only the inner two loops become
     one vectorized op each, per ``k``.
 
+    The mask is applied via an in-place ``masked_fill_`` on the outer
+    product itself, not ``torch.where`` against a freshly allocated
+    zero-tensor: ``where`` needs its "false" branch materialized at the
+    trailing block's full size before it can select from it, so per step it
+    was allocating two full ``(n-k, n-k)`` tensors (the zero branch, then
+    the selected result) on top of the outer product that's actually
+    needed. ``masked_fill_`` reuses the outer product's own buffer, cutting
+    that to zero extra allocations - this loop runs ``n`` times, so the
+    saved allocations are the dominant per-step cost at moderate ``n``.
+    The complement mask is also precomputed once, outside the loop, since
+    ``~sparsity_mask`` doesn't depend on ``k``.
+
     Args:
         matrix (torch.Tensor): Symmetric positive-definite system matrix
             ``A``, shape ``(n, n)``.
@@ -122,6 +134,7 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     """
     n = matrix.shape[0]
     sparsity_mask = ic0_sparsity_mask(matrix, threshold)
+    not_sparsity_mask = ~sparsity_mask
 
     factor = torch.where(sparsity_mask, torch.tril(matrix), torch.zeros_like(matrix))
 
@@ -141,8 +154,8 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
         column = factor[k + 1 :, k] / factor[k, k]
         factor[k + 1 :, k] = column
 
-        trailing_mask = sparsity_mask[k + 1 :, k + 1 :]
         update = torch.outer(column, column)
-        factor[k + 1 :, k + 1 :] -= torch.where(trailing_mask, update, torch.zeros_like(update))
+        update.masked_fill_(not_sparsity_mask[k + 1 :, k + 1 :], 0)
+        factor[k + 1 :, k + 1 :] -= update
 
     return factor

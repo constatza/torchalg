@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from torchalg.utils.theta_search import adaptive_theta_scan
+
 from ._aggregation import (
     piecewise_constant_prolongation,
     smoothed_prolongation,
@@ -23,7 +25,6 @@ from ._aggregation import (
     strength_of_connection,
 )
 from ._jacobi_omega import PROLONGATION_NOMINAL, jacobi_omega
-from ._theta_search import adaptive_theta_scan
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 
 if TYPE_CHECKING:
@@ -47,6 +48,13 @@ def _cached_aggregation_build_transfer(
 
 class AggregationCoarsening:
     """Smoothed aggregation AMG coarsening using dense tensors (SA-AMG).
+
+    Dense-only. See ``torchalg.sparse.preconditioners.amg.coarsening
+    .AggregationCoarsening`` for the sparse-CSR sibling (same name,
+    disambiguated by package, per ``docs/plan.md``'s "Correction: dense and
+    sparse must be separate implementations, not an internal branch") - the
+    caller picks which one to construct based on their matrix's actual
+    format, this class never imports or dispatches to the sparse one.
 
     Implements the five-step coarsening algorithm from Vanek, Mandel & Brezina
     (1996):
@@ -136,18 +144,23 @@ class AggregationCoarsening:
         return f"AggregationCoarsening(theta={self._theta:.3g}, omega={omega_text})"
 
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
-        """Build one coarse level from fine-grid matrix A.
+        """Build one coarse level from a dense fine-grid matrix A.
+
+        Dense-only - see ``torchalg.sparse.preconditioners.amg.coarsening
+        .AggregationCoarsening`` for the sparse-CSR sibling, per
+        ``docs/plan.md``'s "Correction: dense and sparse must be separate
+        implementations, not an internal branch".
 
         Args:
-            A (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``. Named
-                to match the ``CoarseningStrategy`` protocol's parameter
-                name exactly (structural typing checks parameter names for
-                positional-or-keyword parameters).
+            A (torch.Tensor): Dense fine-grid matrix ``A``, shape
+                ``(n, n)``. Named to match the ``CoarseningStrategy``
+                protocol's parameter name exactly (structural typing checks
+                parameter names for positional-or-keyword parameters).
 
         Returns:
             tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse,
                 transfer)`` where ``A_coarse`` is a dense ``(n_c, n_c)``
-                tensor.
+                tensor (the coarse dimension is small by construction).
         """
         strength = strength_of_connection(A, self._theta)
         aggregate = standard_aggregation(strength)
@@ -341,9 +354,9 @@ class TargetDimensionCoarsening:
                 positional-or-keyword parameters).
 
         Returns:
-            tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse,
-                transfer)`` from the `AggregationCoarsening` candidate whose
-                realized coarse dimension is closest to
+            tuple[torch.Tensor, DenseTransferOperator]:
+                ``(A_coarse, transfer)`` from the `AggregationCoarsening`
+                candidate whose realized coarse dimension is closest to
                 ``target_coarse_dim``.
         """
         theta, a_coarse, transfer = self._search(A)
@@ -360,18 +373,25 @@ class TargetDimensionCoarsening:
         this class (`build_transfer`'s caching, the constructor) is
         independent of how the search itself is performed.
 
-        Sampling uses a cheap dimension-only probe (strength + aggregation,
-        skipping prolongation smoothing and the Galerkin product) for every
-        candidate `theta`; the full `AggregationCoarsening.build_transfer`
-        is called exactly once, at the winning `theta`.
+        Dense: builds against dense `AggregationCoarsening`. See
+        ``torchalg.sparse.preconditioners.amg.coarsening
+        .TargetDimensionCoarsening`` for the sparse-CSR sibling (same
+        search algorithm, via the shared `torchalg.utils.theta_search
+        .adaptive_theta_scan`, built against the sparse `AggregationCoarsening`
+        instead). Sampling uses a cheap dimension-only probe (strength +
+        aggregation, skipping prolongation smoothing and the Galerkin
+        product) for every candidate `theta`; the full
+        `AggregationCoarsening.build_transfer` is called exactly once, at
+        the winning `theta`.
 
         Args:
-            A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
+            A (torch.Tensor): Dense fine-grid matrix, shape ``(n, n)``.
 
         Returns:
-            tuple[float, torch.Tensor, DenseTransferOperator]: ``(theta,
-                A_coarse, transfer)`` for the candidate whose realized
-                coarse dimension is closest to ``target_coarse_dim``.
+            tuple[float, torch.Tensor, DenseTransferOperator]:
+                ``(theta, A_coarse, transfer)`` for the candidate whose
+                realized coarse dimension is closest to
+                ``target_coarse_dim``.
         """
 
         def realized_dimension(theta: float) -> int:

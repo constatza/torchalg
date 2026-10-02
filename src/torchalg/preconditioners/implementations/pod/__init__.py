@@ -19,7 +19,7 @@ already anticipated this reuse.
 
 Public API:
     Preset (recommended entry point):
-        - POD2GPreconditioner: POD-2G bundled with VCycle + JacobiSmoother by
+        - pod2g_preconditioner: POD-2G bundled with VCycle + JacobiSmoother by
           default; accepts any MultigridSmoother for paper-aligned GS or other
           solve-time relaxation strategies.
 
@@ -56,9 +56,10 @@ References:
       large-scale parametrized systems. arXiv:2207.02543.
 """
 
-from .basis import compute_pod_basis
+from torchalg.utils.pod_basis import compute_pod_basis
+
 from .coarsening import PODCoarseningStrategy
-from .variants import POD2GPreconditioner
+from .variants import pod2g_preconditioner
 from .weighting import (
     apply_jacobi_damping,
     apply_jacobi_damping_trajectory,
@@ -70,7 +71,7 @@ from .weighting import (
 
 __all__ = [
     # Preset
-    "POD2GPreconditioner",
+    "pod2g_preconditioner",
     # Core
     "PODCoarseningStrategy",
     "compute_pod_basis",

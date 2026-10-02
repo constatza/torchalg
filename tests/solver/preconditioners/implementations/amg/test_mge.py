@@ -157,18 +157,31 @@ def test_multigrid_eigensolver_enriches_every_level_except_coarsest(
     produces ``k_e``-column eigenvector approximations for every level except the coarsest,
     which is only the algorithm's starting point, never a *consumer* of enrichment.
     """
-    from torchalg.preconditioners.implementations.amg._presets import seeded_draw
-    from torchalg.preconditioners.implementations.amg.bootstrap import (
-        BootstrapSetup,
-        _random_test_vectors,
+    from torchalg.multigrid.bootstrap_setup import BootstrapSetup, _random_test_vectors
+    from torchalg.preconditioners.implementations.amg._presets import (
+        GS_SETUP_CYCLE,
+        seeded_draw,
     )
+    from torchalg.preconditioners.implementations.amg.bootstrap import BAMGCoarsening
+    from torchalg.preconditioners.implementations.amg.transfer import DenseTransferOperator
 
     matrix = poisson_1d_factory(16)
-    setup = BootstrapSetup(caliber=3, eta=2, k_r=4, max_levels=4, max_coarse=4)
     relaxation = GaussSeidelSmoother().smooth
+    setup = BootstrapSetup(
+        coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
+            vectors, relaxation, caliber=3, draw=draw
+        ),
+        transfer_operator_factory=DenseTransferOperator,
+        relaxation=relaxation,
+        setup_cycle=GS_SETUP_CYCLE,
+        eta=2,
+        k_r=4,
+        max_levels=4,
+        max_coarse=4,
+    )
     draw = seeded_draw(7)
     vectors = _random_test_vectors(matrix, setup.k_r, draw)
-    coarsening = setup._coarsening_from(vectors, relaxation, draw)
+    coarsening = setup._coarsening_from(vectors, draw)
     levels, prolongations = setup._build_levels(matrix, coarsening, relaxation)
     assert len(levels) >= 3, "fixture must build >= 3 levels for a meaningful multi-level check"
 

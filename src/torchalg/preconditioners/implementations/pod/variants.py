@@ -15,26 +15,35 @@ if TYPE_CHECKING:
     from ..amg.protocols import MultigridSmoother
 
 
-class POD2GPreconditioner(AMGPreconditioner):
-    """POD-2G preconditioner (Nikolopoulos et al. 2022, §3.3-3.4).
+def pod2g_preconditioner(
+    matrix: torch.Tensor,
+    snapshots: torch.Tensor,
+    rank: float,
+    n_levels: int = 2,
+    smoother_omega: float | None = None,
+    n_pre: int = 2,
+    n_post: int = 2,
+    smoother: MultigridSmoother | None = None,
+) -> AMGPreconditioner:
+    """Build a POD-2G preconditioner (Nikolopoulos et al. 2022, §3.3-3.4).
 
     Bundles a V-cycle, weighted-Jacobi relaxation, and POD coarsening into a
-    single, parametrizable object - the AMG-inspired two-grid method where
-    the prolongation/restriction operator is a POD basis fit to a snapshot
-    ensemble, instead of algebraic aggregation. Use this instead of wiring
-    ``AMGPreconditioner`` manually when the standard POD-2G configuration
-    suffices; for custom coarsening/cycle combinations, use
+    single, parametrizable ``AMGPreconditioner`` - the AMG-inspired two-grid
+    method where the prolongation/restriction operator is a POD basis fit to
+    a snapshot ensemble, instead of algebraic aggregation. Use this instead
+    of wiring ``AMGPreconditioner`` manually when the standard POD-2G
+    configuration suffices; for custom coarsening/cycle combinations, use
     ``AMGPreconditioner`` directly with a ``PODCoarseningStrategy``.
 
     Two deliberate deviations from Nikolopoulos et al. (2022) worth
-    disclosing explicitly, since the class-level citation otherwise implies
+    disclosing explicitly, since the module-level citation otherwise implies
     a straight implementation of their §3.3-3.4 two-grid algorithm:
 
     - **Relaxation**: the paper's Algorithm 2 uses undamped Gauss-Seidel
       pre/post smoothing (``K = L + V``, ``u_{m+1} = L^{-1} r_m``), which
-      has no damping parameter. This class uses weighted Jacobi instead
+      has no damping parameter. This function uses weighted Jacobi instead
       (``smoother_omega`` below), reusing the same smoother as this codebase's
-      algebraic ``VCycleAMG``/``WCycleAMG`` for a uniform, more easily
+      algebraic ``vcycle_amg``/``wcycle_amg`` for a uniform, more easily
       parallelized ``SmootherBase`` across all AMG-family presets. The
       default damping ``1 / rho(D^-1 A)`` (PyAMG's relaxation rule, see
       ``JacobiSmoother``) is not derived from - or needed by - the
@@ -52,13 +61,13 @@ class POD2GPreconditioner(AMGPreconditioner):
       snapshot source is used.
 
     Note (DIP):
-        This is a preset/factory leaf class - it wires concrete domain
-        objects in ``__init__``, the same pattern as ``VCycleAMG``/
-        ``WCycleAMG`` (``preconditioners.implementations.amg.variants``).
-        All persistent tensor state (the finest-level matrix, and - once
-        built - the multigrid hierarchy) is owned and buffer-managed by the
-        inherited ``AMGPreconditioner``/``nn.Module`` machinery; this class
-        adds no state of its own.
+        This is a preset/factory function - it wires concrete domain
+        objects and forwards them to ``AMGPreconditioner``, the same
+        pattern as ``vcycle_amg``/``wcycle_amg``
+        (``preconditioners.implementations.amg.variants``). All persistent
+        tensor state (the finest-level matrix, and - once built - the
+        multigrid hierarchy) is owned and buffer-managed by
+        ``AMGPreconditioner``/``nn.Module`` machinery.
 
     Args:
         matrix (torch.Tensor): System matrix A (n x n), SPD.
@@ -78,53 +87,27 @@ class POD2GPreconditioner(AMGPreconditioner):
             ``None`` selects weighted Jacobi. When supplied,
             ``smoother_omega`` must remain ``None``.
 
+    Returns:
+        AMGPreconditioner: Wired with POD coarsening and a V-cycle. Its
+        ``__str__`` is ``AMGPreconditioner``'s generic
+        ``"AMG(n_levels=..., <coarsening>)"`` format (e.g.
+        ``"AMG(n_levels=2, POD-2G(rank=10))"``), not a POD-specific override.
+
     References:
         - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos,
           V. (2022). AI-enhanced iterative solvers for accelerating the
           solution of large-scale parametrized systems. arXiv:2207.02543.
     """
-
-    def __init__(
-        self,
-        matrix: torch.Tensor,
-        snapshots: torch.Tensor,
-        rank: float,
-        n_levels: int = 2,
-        smoother_omega: float | None = None,
-        n_pre: int = 2,
-        n_post: int = 2,
-        smoother: MultigridSmoother | None = None,
-    ) -> None:
-        """Wire POD coarsening and a V-cycle into an AMGPreconditioner.
-
-        Args:
-            matrix (torch.Tensor): System matrix A (n x n), SPD.
-            snapshots (torch.Tensor): Solution snapshot ensemble, shape
-                (n_samples, n_dofs).
-            rank (int | float): Fixed mode count (int) or minimum cumulative
-                captured energy (float in (0, 1]).
-            n_levels (int): Total number of grid levels; must be at least 2.
-            smoother_omega (float | None): Weighted-Jacobi damping for pre/post
-                relaxation; ``None`` is ``1 / rho(D^-1 A)``.
-            n_pre (int): Pre-smoothing steps.
-            n_post (int): Post-smoothing steps.
-            smoother (MultigridSmoother | None): Explicit solve-time
-                smoother, or ``None`` for weighted Jacobi.
-        """
-        coarsening = PODCoarseningStrategy(rank=rank)
-        coarsening.fit(snapshots)
-        super().__init__(
-            matrix=matrix,
-            coarsening=coarsening,
-            cycle=VCycle(
-                resolve_jacobi_default(smoother, smoother_omega),
-                n_pre=n_pre,
-                n_post=n_post,
-            ),
-            n_levels=n_levels,
-            linear=True,
-        )
-
-    def __str__(self) -> str:
-        """Return the POD-specific structural summary."""
-        return str(self.coarsening)
+    coarsening = PODCoarseningStrategy(rank=rank)
+    coarsening.fit(snapshots)
+    return AMGPreconditioner(
+        matrix=matrix,
+        coarsening=coarsening,
+        cycle=VCycle(
+            resolve_jacobi_default(smoother, smoother_omega),
+            n_pre=n_pre,
+            n_post=n_post,
+        ),
+        n_levels=n_levels,
+        linear=True,
+    )

@@ -19,7 +19,7 @@ snapshot data does (e.g. a checkpointed training-job definition) and be
 reconstructed from a `state_dict` without recomputing the SVD - the resolved
 mode count is readable afterward via the `rank` property. `build_transfer`
 and `rank` both raise `RuntimeError` if called before `fit()`.
-`POD2GPreconditioner` still takes `snapshots` in one call and fits internally,
+`pod2g_preconditioner` still takes `snapshots` in one call and fits internally,
 so its public signature is unchanged.
 
 `compute_pod_basis`/`PODCoarseningStrategy.fit` take an optional `row_scales`
@@ -103,9 +103,9 @@ The POD helpers `apply_jacobi_damping[_trajectory]` and
 `smoother_persistence_scales` default to the relaxation rule as well.
 Gauss-Seidel has no damping parameter.
 
-All preset solve cycles accept a `smoother` strategy. `VCycleAMG`,
-`WCycleAMG`, `AdaptiveSAPreconditioner`, `BootstrapAMGPreconditioner`, and
-`POD2GPreconditioner` all default to weighted Jacobi for solve-time
+All preset solve cycles accept a `smoother` strategy. `vcycle_amg`,
+`wcycle_amg`, `AdaptiveSAPreconditioner`, `BootstrapAMGPreconditioner`, and
+`pod2g_preconditioner` all default to weighted Jacobi for solve-time
 performance; supplying both a custom smoother and `smoother_omega` is
 rejected because the damping belongs only to the Jacobi default. In both
 adaptive SA and BAMG, this solve-time choice is deliberately isolated from
@@ -129,7 +129,8 @@ give it the same "set the coarse dimension directly" ergonomics
 `PODCoarseningStrategy`'s `rank` already has: realized coarse dimension vs.
 `theta` is an emergent, empirically step-function (not smooth, not
 monotonic) response, so `_search` uses `adaptive_theta_scan`
-(`_theta_search.py`) - a cheap dimension-only probe (strength +
+(`torchalg.utils.theta_search` - a dependency-free leaf shared with the
+sparse `TargetDimensionCoarsening` sibling) - a cheap dimension-only probe (strength +
 aggregation, skipping prolongation smoothing and the Galerkin product) over
 a log-spaced coarse pass plus bisection of every disagreeing interval - and
 pays for a full `AggregationCoarsening.build_transfer` exactly once, at the

@@ -178,9 +178,14 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             state,
             self.convergence_criterion,
         )
-        # Convert rhs_norm to float if needed for history extraction
+        # Regression: ``float(state.rhs_norm)`` emitted PyTorch's
+        # gradient-tracked-scalar warning for ``differentiable=True`` solves.
+        # SolverResult/history values are non-differentiable telemetry, so
+        # detach them without altering the returned solution's graph.
         rhs_norm_for_history = (
-            float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+            float(state.rhs_norm.detach())
+            if isinstance(state.rhs_norm, torch.Tensor)
+            else state.rhs_norm
         )
         (
             residual_abs_hist,
@@ -201,12 +206,14 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
 
         # Convert tensor-or-float norms to float for SolverResult
         residual_norm_float = (
-            float(state.residual_norm)
+            float(state.residual_norm.detach())
             if isinstance(state.residual_norm, torch.Tensor)
             else state.residual_norm
         )
         rhs_norm_float = (
-            float(state.rhs_norm) if isinstance(state.rhs_norm, torch.Tensor) else state.rhs_norm
+            float(state.rhs_norm.detach())
+            if isinstance(state.rhs_norm, torch.Tensor)
+            else state.rhs_norm
         )
 
         return SolverResult(
