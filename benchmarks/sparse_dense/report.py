@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI: read run_benchmark.py's results CSV, print a decision table, and plot scaling curves.
+"""CLI: read ``run`` results, print a decision table, and plot scaling curves.
 
 Answers the actual question this benchmark exists for: which operations
 should become sparse, and should they run on CPU or GPU - not just "here
@@ -24,8 +24,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = Path(__file__).with_name("results")
-PLOTS_DIR = RESULTS_DIR / "plots"
+DEFAULT_ARTIFACTS_DIR = Path("artifacts/benchmarks/sparse_dense")
+DEFAULT_PLOTS_DIR = DEFAULT_ARTIFACTS_DIR / "plots"
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class Row:
 
 
 def read_rows(csv_path: Path) -> list[Row]:
-    """Parse ``run_benchmark.py``'s output CSV into typed rows.
+    """Parse ``run`` output CSV into typed rows.
 
     Args:
         csv_path: Path to the results CSV.
@@ -85,7 +85,7 @@ def find_crossover(
 ) -> float | None:
     """Find the x-value where series B's time first overtakes (becomes faster than) series A's.
 
-    Both series must share the same x-values (as ``run_benchmark.py``'s
+    Both series must share the same x-values (as ``run``'s
     shared ``--sizes``/``--k-values`` sweep guarantees); only x-values
     present in both are compared.
 
@@ -249,8 +249,8 @@ def plot_galerkin_k_sweep(rows: list[Row], output_dir: Path) -> None:
 def main() -> None:
     """Parse CLI args, print the decision table, and generate scaling plots."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=RESULTS_DIR / "results.csv")
-    parser.add_argument("--plots-dir", type=Path, default=PLOTS_DIR)
+    parser.add_argument("--input", type=Path, default=DEFAULT_ARTIFACTS_DIR / "results.csv")
+    parser.add_argument("--plots-dir", type=Path, default=DEFAULT_PLOTS_DIR)
     args = parser.parse_args()
 
     rows = read_rows(args.input)

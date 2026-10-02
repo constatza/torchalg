@@ -14,7 +14,7 @@ def sparse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     """Extract the diagonal of a sparse CSR matrix without densifying it.
 
     Vectorized via a row-index expansion of ``crow_indices()`` (mirroring
-    ``scripts/bench_sparse_vs_dense/operations.py``'s COO
+    ``benchmarks.sparse_dense.operations``' COO
     ``extract_inv_diag``): no Python loop, no ``(n, n)`` dense intermediate.
     A row with no stored diagonal entry (structural zero) reads back as
     ``0.0``, matching ``torch.diagonal``'s dense behavior.

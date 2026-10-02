@@ -2,7 +2,7 @@
 """CLI: build the (operation x format x device x N) grid and time/measure every surviving cell.
 
 Cartesian-product reductions applied before any cell runs (see
-``scripts/README.md`` for the full rationale):
+``benchmarks/README.md`` for the full rationale):
 
 1. GPU legs only run when ``torch.cuda.is_available()`` - otherwise skipped
    for lack of hardware, not eliminated by theory.
@@ -52,7 +52,6 @@ from __future__ import annotations
 import argparse
 import csv
 import signal
-import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,16 +62,14 @@ import torch
 from scipy.sparse import csr_matrix
 from torch.utils.benchmark import Timer
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-
-from bench_sparse_vs_dense import matrices, memory
-from bench_sparse_vs_dense import operations as ops
+from . import matrices, memory
+from . import operations as ops
 
 DEFAULT_SIZES = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 50_000]
 DEFAULT_K_VALUES = [1, 5, 20, 100]
 DEFAULT_MAX_MEMORY_GB = 8.0
 DEFAULT_TIMEOUT_S = 60.0
-RESULTS_DIR = Path(__file__).with_name("results")
+DEFAULT_ARTIFACTS_DIR = Path("artifacts/benchmarks/sparse_dense")
 
 # Rough multiplier on a matrix's own storage size for the peak working
 # memory a family needs (factorization/eigh/svd allocate several
@@ -668,7 +665,7 @@ def main() -> None:
     parser.add_argument("--max-memory-gb", type=float, default=DEFAULT_MAX_MEMORY_GB)
     parser.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--dtype", choices=("float64", "float32"), default="float64")
-    parser.add_argument("--output", type=Path, default=RESULTS_DIR / "results.csv")
+    parser.add_argument("--output", type=Path, default=DEFAULT_ARTIFACTS_DIR / "results.csv")
     parser.add_argument(
         "--compile",
         action="store_true",

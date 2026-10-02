@@ -5,8 +5,7 @@ Two sources:
 - **Real templates**: the two FEM-derived matrices under
   ``/data/shared/mgroup-clusters/`` (anchor/validation points, not part of
   the size sweep - only two sizes exist there, 840 and 3015). Loaded once
-  via the same ``np.loadtxt`` pattern as
-  ``scripts/visualize_ic0_sparsity_dual_precision.py``; their structural
+  via ``np.loadtxt``; their structural
   stats are cached to JSON since the larger file is 136MB and reparsing it
   on every benchmark run would dominate wall-clock time for no reason.
 - **Synthetic matrices**: a structured lattice Laplacian (finite-difference
@@ -171,6 +170,7 @@ def to_torch_sparse_csr(matrix: csr_matrix, dtype: torch.dtype = torch.float64) 
         torch.from_numpy(csr.indices).to(torch.int64),
         torch.from_numpy(csr.data).to(dtype),
         size=csr.shape,
+        check_invariants=False,
     )
 
 
@@ -206,7 +206,12 @@ def sparse_prolongation(
     row_indices = torch.arange(n).unsqueeze(1).expand(-1, nnz_per_row)
     values = torch.randn(n, nnz_per_row, dtype=dtype)
     indices = torch.stack([row_indices.reshape(-1), col_indices.reshape(-1)])
-    coo = torch.sparse_coo_tensor(indices, values.reshape(-1), size=(n, rank))
+    coo = torch.sparse_coo_tensor(
+        indices,
+        values.reshape(-1),
+        size=(n, rank),
+        check_invariants=False,
+    )
     return coo.coalesce().to_sparse_csr()
 
 

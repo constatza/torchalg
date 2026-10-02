@@ -8,21 +8,16 @@ that the benchmark harness is timing something numerically valid, not a
 substitute for torchalg's own unit tests of ``dense_ic0``/``dense_ilu0``/
 ``cholesky_factor_solve`` (covered elsewhere under ``tests/solver/``).
 
-Marked ``@pytest.mark.benchmark`` throughout, per this repo's convention
-(``pyproject.toml``'s ``addopts = ["-m", "not benchmark"]`` already excludes
-it from the default run) - run explicitly with
-``uv run pytest -m benchmark tests/benchmarks/sparse_dense/``.
+These small deterministic integration tests run in the default test suite.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
-from bench_sparse_vs_dense import operations as ops
+from benchmarks.sparse_dense import operations as ops
 
 from torchalg.strategies.convergence import CombinedToleranceCriterion
-
-pytestmark = pytest.mark.benchmark
 
 _RTOL = 1e-8
 _ATOL = 1e-10
@@ -161,7 +156,7 @@ def test_svd_dense_lowrank_agree_on_leading_singular_values(snapshot_matrix: tor
     _, lowrank_singular_values, _ = ops.svd_lowrank_native(snapshot_matrix, rank=5)
 
     # Randomized low-rank SVD without oversampling (q == the exact target
-    # rank, matching how run_benchmark.py times it - the same rank POD would
+    # rank, matching how run.py times it - the same rank POD would
     # actually request) systematically *underestimates* singular values by
     # construction - this loose, one-sided tolerance is the real expected
     # behavior, not a placeholder pending a tighter bound.

@@ -1,31 +1,30 @@
 """Fixtures for the dense-vs-sparse operation equivalence checks.
 
-Small, fixed-size fixtures only - this suite exists to verify each
-``scripts/bench_sparse_vs_dense/operations.py`` function's sparse/native/
-scipy leg agrees numerically with its dense reference, not to time
-anything (that's ``scripts/bench_sparse_vs_dense/run_benchmark.py``, opt-in
-and not part of the test suite at all).
+Small, fixed-size fixtures only - this suite verifies each
+``benchmarks.sparse_dense.operations`` function's sparse/native/scipy leg
+against its dense reference. It is correctness coverage, not timing coverage.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 import torch
-
-# scripts/ isn't an installed package - add it to sys.path the same way the
-# scripts themselves do, rather than duplicating matrices.py/operations.py
-# under tests/.
-_SCRIPTS_DIR = Path(__file__).parents[3] / "scripts"
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from bench_sparse_vs_dense import matrices as bench_matrices
+from benchmarks.sparse_dense import matrices as bench_matrices
 
 _SMALL_N = 200
 _RANK = 20
+
+
+@pytest.fixture
+def sparse_prolongation_shape() -> tuple[int, int, int]:
+    """Small ``(n, rank, nnz_per_row)`` case for structural prolongation tests."""
+    return 50, 12, 4
+
+
+@pytest.fixture
+def rank_clamped_prolongation_shape() -> tuple[int, int, int]:
+    """Case whose requested row sparsity exceeds its coarse rank."""
+    return 10, 3, 100
 
 
 @pytest.fixture

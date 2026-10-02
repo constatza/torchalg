@@ -1,6 +1,6 @@
 """Sparse Galerkin coarse-operator formation for AMG/POD coarsening.
 
-Promotes ``scripts/bench_sparse_vs_dense/operations.py``'s already-validated
+Promotes ``benchmarks.sparse_dense.operations``' already-validated
 ``form_galerkin_spgemm``/``form_galerkin_spmm`` into production (see
 ``docs/plan.md``): both forms compute ``A_coarse = P.T @ A @ P`` without ever
 materializing the fine-grid ``(n, n)`` matrix densely.

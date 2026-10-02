@@ -4,7 +4,7 @@ Runtime alone hides the actual reason large FEM matrices force a sparse
 representation: a dense float64 matrix at N=50,000 is ~20GB, which is a
 memory problem, not a speed one. This module reports memory as its own
 metric per tensor/cell rather than folding it into prose justification for
-the size caps in ``run_benchmark.py``.
+the size caps in ``run.py``.
 
 Three tiers, all stdlib/torch-native (no new dependency):
 

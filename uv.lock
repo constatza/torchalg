@@ -905,8 +905,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev = [
+benchmark = [
     { name = "matplotlib" },
+]
+dev = [
     { name = "pyamg" },
     { name = "pytest" },
     { name = "ruff" },
@@ -919,8 +921,8 @@ dev = [
 requires-dist = [{ name = "torch", specifier = ">=2.8.0,<3.0", index = "https://download.pytorch.org/whl/cu132" }]
 
 [package.metadata.requires-dev]
+benchmark = [{ name = "matplotlib", specifier = ">=3.10.0" }]
 dev = [
-    { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "pyamg", specifier = ">=5.3.0" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.13.1" },

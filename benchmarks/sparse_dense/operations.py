@@ -3,7 +3,7 @@
 Every function here takes operands already placed on the target
 device/format - compute cost only, no data movement. Standalone transfer
 (``h2d``/``d2h``) and conversion (``to_sparse``/``to_dense``) helpers are
-timed independently in ``run_benchmark.py`` rather than folded into any one
+timed independently in ``run.py`` rather than folded into any one
 operation, since they're a function of size/format alone, not of which
 compute follows them.
 
@@ -15,7 +15,7 @@ use, not a lookalike.
 Some sparse/native alternatives may be unavailable on a given torch build or
 device (e.g. ``torch.sparse.spsolve`` needs a cuDSS-enabled build even on
 CUDA - standard wheels raise ``NotImplementedError`` on CPU and
-``RuntimeError`` on CUDA without cuDSS). Callers (``run_benchmark.py``) are
+``RuntimeError`` on CUDA without cuDSS). Callers (``run.py``) are
 expected to catch ``(NotImplementedError, RuntimeError)`` around each cell
 and record it as a skip rather than a crash - operations.py itself stays a
 plain function registry with no try/except noise.

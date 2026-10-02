@@ -12,8 +12,43 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
+from torchalg.sparse.device_policy import (
+    ITERATIVE_CUDA_CROSSOVER_N,
+    PARALLEL_KERNEL_CUDA_CROSSOVER_N,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+@pytest.fixture
+def parallel_kernel_below_crossover_n() -> int:
+    """Problem size immediately below the parallel-kernel CUDA threshold."""
+    return PARALLEL_KERNEL_CUDA_CROSSOVER_N - 1
+
+
+@pytest.fixture
+def parallel_kernel_at_crossover_n() -> int:
+    """Problem size at the parallel-kernel CUDA threshold."""
+    return PARALLEL_KERNEL_CUDA_CROSSOVER_N
+
+
+@pytest.fixture
+def iterative_below_crossover_n() -> int:
+    """Problem size immediately below the iterative CUDA threshold."""
+    return ITERATIVE_CUDA_CROSSOVER_N - 1
+
+
+@pytest.fixture
+def iterative_at_crossover_n() -> int:
+    """Problem size at the iterative CUDA threshold."""
+    return ITERATIVE_CUDA_CROSSOVER_N
+
+
+@pytest.fixture
+def largest_measured_elementwise_n() -> int:
+    """Largest tested elementwise problem size from the advisory study."""
+    return 32_041
 
 
 @pytest.fixture
