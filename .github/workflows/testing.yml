@@ -27,7 +27,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Synchronize dependencies
-        run: uv sync --dev
+        run: uv sync --dev --group benchmark
 
       - name: Run Ruff lint
         run: uv run ruff check .
@@ -64,7 +64,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Synchronize dependencies
-        run: uv sync --dev
+        run: uv sync --dev --group benchmark
 
       - name: Run Ruff lint
         run: uv run ruff check .
