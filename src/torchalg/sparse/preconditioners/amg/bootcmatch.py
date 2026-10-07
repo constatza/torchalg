@@ -30,6 +30,7 @@ from .smoothers import resolve_jacobi_default
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Self
 
     from torchalg.multigrid.protocols import MultigridSmoother
 
@@ -60,8 +61,10 @@ def _move_hierarchy(hierarchy: MultigridHierarchy, like: torch.Tensor) -> Multig
 class BootCMatchPreconditioner(Preconditioner, nn.Module):
     """BootCMatch preconditioner (TOMS Sections 4-5), sparse-CSR sibling.
 
+    Runs ``BootCMatchSetup.run`` in ``setup()`` to build a composite of
+    independent multigrid hierarchies.
+
     Args:
-        matrix (torch.Tensor): SPD sparse CSR system matrix A (n x n).
         seed (int): Seed of the default random-vector source.
         draw (Callable[[int], torch.Tensor] | None): Explicit uniform
             ``[0, 1)`` source overriding ``seed``.
@@ -87,7 +90,6 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
 
     def __init__(
         self,
-        matrix: torch.Tensor,
         seed: int = 0,
         draw: Callable[[int], torch.Tensor] | None = None,
         max_levels: int = 10,
@@ -100,10 +102,9 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
         n_pre: int = 1,
         n_post: int = 1,
     ) -> None:
-        """Run the BootCMatch bootstrap setup and store its composite hierarchies.
+        """Store setup hyperparameters; ``setup()`` runs the BootCMatch bootstrap loop.
 
         Args:
-            matrix (torch.Tensor): SPD sparse CSR system matrix A (n x n).
             seed (int): Seed of the default random-vector source.
             draw (Callable[[int], torch.Tensor] | None): Explicit uniform
                 ``[0, 1)`` source overriding ``seed``.
@@ -121,12 +122,12 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
             n_post (int): Solve-time post-smoothing sweeps.
         """
         nn.Module.__init__(self)
-        cycle: VCycle = prebuilt_cycle(
+        self._cycle: VCycle = prebuilt_cycle(
             resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
         )
-        setup = BootCMatchSetup(
+        self._bootcmatch_setup = BootCMatchSetup(
             coarsening_factory=BootCMatchCoarsening,
-            cycle=cycle,
+            cycle=self._cycle,
             draw=draw if draw is not None else seeded_draw(seed),
             max_levels=max_levels,
             max_coarse=max_coarse,
@@ -134,10 +135,28 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
             rho_desired=rho_desired,
             max_hierarchies=max_hierarchies,
         )
-        self._hierarchies: tuple[MultigridHierarchy, ...] = setup.run(matrix)
-        self._cycle = cycle
+        self._hierarchies: tuple[MultigridHierarchy, ...] = ()
         self._matrix: torch.Tensor
-        self.register_buffer("_matrix", matrix)
+        self.register_buffer("_matrix", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Run the BootCMatch bootstrap loop and store its composite hierarchies.
+
+        Args:
+            matrix (torch.Tensor): SPD sparse CSR system matrix A (n x n).
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        self._hierarchies = self._bootcmatch_setup.run(matrix)
+        self._matrix = matrix
+        self._mark_ready()
+        return self
 
     @property
     def hierarchies(self) -> tuple[MultigridHierarchy, ...]:

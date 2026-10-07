@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Self
 
 import torch
 
@@ -49,6 +50,19 @@ from torchalg.utils.validation import check_solution_validity, describe_breakdow
 
 class _IdentityPreconditioner(Preconditioner):
     """Internal identity preconditioner used when solvers are constructed directly."""
+
+    def __init__(self) -> None:
+        """Mark ready immediately; identity has no matrix-dependent state."""
+        self._mark_ready()
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """No-op: identity has no matrix-dependent state to build."""
+        self._mark_ready()
+        return self
 
     def apply(
         self,

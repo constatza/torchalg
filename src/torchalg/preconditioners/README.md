@@ -81,8 +81,21 @@ the sparse coarse matrices in PyAMG (unsorted after sparse products); this
 port uses ascending order, PyAMG's result on a sorted-index copy of the same
 graph.
 
-`AMGPreconditioner._make_hierarchy` is the hook subclasses override when their
-levels are computed elsewhere (as `AdaptiveSAPreconditioner` does).
+Every `Preconditioner` follows an explicit two-phase contract: `setup(matrix)`
+builds whatever internal state `apply()` needs, and only then may `apply()`
+be called (any number of times - e.g. once per solver iteration, or across
+several right-hand sides against the same matrix). `apply()` raises
+`PreconditionerNotReadyError` if called before `setup()`; the base class
+wraps every concrete subclass's `apply` with this guard automatically
+(`Preconditioner.__init_subclass__`), so no subclass implements the check
+itself. `pcg()`/`flexible_cg()` (`factories.py`) only ever call `.apply()` -
+the caller is responsible for calling `.setup(A)` first.
+
+`AMGPreconditioner.setup` calls `_make_hierarchy` unconditionally and stores
+the result; `_make_hierarchy` is the hook subclasses override when their
+levels are computed elsewhere (as `AdaptiveSAPreconditioner` does). Calling
+`setup()` again - e.g. after `bind_inputs()` changes an extra input, or to
+rebind to a new/changed matrix - simply rebuilds the hierarchy from scratch.
 
 Weighted-Jacobi damping has two roles with separate parameters, both
 defaulting to a spectral rule with `rho = rho(D^-1 A)` (`amg/_jacobi_omega.py`,

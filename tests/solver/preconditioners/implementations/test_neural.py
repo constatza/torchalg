@@ -102,6 +102,7 @@ def test_neural_preconditioner_applies_predictor_output(checkpoint_path: Path) -
     )
 
     residual = torch.tensor([2.0, 4.0, 6.0], dtype=torch.float64)
+    preconditioner.setup(residual)
     result = preconditioner.apply(residual)
 
     torch.testing.assert_close(result, residual * 0.5)
@@ -124,6 +125,7 @@ def test_neural_preconditioner_cleanup_is_idempotent(checkpoint_path: Path) -> N
         checkpoint_path=checkpoint_path,
         adapter=DummyAdapter(predictor),
     )
+    preconditioner.setup(torch.eye(3, dtype=torch.float64))
 
     preconditioner.cleanup()
     preconditioner.cleanup()

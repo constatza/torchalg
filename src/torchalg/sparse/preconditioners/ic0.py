@@ -32,6 +32,8 @@ performance rationale this batching addresses.
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 from torch import nn
 
@@ -295,16 +297,15 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     Example:
         >>> import torch
         >>> matrix = (torch.eye(3, dtype=torch.float64) * 2.0).to_sparse_csr()
-        >>> precond = IC0Preconditioner(matrix)
+        >>> precond = IC0Preconditioner()
+        >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
 
-    def __init__(self, matrix: torch.Tensor, threshold: float = _DEFAULT_THRESHOLD) -> None:
-        """Initialize IC(0) preconditioner.
+    def __init__(self, threshold: float = _DEFAULT_THRESHOLD) -> None:
+        """Configure IC(0) preconditioner; the factorization is built by ``setup()``.
 
         Args:
-            matrix (torch.Tensor): Symmetric positive-definite sparse CSR
-                system matrix ``A``, shape ``(n, n)``.
             threshold (float): Drop tolerance - entries with ``|value| <=
                 threshold`` are treated as zero. Default: ``0.0`` (only
                 exact zeros are dropped; see ``_DEFAULT_THRESHOLD``).
@@ -312,7 +313,23 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         nn.Module.__init__(self)
         self._threshold = threshold
         self._operator: torch.Tensor
-        self.register_buffer("_operator", self._compute_operator(matrix))
+        self.register_buffer("_operator", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Compute and register the sparse IC(0) factorization of ``matrix``.
+
+        Args:
+            matrix (torch.Tensor): Symmetric positive-definite sparse CSR
+                system matrix ``A``, shape ``(n, n)``.
+            context (PreconditionerContext | None): Ignored.
+        """
+        self._operator = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Compute the sparse IC(0) factorization of the system matrix.

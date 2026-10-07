@@ -10,11 +10,11 @@ package docstring.
 Buffer/hierarchy design (see ``docs/plan.md``'s Stage 5 entry):
     ``AMGPreconditioner`` is the first AMG-tier class holding real internal
     tensor state, but unlike Jacobi/ILU/IC0/ICholesky (Stages 3-4) that
-    state isn't a single fixed-shape tensor computed once at construction -
-    it's a *lazily built, variable-length* list of per-level matrices whose
-    shapes depend on the coarsening strategy and aren't known until the
-    first ``apply()`` call (and are invalidated/rebuilt whenever
-    ``bind_inputs`` is called, e.g. for neural coarsening).
+    state isn't a single fixed-shape tensor built once by ``setup()`` - it's
+    a *variable-length* list of per-level matrices whose shapes depend on
+    the coarsening strategy and aren't known until ``setup()`` runs (and
+    must be rebuilt by calling ``setup()`` again whenever ``bind_inputs``
+    changes an extra input, e.g. for neural coarsening).
 
     Registering one ``nn.Module`` buffer per hierarchy level with indexed
     names (``f"level_{i}_matrix"``) would require deregistering and
@@ -28,13 +28,14 @@ Buffer/hierarchy design (see ``docs/plan.md``'s Stage 5 entry):
       like every other stateful preconditioner in this package.
     - The built ``MultigridHierarchy`` (a plain frozen-dataclass tree of
       tensors *derived* from that buffer) is kept as a plain, non-buffer
-      attribute, since it is a cache, not owned state - it's already
-      invalidated by ``bind_inputs`` per the reference's own design.
+      attribute, since it is a cache, not owned state - rebuilt by the next
+      explicit ``setup()`` call, not invalidated/lazily-rebuilt behind the
+      caller's back.
     - ``_apply`` (the ``nn.Module`` hook that ``.to()``/``.cuda()``/
-      ``.double()`` etc. all funnel through) is overridden to also
-      invalidate that cache after the buffer moves, so a stale-device
-      hierarchy can never be reused - the next ``apply()`` rebuilds it
-      from the now-moved ``A`` buffer automatically.
+      ``.double()`` etc. all funnel through) is overridden to also drop that
+      cache after the buffer moves, so a stale-device hierarchy can never be
+      reused - callers must call ``setup()`` again after moving a
+      preconditioner to rebuild the hierarchy on the now-moved ``A`` buffer.
 """
 
 from __future__ import annotations
@@ -44,7 +45,12 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 
-from torchalg.preconditioners.base import BindableInputs, Preconditioner, PreconditionerContext
+from torchalg.preconditioners.base import (
+    BindableInputs,
+    Preconditioner,
+    PreconditionerContext,
+    PreconditionerNotReadyError,
+)
 
 from .hierarchy import MultigridHierarchy, build_hierarchy
 
@@ -63,10 +69,11 @@ class AMGPreconditioner(Preconditioner, nn.Module):
     (always safe to call ``bind_inputs``/``extra_input_names``); when the
     coarsening strategy has no extra inputs, these are no-ops.
 
-    Hierarchy construction is **lazy**: it happens on the first ``apply()``
-    call. For classical coarsening (no ``bind_inputs`` needed), this is
-    effectively immediate. For neural coarsening, ``bind_inputs`` must be
-    called before the first ``apply()``.
+    Hierarchy construction is **explicit**: it happens in ``setup(matrix)``,
+    which must be called once before the first ``apply()`` call (``apply()``
+    raises ``PreconditionerNotReadyError`` otherwise). For neural
+    coarsening, ``bind_inputs`` must be called before ``setup()`` so the
+    bound inputs are available when the hierarchy is built.
 
     Args:
         matrix (torch.Tensor): System matrix A (n x n).
@@ -144,15 +151,23 @@ class AMGPreconditioner(Preconditioner, nn.Module):
         self._hierarchy: MultigridHierarchy | None = None
 
     def _apply(self, fn: Callable, recurse: bool = True) -> Self:
-        """Invalidate the cached hierarchy whenever the buffer moves.
+        """Drop the cached hierarchy only when the buffer's device/dtype actually changes.
 
         ``nn.Module.to()``/``.cuda()``/``.double()``/etc. all call this
-        internally to move buffers/parameters. The cached hierarchy's
-        tensors are derived from ``_matrix`` but are not themselves
-        buffers, so without this override a device/dtype change after the
-        first ``apply()`` would silently leave a stale-device hierarchy in
-        place. Overriding ``_apply`` guarantees the next ``apply()`` call
-        rebuilds the hierarchy from the freshly-moved ``_matrix`` buffer.
+        internally, including internally from ``IterativeSolverBase
+        ._place_on_device`` on every ``solve()`` call (even when the
+        preconditioner is already on the resolved device - ``nn.Module.to()``
+        provides no cheap way to ask "would this actually move anything?"
+        up front). The cached hierarchy's tensors are derived from
+        ``_matrix`` but are not themselves buffers, so a real device/dtype
+        change after ``setup()`` would silently leave a stale-device
+        hierarchy in place if left unhandled - but invalidating
+        unconditionally on every ``_apply`` call would also wipe readiness
+        on every same-device ``solve()`` call, breaking the ordinary
+        "``setup()`` once, ``solve()`` many times" flow. Comparing
+        ``_matrix``'s device/dtype before and after distinguishes a real
+        move (invalidate; caller must call ``setup()`` again) from a no-op
+        one (readiness and the cached hierarchy are left untouched).
 
         Args:
             fn (Callable): Conversion function applied to each
@@ -162,8 +177,11 @@ class AMGPreconditioner(Preconditioner, nn.Module):
         Returns:
             Self: This module, per ``nn.Module._apply``'s contract.
         """
+        before_device, before_dtype = self._matrix.device, self._matrix.dtype
         result = super()._apply(fn, recurse=recurse)
-        self._hierarchy = None
+        if self._matrix.device != before_device or self._matrix.dtype != before_dtype:
+            self._hierarchy = None
+            self._is_ready = False
         return result
 
     # BindableInputs structural implementation ---------------------------------
@@ -183,15 +201,16 @@ class AMGPreconditioner(Preconditioner, nn.Module):
     def bind_inputs(self, **inputs: torch.Tensor) -> None:
         """Forward extra domain inputs to the coarsening strategy.
 
-        Also invalidates the cached hierarchy so it is rebuilt on the next
-        ``apply()`` call with the newly bound inputs.
+        Binding new inputs changes what the next ``setup()`` call builds;
+        it does not itself rebuild or invalidate anything - call ``setup()``
+        again after ``bind_inputs()`` to rebuild the hierarchy with the
+        newly bound inputs.
 
         Args:
             **inputs (torch.Tensor): Named tensors (e.g., positions, theta).
         """
         if isinstance(self._coarsening, BindableInputs):
             self._coarsening.bind_inputs(**inputs)
-        self._hierarchy = None
 
     # Preconditioner -----------------------------------------------------------
 
@@ -232,6 +251,31 @@ class AMGPreconditioner(Preconditioner, nn.Module):
         """
         return not self._linear
 
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Build the multigrid hierarchy from ``matrix``, unconditionally.
+
+        Rebinds this preconditioner to ``matrix`` (replacing the ``_matrix``
+        buffer) and builds a fresh hierarchy, discarding any previously
+        built one. Call again - e.g. after ``bind_inputs()`` changes an
+        extra input, or to rebind to a new/changed matrix - to rebuild.
+
+        Args:
+            matrix (torch.Tensor): System matrix A (n x n).
+            context (PreconditionerContext | None): Ignored (AMG hierarchy
+                construction is stateless w.r.t. solver iteration).
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        self._matrix = matrix
+        self._hierarchy = self._make_hierarchy()
+        self._mark_ready()
+        return self
+
     def apply(
         self,
         residual: torch.Tensor,
@@ -247,14 +291,24 @@ class AMGPreconditioner(Preconditioner, nn.Module):
         Returns:
             torch.Tensor: Approximate solution to Az = r from one multigrid
                 cycle.
+
+        Raises:
+            PreconditionerNotReadyError: If ``setup()`` has not been called
+                (also raised by the base-class guard before this method
+                runs; this second check only protects against ``_hierarchy``
+                itself being absent, e.g. a future subclass bypassing the
+                guard).
         """
         if self._hierarchy is None:
-            self._hierarchy = self._make_hierarchy()
+            raise PreconditionerNotReadyError(
+                f"{type(self).__name__}.setup() must be called before apply()."
+            )
         return self._cycle.apply(self._hierarchy, residual)
 
     def _make_hierarchy(self) -> MultigridHierarchy:
-        """Build the hierarchy on first use (and after it is invalidated).
+        """Build the hierarchy from the current ``_matrix`` buffer.
 
+        Called by ``setup()``, unconditionally, every time it runs.
         Subclasses whose levels are computed elsewhere override this.
 
         Returns:

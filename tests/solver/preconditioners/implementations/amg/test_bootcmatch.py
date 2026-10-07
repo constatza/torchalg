@@ -30,7 +30,6 @@ def test_pcg_converges_with_bootcmatch_preconditioner(
     poisson_64: torch.Tensor, poisson_64_rhs: torch.Tensor
 ) -> None:
     preconditioner = BootCMatchPreconditioner(
-        poisson_64,
         seed=3,
         max_levels=4,
         max_coarse=4,
@@ -38,6 +37,7 @@ def test_pcg_converges_with_bootcmatch_preconditioner(
         rho_desired=0.8,
         max_hierarchies=3,
     )
+    preconditioner.setup(poisson_64)
 
     assert not preconditioner.requires_flexible_cg
     assert len(preconditioner.hierarchies) >= 1

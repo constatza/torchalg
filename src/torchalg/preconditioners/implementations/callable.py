@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Self
 
 import torch
 
@@ -37,6 +38,24 @@ class CallablePreconditioner(NonLinearPreconditioner):
                 residual and returning the preconditioned residual.
         """
         self._func = func
+        self._mark_ready()
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """No-op: the wrapped function is already usable after construction.
+
+        Args:
+            matrix (torch.Tensor): Ignored.
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, already ready.
+        """
+        self._mark_ready()
+        return self
 
     def apply(
         self,

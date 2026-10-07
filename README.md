@@ -131,7 +131,8 @@ M = torch.randn(n, n, dtype=torch.float64)
 A = M @ M.T + n * torch.eye(n, dtype=torch.float64)
 b = torch.randn(n, dtype=torch.float64)
 
-precond = JacobiPreconditioner(A)
+precond = JacobiPreconditioner()
+precond.setup(A)
 x_pcg, info_pcg = pcg(A, b, preconditioner=precond)
 x_fcg, info_fcg = flexible_cg(A, b, preconditioner=precond)
 print("pcg:", info_pcg.converged, info_pcg.iterations)
@@ -202,7 +203,8 @@ import torch
 from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
 
 matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0, 8.0], dtype=torch.float64))
-precond = JacobiPreconditioner(matrix)
+precond = JacobiPreconditioner()
+precond.setup(matrix)
 print("before:", precond.inv_diag.dtype, precond.inv_diag.device)
 
 precond = precond.to(dtype=torch.float32)
@@ -238,7 +240,7 @@ M = torch.randn(n, n, dtype=torch.float64, device=device)
 A = M @ M.T + n * torch.eye(n, dtype=torch.float64, device=device)
 b = torch.randn(n, dtype=torch.float64, device=device)
 
-precond = JacobiPreconditioner(A).to(device=device)
+precond = JacobiPreconditioner().setup(A).to(device=device)
 x, info = pcg(A, b, preconditioner=precond)
 print(
     f"device={device}, x.device={x.device}, converged={info.converged}, iterations={info.iterations}"
@@ -306,7 +308,10 @@ b = torch.randn(n, dtype=torch.float64)
 results = run_cg_comparison(
     A,
     b,
-    preconditioners={"jacobi": JacobiPreconditioner(A), "ilu": ILUPreconditioner(A)},
+    preconditioners={
+        "jacobi": JacobiPreconditioner().setup(A),
+        "ilu": ILUPreconditioner().setup(A),
+    },
 )
 print(format_results_summary(results))
 ```

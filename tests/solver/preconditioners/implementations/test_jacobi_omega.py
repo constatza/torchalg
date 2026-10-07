@@ -161,14 +161,18 @@ class TestPresets:
         with pytest.raises(TypeError):
             preset(poisson_matrix, omega=0.67)
         explicit = preset(poisson_matrix, smoother_omega=0.67, prolongation_omega=0.67)
+        explicit.setup(poisson_matrix)
         default = preset(poisson_matrix)
+        default.setup(poisson_matrix)
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
         assert not torch.allclose(explicit.apply(residual), default.apply(residual))
 
     def test_estimation_is_shared_and_not_repeated_per_apply(
         self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
-        precond = vcycle_amg(poisson_matrix.clone(), n_levels=3)
+        matrix = poisson_matrix.clone()
+        precond = vcycle_amg(matrix, n_levels=3)
+        precond.setup(matrix)
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
         precond.apply(residual)
         after_first = len(estimator_calls)
@@ -187,7 +191,9 @@ class TestPresets:
             pod2g_preconditioner(poisson_matrix, snapshots, rank=3, omega=0.67)  # ty: ignore[unknown-argument]
         residual = torch.ones(64, dtype=torch_dtype)
         explicit = pod2g_preconditioner(poisson_matrix, snapshots, rank=3, smoother_omega=0.67)
+        explicit.setup(poisson_matrix)
         default = pod2g_preconditioner(poisson_matrix, snapshots, rank=3)
+        default.setup(poisson_matrix)
         assert not torch.allclose(explicit.apply(residual), default.apply(residual))
 
 

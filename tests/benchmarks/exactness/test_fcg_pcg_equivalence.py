@@ -54,8 +54,8 @@ def test_fcg_pcg_equivalence(
     preconditioner_pcg = None
     preconditioner_fcg = None
     if precond_type == "ilu":
-        preconditioner_pcg = ILUPreconditioner(matrix)
-        preconditioner_fcg = ILUPreconditioner(matrix)
+        preconditioner_pcg = ILUPreconditioner().setup(matrix)
+        preconditioner_fcg = ILUPreconditioner().setup(matrix)
 
     x_pcg, result_pcg = pcg(
         matrix,

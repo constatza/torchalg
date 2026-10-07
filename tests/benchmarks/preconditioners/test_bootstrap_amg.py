@@ -291,14 +291,13 @@ def bootstrap_amg_factory() -> Callable[[torch.Tensor, bool], BootstrapAMGPrecon
 
     def _factory(matrix: torch.Tensor, use_lsr: bool) -> BootstrapAMGPreconditioner:
         return BootstrapAMGPreconditioner(
-            matrix,
             k_r=8,
             eta=4,
             n_bootstrap_cycles=2,
             use_lsr=use_lsr,
             seed=5,
             smoother=GaussSeidelSmoother(),
-        )
+        ).setup(matrix)
 
     return _factory
 
@@ -492,7 +491,6 @@ def test_bootstrap_amg_matches_status14_table1_exact_setup(
 
     def factory(use_lsr: bool, seed: int) -> BootstrapAMGPreconditioner:
         return BootstrapAMGPreconditioner(
-            matrix,
             k_r=8,
             eta=4,
             n_bootstrap_cycles=0,
@@ -501,7 +499,7 @@ def test_bootstrap_amg_matches_status14_table1_exact_setup(
             n_pre=2,
             n_post=2,
             smoother=GaussSeidelSmoother(),
-        )
+        ).setup(matrix)
 
     preconditioner_ls = factory(use_lsr=False, seed=0)
     preconditioner_lsr = factory(use_lsr=True, seed=0)

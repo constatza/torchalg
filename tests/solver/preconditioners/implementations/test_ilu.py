@@ -39,9 +39,9 @@ def test_ilu_improves_convergence(
     _, result_identity = flexible_cg(
         a, b, preconditioner=Identity(), rtol=rtol, atol=atol, maxiter=200
     )
-    _, result_ilu = flexible_cg(
-        a, b, preconditioner=ILUPreconditioner(a), rtol=rtol, atol=atol, maxiter=200
-    )
+    ilu_precond = ILUPreconditioner()
+    ilu_precond.setup(a)
+    _, result_ilu = flexible_cg(a, b, preconditioner=ilu_precond, rtol=rtol, atol=atol, maxiter=200)
 
     assert result_identity.converged
     assert result_ilu.converged
@@ -68,7 +68,8 @@ def test_ilu_factorization_matches_scipy_spilu_oracle(
     a_csc = csc_matrix(a.numpy())
     scipy_ilu = spilu(a_csc)
 
-    precond = ILUPreconditioner(a)
+    precond = ILUPreconditioner()
+    precond.setup(a)
     identity = torch.eye(n, dtype=a.dtype)
 
     m_inv_a_torch = torch.stack([precond.apply(a @ identity[:, i]) for i in range(n)], dim=1)
@@ -102,8 +103,8 @@ def test_ilu_on_diagonal_matrix_matches_jacobi(
         ``D^{-1}``.
     """
     a, b, _ = diagonal_system_known_solution_torch
-    precond = ILUPreconditioner(a)
-
+    precond = ILUPreconditioner()
+    precond.setup(a)
     z = precond.apply(b)
     expected = b / torch.diagonal(a)
 
@@ -115,7 +116,8 @@ def test_ilu_preconditioner_from_matrix(
     dense_spd_matrix_residual: torch.Tensor,
 ) -> None:
     """Verify ILU preconditioner computes a usable factorization from a matrix."""
-    precond = ILUPreconditioner(dense_spd_matrix)
+    precond = ILUPreconditioner()
+    precond.setup(dense_spd_matrix)
     z = precond.apply(dense_spd_matrix_residual)
 
     assert torch.isfinite(z).all()
@@ -131,7 +133,8 @@ def test_ilu_preconditioner_with_tridiagonal(
     rhs_ones_small_torch: torch.Tensor,
 ) -> None:
     """Verify ILU with a larger (10x10) tridiagonal matrix produces finite output."""
-    precond = ILUPreconditioner(tridiagonal_spd_small_torch)
+    precond = ILUPreconditioner()
+    precond.setup(tridiagonal_spd_small_torch)
     z = precond.apply(rhs_ones_small_torch)
 
     assert torch.isfinite(z).all()
@@ -140,8 +143,8 @@ def test_ilu_preconditioner_with_tridiagonal(
 
 def test_ilu_preconditioner_accepts_dense_matrix(dense_spd_matrix: torch.Tensor) -> None:
     """Test ILUPreconditioner with dense matrix input produces correctly shaped output."""
-    precond = ILUPreconditioner(dense_spd_matrix)
-
+    precond = ILUPreconditioner()
+    precond.setup(dense_spd_matrix)
     residual = torch.ones(5, dtype=dense_spd_matrix.dtype)
     result = precond.apply(residual)
 
@@ -155,7 +158,8 @@ def test_ilu_preserves_dtype(
     torch_dtype: torch.dtype,
 ) -> None:
     """Test that ILUPreconditioner preserves the working dtype."""
-    precond = ILUPreconditioner(dense_spd_matrix)
+    precond = ILUPreconditioner()
+    precond.setup(dense_spd_matrix)
     result = precond.apply(dense_spd_matrix_residual)
 
     assert result.dtype == torch_dtype

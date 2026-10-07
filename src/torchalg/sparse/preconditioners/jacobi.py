@@ -13,6 +13,8 @@ overload.
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 from torch import nn
 
@@ -41,20 +43,32 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     Example:
         >>> import torch
         >>> matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0])).to_sparse_csr()
-        >>> precond = JacobiPreconditioner(matrix)
+        >>> precond = JacobiPreconditioner()
+        >>> precond.setup(matrix)
         >>> z = precond.apply(torch.tensor([2.0, 4.0, 1.0]))  # z = D^{-1}r
     """
 
-    def __init__(self, matrix: torch.Tensor) -> None:
-        """Initialize from a sparse CSR system matrix, registering the inverse diagonal as a buffer.
+    def __init__(self) -> None:
+        """Register the (not yet computed) inverse-diagonal buffer."""
+        nn.Module.__init__(self)
+        self.inv_diag: torch.Tensor
+        self.register_buffer("inv_diag", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Compute and register the inverse diagonal of a sparse CSR ``matrix``.
 
         Args:
             matrix (torch.Tensor): Sparse CSR system matrix ``A``, shape
                 ``(n, n)``.
+            context (PreconditionerContext | None): Ignored.
         """
-        nn.Module.__init__(self)
-        self.inv_diag: torch.Tensor
-        self.register_buffer("inv_diag", self._compute_operator(matrix))
+        self.inv_diag = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Extract and invert the diagonal of a sparse CSR matrix.

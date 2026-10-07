@@ -15,6 +15,8 @@ numerical code."
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 from torch import nn
 
@@ -61,20 +63,32 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         >>> from torchalg.sparse.preconditioners.ic0 import sparse_ic0
         >>> matrix = (torch.eye(3, dtype=torch.float64) * 2.0).to_sparse_csr()
         >>> L = sparse_ic0(matrix)
-        >>> precond = ICholeskyPreconditioner(L)
+        >>> precond = ICholeskyPreconditioner()
+        >>> precond.setup(L)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
 
-    def __init__(self, matrix: torch.Tensor) -> None:
-        """Store the sparse CSR lower triangular factor ``L`` as a buffer.
+    def __init__(self) -> None:
+        """Register the (not yet stored) lower-triangular-factor buffer."""
+        nn.Module.__init__(self)
+        self._operator: torch.Tensor
+        self.register_buffer("_operator", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Store the sparse CSR lower triangular factor ``L`` (``matrix``) as a buffer.
 
         Args:
             matrix (torch.Tensor): Sparse CSR lower triangular factor ``L``,
                 shape ``(n, n)``.
+            context (PreconditionerContext | None): Ignored.
         """
-        nn.Module.__init__(self)
-        self._operator: torch.Tensor
-        self.register_buffer("_operator", self._compute_operator(matrix))
+        self._operator = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Return the supplied factor ``L`` unchanged.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 from torch import nn
 
@@ -30,11 +32,13 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     ``register_parameter`` deliberately avoided since ``inv_diag`` is never
     learned or autograd-tracked.
 
-    Because ``__init__`` builds and registers ``inv_diag`` directly, it does
-    not call ``LinearPreconditioner.__init__`` (which would instead store
+    Because ``setup()`` builds and registers ``inv_diag`` directly, it does
+    not call ``LinearPreconditioner.setup()`` (which would instead store
     the result as a plain ``self._operator`` attribute, invisible to
     ``nn.Module``'s buffer machinery); ``_compute_operator`` is still
     implemented to satisfy ``LinearPreconditioner``'s interface contract.
+    ``__init__`` only registers the ``inv_diag`` buffer placeholder
+    (``None``); ``setup(matrix)`` computes and assigns its real value.
 
     Mathematical Properties:
         - M = diag(A) (diagonal of system matrix).
@@ -49,15 +53,26 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         >>> z = precond.apply(torch.tensor([2.0, 4.0, 1.0]))  # z = D^{-1}r
     """
 
-    def __init__(self, matrix: torch.Tensor) -> None:
-        """Initialize from system matrix, registering the inverse diagonal as a buffer.
+    def __init__(self) -> None:
+        """Register the (not yet computed) inverse-diagonal buffer."""
+        nn.Module.__init__(self)
+        self.inv_diag: torch.Tensor
+        self.register_buffer("inv_diag", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Compute and register the inverse diagonal of ``matrix``.
 
         Args:
             matrix (torch.Tensor): System matrix A, shape ``(n, n)``.
+            context (PreconditionerContext | None): Ignored.
         """
-        nn.Module.__init__(self)
-        self.inv_diag: torch.Tensor
-        self.register_buffer("inv_diag", self._compute_operator(matrix))
+        self.inv_diag = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Extract and invert the diagonal from matrix.

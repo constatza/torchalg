@@ -18,7 +18,6 @@ def test_pcg_converges_with_bootcmatch_preconditioner(
 ) -> None:
     sparse_matrix = poisson_1d_large_dense.to_sparse_csr()
     preconditioner = BootCMatchPreconditioner(
-        sparse_matrix,
         seed=3,
         max_levels=4,
         max_coarse=4,
@@ -26,6 +25,7 @@ def test_pcg_converges_with_bootcmatch_preconditioner(
         rho_desired=0.8,
         max_hierarchies=3,
     )
+    preconditioner.setup(sparse_matrix)
 
     assert not preconditioner.requires_flexible_cg
     assert len(preconditioner.hierarchies) >= 1

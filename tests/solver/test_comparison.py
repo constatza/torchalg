@@ -30,7 +30,7 @@ def test_run_cg_comparison_adds_identity_baseline(
     results = run_cg_comparison(
         diagonal_4x4_torch,
         rhs_progression_4_torch,
-        preconditioners={"jacobi": JacobiPreconditioner(diagonal_4x4_torch)},
+        preconditioners={"jacobi": JacobiPreconditioner().setup(diagonal_4x4_torch)},
         rtol=1e-10,
         maxiter=20,
     )

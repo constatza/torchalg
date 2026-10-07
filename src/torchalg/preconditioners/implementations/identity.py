@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 
 from ..base import Preconditioner, PreconditionerContext
@@ -24,6 +26,11 @@ class Identity(Preconditioner):
           kappa(A) = lambda_max(A) / lambda_min(A).
         - No computational overhead.
 
+    Stateless, so it is always ready - construction alone satisfies the
+    ``setup()``-before-``apply()`` contract (``setup()`` is still provided,
+    as a no-op, so passing an explicit matrix through the uniform
+    ``Preconditioner`` interface works too).
+
     Example:
         >>> import torch
         >>> precond = Identity()
@@ -32,6 +39,27 @@ class Identity(Preconditioner):
         >>> torch.equal(z, r)
         True
     """
+
+    def __init__(self) -> None:
+        """Mark ready immediately; identity has no matrix-dependent state."""
+        self._mark_ready()
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """No-op: identity has no matrix-dependent state to build.
+
+        Args:
+            matrix (torch.Tensor): Ignored.
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, already ready.
+        """
+        self._mark_ready()
+        return self
 
     def apply(
         self,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 import torch
@@ -30,6 +30,16 @@ class _RecordingBindablePreconditioner(Preconditioner, BindableInputs):
         """Initialize empty call records."""
         self.bound_inputs: dict[str, torch.Tensor] = {}
         self.contexts: list[PreconditionerContext | None] = []
+        self._mark_ready()
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """No-op: this test double has no matrix-dependent state."""
+        self._mark_ready()
+        return self
 
     @property
     def extra_input_names(self) -> tuple[str, ...]:
@@ -82,8 +92,7 @@ def test_flexible_cg_solves_with_jacobi_preconditioner(
     """FCG accepts a concrete preconditioner and converges on a diagonal system."""
     matrix = to_torch(diagonal_spd_small)
     rhs = to_torch(rhs_ones_small)
-    preconditioner = JacobiPreconditioner(matrix)
-
+    preconditioner = JacobiPreconditioner().setup(matrix)
     solution, result = flexible_cg(
         matrix,
         rhs,
@@ -260,7 +269,7 @@ def test_flexible_cg_defaults_to_inference_mode(
     """``flexible_cg`` shares the same inference-mode default as ``pcg``."""
     matrix = to_torch(diagonal_spd_small).requires_grad_(True)
     rhs = to_torch(rhs_ones_small)
-    preconditioner = JacobiPreconditioner(matrix.detach())
+    preconditioner = JacobiPreconditioner().setup(matrix.detach())
 
     solution, _ = flexible_cg(matrix, rhs, preconditioner=preconditioner, maxiter=20)
 

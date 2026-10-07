@@ -3,8 +3,8 @@
 Wires ``torchalg.multigrid.bootcmatch_setup.BootCMatchSetup`` (Component E,
 the TOMS Section 5 outer bootstrap loop) with this tree's own
 ``BootCMatchCoarsening`` (dense, ``bootcmatch_coarsening.py``) to build a
-composite of independent multigrid hierarchies at construction time, then
-applies their multiplicative composition as a fixed linear preconditioner -
+composite of independent multigrid hierarchies in ``setup()``, then applies
+their multiplicative composition as a fixed linear preconditioner -
 ``z = B_0(r) + B_1(r - A z_0) + ...``, like multiplicative Schwarz.
 
 Deliberately does **not** subclass ``torchalg.multigrid.AMGPreconditioner``:
@@ -18,11 +18,12 @@ state (``JacobiPreconditioner``, ``BootstrapAMGPreconditioner``, etc.):
 ``register_buffer`` for ``.to(device/dtype)`` propagation, never
 ``register_parameter`` since none of this is learnable.
 
-Device/dtype moves: unlike ``AMGPreconditioner`` (whose single hierarchy is
-*lazily* built on first ``apply()`` and so needs an ``_apply`` override to
-invalidate a stale-device cache), every hierarchy here is built once at
-construction and stored eagerly - there is no lazy rebuild path to protect.
-A ``.to()`` call after construction moves the registered ``_matrix`` buffer
+Device/dtype moves: unlike ``AMGPreconditioner`` (whose ``_apply`` override
+drops its cached hierarchy after a device/dtype move, requiring a fresh
+``setup()`` call before the next ``apply()``), this class has no such
+override - every hierarchy here is built once by ``setup()`` and kept as-is
+until ``setup()`` runs again.
+A ``.to()`` call after ``setup()`` moves the registered ``_matrix`` buffer
 but intentionally leaves the already-built hierarchies' tensors on their
 original device: rebuilding the whole composite bootstrap loop on every
 device move would be surprising, expensive (it is multiple multigrid
@@ -53,6 +54,7 @@ from .smoothers import resolve_jacobi_default
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Self
 
     from .protocols import MultigridSmoother
 
@@ -87,14 +89,13 @@ def _move_hierarchy(hierarchy: MultigridHierarchy, like: torch.Tensor) -> Multig
 class BootCMatchPreconditioner(Preconditioner, nn.Module):
     """BootCMatch preconditioner (TOMS Sections 4-5), dense.
 
-    Runs ``BootCMatchSetup.run`` at construction to build a composite of
+    Runs ``BootCMatchSetup.run`` in ``setup()`` to build a composite of
     independent multigrid hierarchies, then applies their multiplicative
     composition as the preconditioner. A fixed linear composite of fixed
     linear cycles, so plain PCG is valid (same reasoning as
     ``BootstrapAMGPreconditioner``).
 
     Args:
-        matrix (torch.Tensor): SPD system matrix A (n x n).
         seed (int): Seed of the default random-vector source.
         draw (Callable[[int], torch.Tensor] | None): Explicit uniform
             ``[0, 1)`` source overriding ``seed``.
@@ -120,7 +121,6 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
 
     def __init__(
         self,
-        matrix: torch.Tensor,
         seed: int = 0,
         draw: Callable[[int], torch.Tensor] | None = None,
         max_levels: int = 10,
@@ -133,10 +133,9 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
         n_pre: int = 1,
         n_post: int = 1,
     ) -> None:
-        """Run the BootCMatch bootstrap setup and store its composite hierarchies.
+        """Store setup hyperparameters; ``setup()`` runs the BootCMatch bootstrap loop.
 
         Args:
-            matrix (torch.Tensor): SPD system matrix A (n x n).
             seed (int): Seed of the default random-vector source.
             draw (Callable[[int], torch.Tensor] | None): Explicit uniform
                 ``[0, 1)`` source overriding ``seed``.
@@ -154,12 +153,12 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
             n_post (int): Solve-time post-smoothing sweeps.
         """
         nn.Module.__init__(self)
-        cycle: VCycle = prebuilt_cycle(
+        self._cycle: VCycle = prebuilt_cycle(
             resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
         )
-        setup = BootCMatchSetup(
+        self._bootcmatch_setup = BootCMatchSetup(
             coarsening_factory=BootCMatchCoarsening,
-            cycle=cycle,
+            cycle=self._cycle,
             draw=draw if draw is not None else seeded_draw(seed),
             max_levels=max_levels,
             max_coarse=max_coarse,
@@ -167,10 +166,28 @@ class BootCMatchPreconditioner(Preconditioner, nn.Module):
             rho_desired=rho_desired,
             max_hierarchies=max_hierarchies,
         )
-        self._hierarchies: tuple[MultigridHierarchy, ...] = setup.run(matrix)
-        self._cycle = cycle
+        self._hierarchies: tuple[MultigridHierarchy, ...] = ()
         self._matrix: torch.Tensor
-        self.register_buffer("_matrix", matrix)
+        self.register_buffer("_matrix", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Run the BootCMatch bootstrap loop and store its composite hierarchies.
+
+        Args:
+            matrix (torch.Tensor): SPD system matrix A (n x n).
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        self._hierarchies = self._bootcmatch_setup.run(matrix)
+        self._matrix = matrix
+        self._mark_ready()
+        return self
 
     @property
     def hierarchies(self) -> tuple[MultigridHierarchy, ...]:

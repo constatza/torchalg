@@ -127,21 +127,21 @@ class TestAdaptiveSAPreconditionerMatchesDense:
         residual = torch.randn(poisson_1d_large_dense.shape[0], dtype=poisson_1d_large_dense.dtype)
 
         dense_preconditioner = DenseAdaptiveSAPreconditioner(
-            poisson_1d_large_dense,
             num_candidates=2,
             candidate_iters=2,
             max_levels=3,
             max_coarse=4,
             draw=seeded_draw_factory(0),
         )
+        dense_preconditioner.setup(poisson_1d_large_dense)
         sparse_preconditioner = AdaptiveSAPreconditioner(
-            sparse_matrix,
             num_candidates=2,
             candidate_iters=2,
             max_levels=3,
             max_coarse=4,
             draw=seeded_draw_factory(0),
         )
+        sparse_preconditioner.setup(sparse_matrix)
 
         dense_out = dense_preconditioner.apply(residual)
         sparse_out = sparse_preconditioner.apply(residual)
@@ -155,21 +155,21 @@ class TestAdaptiveSAPreconditionerMatchesDense:
     ) -> None:
         """The full adaptive-SA-preconditioned PCG solve matches its dense sibling."""
         dense_preconditioner = DenseAdaptiveSAPreconditioner(
-            poisson_1d_large_dense,
             num_candidates=2,
             candidate_iters=2,
             max_levels=3,
             max_coarse=4,
             draw=seeded_draw_factory(0),
         )
+        dense_preconditioner.setup(poisson_1d_large_dense)
         sparse_preconditioner = AdaptiveSAPreconditioner(
-            poisson_1d_large_dense.to_sparse_csr(),
             num_candidates=2,
             candidate_iters=2,
             max_levels=3,
             max_coarse=4,
             draw=seeded_draw_factory(0),
         )
+        sparse_preconditioner.setup(poisson_1d_large_dense.to_sparse_csr())
 
         dense_solution, dense_info = pcg(
             poisson_1d_large_dense,
@@ -191,5 +191,6 @@ class TestAdaptiveSAPreconditionerMatchesDense:
 
     def test_raises_on_single_level(self, poisson_1d_dense: torch.Tensor) -> None:
         sparse_matrix = poisson_1d_dense.to_sparse_csr()
+        preconditioner = AdaptiveSAPreconditioner(max_coarse=poisson_1d_dense.shape[0])
         with pytest.raises(ValueError, match="single level"):
-            AdaptiveSAPreconditioner(sparse_matrix, max_coarse=poisson_1d_dense.shape[0])
+            preconditioner.setup(sparse_matrix)

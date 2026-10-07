@@ -601,9 +601,9 @@ def bootstrap_amg_preconditioner_64(
     anisotropic_2d_matrix_64: torch.Tensor,
 ) -> BootstrapAMGPreconditioner:
     """``BootstrapAMGPreconditioner`` on the anisotropic 64-node system, the brief's own worked example."""
-    return BootstrapAMGPreconditioner(
-        anisotropic_2d_matrix_64, k_r=8, eta=4, n_bootstrap_cycles=2, seed=5
-    )
+    precond = BootstrapAMGPreconditioner(k_r=8, eta=4, n_bootstrap_cycles=2, seed=5)
+    precond.setup(anisotropic_2d_matrix_64)
+    return precond
 
 
 def test_bootstrap_amg_preconditioner_reduces_pcg_iterations(
@@ -654,8 +654,9 @@ def test_bootstrap_amg_preconditioner_uses_configured_cycle_sweep_counts(
 ) -> None:
     """[STATUS14] treats sweep counts as experiment-specific (eta = 2, 4, 6, 8); expose them."""
     preconditioner = BootstrapAMGPreconditioner(
-        anisotropic_2d_matrix_64, k_r=8, eta=4, n_bootstrap_cycles=2, seed=5, n_pre=3, n_post=2
+        k_r=8, eta=4, n_bootstrap_cycles=2, seed=5, n_pre=3, n_post=2
     )
+    preconditioner.setup(anisotropic_2d_matrix_64)
     assert preconditioner._cycle._n_pre == 3  # ty: ignore[unresolved-attribute]
     assert preconditioner._cycle._n_post == 2  # ty: ignore[unresolved-attribute]
 
@@ -669,13 +670,13 @@ def test_bootstrap_amg_preconditioner_accepts_seed_vectors(
     )
 
     preconditioner = BootstrapAMGPreconditioner(
-        anisotropic_2d_matrix_64,
         k_r=8,
         eta=4,
         n_bootstrap_cycles=2,
         seed=5,
         seed_vectors=seed_vectors,
     )
+    preconditioner.setup(anisotropic_2d_matrix_64)
 
     assert preconditioner.result.candidates.shape[1] == 8 + 1
 
@@ -685,13 +686,13 @@ def test_bootstrap_amg_preconditioner_accepts_k_e(
 ) -> None:
     """[BAMG11] Algorithm 1's MGE enrichment is reachable through the public preconditioner too."""
     preconditioner = BootstrapAMGPreconditioner(
-        anisotropic_2d_matrix_64,
         k_r=8,
         eta=4,
         n_bootstrap_cycles=2,
         seed=5,
         k_e=2,
     )
+    preconditioner.setup(anisotropic_2d_matrix_64)
 
     assert preconditioner.result.candidates.shape[1] == 8 + 2
 
@@ -708,13 +709,13 @@ def test_bootstrap_amg_preconditioner_accepts_test_vector_draw(
         return torch.randn(n, generator=generator, dtype=anisotropic_2d_matrix_64.dtype)
 
     preconditioner = BootstrapAMGPreconditioner(
-        anisotropic_2d_matrix_64,
         k_r=8,
         eta=4,
         n_bootstrap_cycles=2,
         seed=5,
         test_vector_draw=normal_draw,
     )
+    preconditioner.setup(anisotropic_2d_matrix_64)
 
     assert len(preconditioner.result.matrices) >= 2
 
@@ -726,13 +727,13 @@ def test_bootstrap_amg_preconditioner_uses_configured_solve_smoother(
 ) -> None:
     """BAMG setup stays internal, while its solve-time cycle uses the injected smoother."""
     preconditioner = BootstrapAMGPreconditioner(
-        anisotropic_2d_matrix_64,
         k_r=4,
         eta=2,
         n_bootstrap_cycles=1,
         seed=5,
         smoother=raising_smoother,
     )
+    preconditioner.setup(anisotropic_2d_matrix_64)
     with pytest.raises(RuntimeError, match="configured smoother used"):
         preconditioner.apply(pcg_rhs_64)
 
@@ -742,8 +743,11 @@ def test_bootstrap_amg_preconditioner_raises_when_setup_yields_a_single_level(
 ) -> None:
     """A ``max_coarse`` at or above the system size leaves nothing to coarsen; must raise, not silently no-op."""
     matrix = poisson_1d_factory(8)
+    preconditioner = BootstrapAMGPreconditioner(
+        k_r=4, eta=2, n_bootstrap_cycles=1, max_coarse=8, seed=1
+    )
     with pytest.raises(ValueError, match="single level"):
-        BootstrapAMGPreconditioner(matrix, k_r=4, eta=2, n_bootstrap_cycles=1, max_coarse=8, seed=1)
+        preconditioner.setup(matrix)
 
 
 class TestBootstrapAMGResultAndStr:

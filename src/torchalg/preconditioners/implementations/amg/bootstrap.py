@@ -216,6 +216,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
+from torchalg.preconditioners.base import PreconditionerContext
 
 from ._algebraic_distance import (
     algebraic_distance,
@@ -238,6 +239,8 @@ from .smoothers import GaussSeidelSmoother, resolve_jacobi_default
 from .transfer import DenseTransferOperator
 
 if TYPE_CHECKING:
+    from typing import Self
+
     from .protocols import MultigridSmoother
 
 _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
@@ -738,12 +741,13 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     but ``BootCMatchPreconditioner`` (``torchalg...amg.bootcmatch``) is the
     one to prefer for sparse/large-scale use.
 
-    Runs ``BootstrapSetup.run`` at construction, then applies one
+    Runs ``BootstrapSetup.run`` in ``setup()``, then applies one
     V(1,1)-cycle with weighted-Jacobi smoothing by default and a
     pseudo-inverse coarse solve - a fixed symmetric linear operator, so plain
     PCG is valid (same reasoning as ``AdaptiveSAPreconditioner``). Setup cost
     is several multiples of a classical-AMG setup (Sec. 8), so it pays off
-    when one matrix is reused across many solves. Compatible-relaxation
+    when one matrix is reused across many solves (call ``setup()`` once,
+    then ``apply()`` many times). Compatible-relaxation
     coarsening keeps symmetric Gauss-Seidel unconditionally: CR's relaxation
     *is* the coarsening criterion ([AD11] Sec. 3.2, eq. 3.3-3.4, confirmed -
     the F-relaxation convergence-rate test), not a smoothing style, so
@@ -793,7 +797,6 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
 
     def __init__(
         self,
-        matrix: torch.Tensor,
         k_r: int = 8,
         eta: int = 4,
         n_bootstrap_cycles: int = 2,
@@ -815,10 +818,9 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         n_pre: int = 1,
         n_post: int = 1,
     ) -> None:
-        """Run the Bootstrap AMG setup and wrap the resulting hierarchy.
+        """Store setup hyperparameters; ``setup()`` runs the Bootstrap AMG algorithm.
 
         Args:
-            matrix (torch.Tensor): SPD system matrix A (n x n).
             k_r (int): Number of relaxation-derived test vectors.
             eta (int): Relaxation sweeps per test vector per level.
             n_bootstrap_cycles (int): Number of bootstrap-cycle passes.
@@ -852,12 +854,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
                 smoother, or ``None`` for weighted Jacobi.
             n_pre (int): Solve-time pre-smoothing sweeps.
             n_post (int): Solve-time post-smoothing sweeps.
-
-        Raises:
-            ValueError: If the setup produced a single level (nothing to
-                coarsen).
         """
-        setup = BootstrapSetup(
+        self._bootstrap_setup = BootstrapSetup(
             coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
                 vectors,
                 relaxation,
@@ -880,24 +878,48 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             max_levels=max_levels,
             max_coarse=max_coarse,
         )
-        result = setup.run(
-            matrix,
-            draw if draw is not None else seeded_draw(seed),
-            seed_vectors=seed_vectors,
-            test_vector_draw=test_vector_draw,
-        )
-        if len(result.matrices) < 2:
-            raise ValueError("bootstrap AMG setup produced a single level; lower max_coarse")
+        self._run_draw = draw if draw is not None else seeded_draw(seed)
+        self._seed_vectors = seed_vectors
+        self._test_vector_draw = test_vector_draw
         super().__init__(
-            matrix=matrix,
+            matrix=torch.empty(0),
             coarsening=PrebuiltCoarsening("bootstrap AMG"),
             cycle=prebuilt_cycle(
                 resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
             ),
-            n_levels=len(result.matrices),
+            n_levels=2,
             linear=True,
         )
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Run the Bootstrap AMG setup algorithm and build the resulting hierarchy.
+
+        Args:
+            matrix (torch.Tensor): SPD system matrix A (n x n).
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+
+        Raises:
+            ValueError: If the setup produced a single level (nothing to
+                coarsen).
+        """
+        result = self._bootstrap_setup.run(
+            matrix,
+            self._run_draw,
+            seed_vectors=self._seed_vectors,
+            test_vector_draw=self._test_vector_draw,
+        )
+        if len(result.matrices) < 2:
+            raise ValueError("bootstrap AMG setup produced a single level; lower max_coarse")
         self._result = result
+        self._n_levels = len(result.matrices)
+        return super().setup(matrix, context)
 
     @property
     def result(self) -> BootstrapAMGResult:
@@ -905,7 +927,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
 
         Returns:
             BootstrapAMGResult: Levels, prolongations, and relaxation-derived
-                test vectors from the setup that ran at construction.
+                test vectors from the setup that last ran.
         """
         return self._result
 

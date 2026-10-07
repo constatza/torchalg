@@ -42,7 +42,7 @@ def test_fcg_pcg_equivalence_on_file(system, convergence_tolerances, precond_typ
 
     preconditioner = None
     if precond_type == "ilu":
-        preconditioner = ICholeskyPreconditioner(l_ref)
+        preconditioner = ICholeskyPreconditioner().setup(l_ref)
 
     _, result_pcg = pcg(
         a,
@@ -90,7 +90,7 @@ def test_ic0_quality_vs_reference(system, convergence_tolerances) -> None:
     """
     a, _b, _x_exact, l_reference = system
 
-    ic0_precond = IC0Preconditioner(a, threshold=IC0_THRESHOLD)
+    ic0_precond = IC0Preconditioner(threshold=IC0_THRESHOLD).setup(a)
     l_computed = ic0_precond._operator
 
     a_lower = torch.tril(a)
@@ -138,8 +138,8 @@ def test_ic0_solver_performance_vs_reference(system, convergence_tolerances) -> 
     a, b, _x_exact, l_reference = system
     rtol, atol = convergence_tolerances
 
-    ic0_precond = IC0Preconditioner(a, threshold=IC0_THRESHOLD)
-    ref_precond = ICholeskyPreconditioner(l_reference)
+    ic0_precond = IC0Preconditioner(threshold=IC0_THRESHOLD).setup(a)
+    ref_precond = ICholeskyPreconditioner().setup(l_reference)
 
     x_ic0, result_ic0 = flexible_cg(
         a, b, preconditioner=ic0_precond, rtol=rtol, atol=atol, maxiter=1000

@@ -24,6 +24,8 @@ non-uniform-batch formula.
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 from torch import nn
 
@@ -256,20 +258,32 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     Example:
         >>> import torch
         >>> matrix = (torch.eye(3, dtype=torch.float64) * 2.0).to_sparse_csr()
-        >>> precond = ILUPreconditioner(matrix)
+        >>> precond = ILUPreconditioner()
+        >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
 
-    def __init__(self, matrix: torch.Tensor) -> None:
-        """Initialize from sparse CSR system matrix, registering the combined LU factor.
+    def __init__(self) -> None:
+        """Register the (not yet computed) combined LU-factor buffer."""
+        nn.Module.__init__(self)
+        self._operator: torch.Tensor
+        self.register_buffer("_operator", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Compute and register the sparse ILU(0) factorization of ``matrix``.
 
         Args:
             matrix (torch.Tensor): Sparse CSR system matrix ``A``, shape
                 ``(n, n)``.
+            context (PreconditionerContext | None): Ignored.
         """
-        nn.Module.__init__(self)
-        self._operator: torch.Tensor
-        self.register_buffer("_operator", self._compute_operator(matrix))
+        self._operator = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Compute the sparse ILU(0) factorization of the system matrix.

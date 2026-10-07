@@ -24,8 +24,8 @@ def test_icholesky_preconditioner_exact_inverse(
     (``M = L @ L.T = A``), the preconditioner's ``apply`` is exactly
     ``A^{-1}``: ``A @ z`` should reconstruct ``r``.
     """
-    precond = ICholeskyPreconditioner(cholesky_factor_random_spd_small_torch)
-
+    precond = ICholeskyPreconditioner()
+    precond.setup(cholesky_factor_random_spd_small_torch)
     z = precond.apply(rhs_random_small_torch)
     reconstructed_r = random_spd_small_torch @ z
 
@@ -38,8 +38,8 @@ def test_icholesky_preconditioner_shapes(
     ones_residual_5x2: torch.Tensor,
 ) -> None:
     """Verify shape handling for both single-vector and batched residual input."""
-    precond = ICholeskyPreconditioner(cholesky_factor_identity_5)
-
+    precond = ICholeskyPreconditioner()
+    precond.setup(cholesky_factor_identity_5)
     z = precond.apply(ones_residual_5)
     assert z.shape == ones_residual_5.shape
 

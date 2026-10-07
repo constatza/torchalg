@@ -64,7 +64,7 @@ def test_solve_moves_module_preconditioner_to_resolved_device(
     different device.
     """
     matrix, rhs, _ = tridiagonal_system_known_solution_torch
-    preconditioner = JacobiPreconditioner(matrix)
+    preconditioner = JacobiPreconditioner().setup(matrix)
     solver = PCGSolver(
         preconditioner=preconditioner,
         convergence_criterion=CombinedToleranceCriterion(rtol=1e-10, atol=1e-14),
@@ -87,7 +87,7 @@ def test_place_on_device_failure_leaves_preconditioner_untouched(
     can safely retry.
     """
     matrix, rhs, _ = tridiagonal_system_known_solution_torch
-    preconditioner = JacobiPreconditioner(matrix)
+    preconditioner = JacobiPreconditioner().setup(matrix)
     solver = PCGSolver(preconditioner=preconditioner)
     original_inv_diag = preconditioner.inv_diag
 
@@ -156,7 +156,7 @@ def test_solve_preserves_preconditioner_buffer_dtype(
     """Moving an nn.Module preconditioner during placement never coerces its buffer dtype."""
     matrix = to_torch(tridiagonal_spd_small, dtype=dtype)
     rhs = to_torch(rhs_ones_small, dtype=dtype)
-    preconditioner = JacobiPreconditioner(matrix)
+    preconditioner = JacobiPreconditioner().setup(matrix)
     rtol, atol = _PRECISION_TOLERANCES[dtype]
     solver = PCGSolver(
         preconditioner=preconditioner,

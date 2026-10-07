@@ -30,7 +30,8 @@ def test_jacobi_preserves_signs(
         sign(r_i) (inverted twice). This test ensures Jacobi handles
         negative diagonal elements correctly.
     """
-    precond = JacobiPreconditioner(mixed_sign_diagonal_matrix)
+    precond = JacobiPreconditioner()
+    precond.setup(mixed_sign_diagonal_matrix)
     z = precond.apply(mixed_sign_residual)
 
     expected = mixed_sign_residual / torch.diagonal(mixed_sign_diagonal_matrix)
@@ -48,7 +49,8 @@ def test_jacobi_correctness_on_well_conditioned_diagonal(
         Jacobi preconditioner: z = diag(A)^{-1} @ r. For a diagonal matrix,
         this simplifies to element-wise division.
     """
-    precond = JacobiPreconditioner(well_conditioned_matrix)
+    precond = JacobiPreconditioner()
+    precond.setup(well_conditioned_matrix)
     z = precond.apply(residual_vector)
 
     expected = residual_vector / torch.diagonal(well_conditioned_matrix)
@@ -58,7 +60,8 @@ def test_jacobi_correctness_on_well_conditioned_diagonal(
 def test_jacobi_preconditioner_from_matrix(torch_dtype: torch.dtype) -> None:
     """Verify Jacobi preconditioner computes diagonal inverse from matrix."""
     matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0], dtype=torch_dtype))
-    precond = JacobiPreconditioner(matrix)
+    precond = JacobiPreconditioner()
+    precond.setup(matrix)
 
     r = torch.diagonal(matrix).clone()
     z = precond.apply(r)
@@ -72,7 +75,8 @@ def test_jacobi_preconditioner_with_tridiagonal(
     rhs_ones_small_torch: torch.Tensor,
 ) -> None:
     """Verify Jacobi preconditioner from an actual SPD matrix."""
-    precond = JacobiPreconditioner(tridiagonal_spd_small_torch)
+    precond = JacobiPreconditioner()
+    precond.setup(tridiagonal_spd_small_torch)
     z = precond.apply(rhs_ones_small_torch)
 
     expected = rhs_ones_small_torch / torch.diagonal(tridiagonal_spd_small_torch)
@@ -82,7 +86,8 @@ def test_jacobi_preconditioner_with_tridiagonal(
 def test_jacobi_handles_near_zero_diagonal(torch_dtype: torch.dtype) -> None:
     """Verify Jacobi preconditioner protects against near-zero diagonals."""
     matrix = torch.diag(torch.tensor([2.0, 1e-15, 1.0], dtype=torch_dtype))
-    precond = JacobiPreconditioner(matrix)
+    precond = JacobiPreconditioner()
+    precond.setup(matrix)
 
     r = torch.tensor([2.0, 4.0, 1.0], dtype=torch_dtype)
     z = precond.apply(r)
@@ -98,7 +103,8 @@ def test_jacobi_preserves_dtype(
     torch_dtype: torch.dtype,
 ) -> None:
     """Verify JacobiPreconditioner preserves the working dtype."""
-    precond = JacobiPreconditioner(well_conditioned_matrix)
+    precond = JacobiPreconditioner()
+    precond.setup(well_conditioned_matrix)
     result = precond.apply(residual_vector)
 
     assert result.dtype == torch_dtype
@@ -117,19 +123,22 @@ class TestJacobiIsNnModule:
 
     def test_is_nn_module_instance(self, well_conditioned_matrix: torch.Tensor) -> None:
         """``JacobiPreconditioner`` is a genuine ``nn.Module``."""
-        precond = JacobiPreconditioner(well_conditioned_matrix)
+        precond = JacobiPreconditioner()
+        precond.setup(well_conditioned_matrix)
         assert isinstance(precond, torch.nn.Module)
 
     def test_inv_diag_is_registered_buffer(self, well_conditioned_matrix: torch.Tensor) -> None:
         """``inv_diag`` is registered via ``register_buffer``, not a plain attribute."""
-        precond = JacobiPreconditioner(well_conditioned_matrix)
+        precond = JacobiPreconditioner()
+        precond.setup(well_conditioned_matrix)
         buffer_names = dict(precond.named_buffers())
         assert "inv_diag" in buffer_names
         assert buffer_names["inv_diag"] is precond.inv_diag
 
     def test_to_dtype_moves_the_buffer(self, well_conditioned_matrix: torch.Tensor) -> None:
         """``.to(dtype=...)`` actually converts the registered buffer's dtype."""
-        precond = JacobiPreconditioner(well_conditioned_matrix)
+        precond = JacobiPreconditioner()
+        precond.setup(well_conditioned_matrix)
         assert precond.inv_diag.dtype == torch.float64
 
         precond = precond.to(dtype=torch.float32)
@@ -142,7 +151,8 @@ class TestJacobiIsNnModule:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA device")
     def test_to_device_moves_the_buffer(self, well_conditioned_matrix: torch.Tensor) -> None:
         """``.to(device=...)`` actually moves the registered buffer across devices."""
-        precond = JacobiPreconditioner(well_conditioned_matrix)
+        precond = JacobiPreconditioner()
+        precond.setup(well_conditioned_matrix)
         assert precond.inv_diag.device.type == "cpu"
 
         precond = precond.to(device="cuda")
@@ -173,8 +183,10 @@ def test_jacobi_improves_convergence(
     _, result_identity = flexible_cg(
         A, b, preconditioner=Identity(), rtol=rtol, atol=atol, maxiter=200
     )
+    jacobi_precond = JacobiPreconditioner()
+    jacobi_precond.setup(A)
     _, result_jacobi = flexible_cg(
-        A, b, preconditioner=JacobiPreconditioner(A), rtol=rtol, atol=atol, maxiter=200
+        A, b, preconditioner=jacobi_precond, rtol=rtol, atol=atol, maxiter=200
     )
 
     assert result_identity.converged

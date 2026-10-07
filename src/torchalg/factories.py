@@ -83,6 +83,17 @@ def flexible_cg(
         preconditioner (Preconditioner | Callable | None): ``M_k^{-1}``
             applied each iteration; ``None`` uses the identity (unpreconditioned
             CG). A plain callable is wrapped in ``CallablePreconditioner``.
+            Every ``Preconditioner`` follows an explicit two-phase contract
+            (see ``torchalg.preconditioners.base.Preconditioner``): the
+            caller must call ``.setup(A)`` on it before passing it in here -
+            ``flexible_cg()`` only ever calls ``.apply()``, never
+            ``.setup()``. This is what lets one ``setup()`` call be reused
+            across multiple solves against the same ``A`` (e.g. several
+            right-hand sides): build once, pass the same bound
+            preconditioner into several ``flexible_cg()``/``pcg()`` calls.
+            ``None`` and a plain callable are exempt - the ``Identity``/
+            ``CallablePreconditioner`` wrappers this function constructs for
+            them are already ready, with nothing to set up.
         extra_inputs (Mapping[str, torch.Tensor] | None): Named tensors bound
             onto preconditioners that declare ``BindableInputs``.
         m_max (int): Orthogonalization window - number of previous
@@ -181,6 +192,17 @@ def pcg(
         preconditioner (Preconditioner | Callable | None): ``M^{-1}``
             applied each iteration; ``None`` uses the identity (unpreconditioned
             CG). A plain callable is wrapped in ``CallablePreconditioner``.
+            Every ``Preconditioner`` follows an explicit two-phase contract
+            (see ``torchalg.preconditioners.base.Preconditioner``): the
+            caller must call ``.setup(A)`` on it before passing it in here -
+            ``pcg()`` only ever calls ``.apply()``, never ``.setup()``. This
+            is what lets one ``setup()`` call be reused across multiple
+            solves against the same ``A`` (e.g. several right-hand sides):
+            build once, pass the same bound preconditioner into several
+            ``pcg()``/``flexible_cg()`` calls. ``None`` and a plain callable
+            are exempt - the ``Identity``/``CallablePreconditioner``
+            wrappers this function constructs for them are already ready,
+            with nothing to set up.
         extra_inputs (Mapping[str, torch.Tensor] | None): Named tensors bound
             onto preconditioners that declare ``BindableInputs``.
         m_max (int | None): If given, enables periodic reorthogonalization

@@ -70,9 +70,11 @@ def jacobi(small_diagonal_matrix: torch.Tensor) -> JacobiPreconditioner:
         small_diagonal_matrix: 3x3 diagonal matrix fixture.
 
     Returns:
-        JacobiPreconditioner: Fresh instance.
+        JacobiPreconditioner: Fresh instance, already ``setup()``.
     """
-    return JacobiPreconditioner(small_diagonal_matrix)
+    precond = JacobiPreconditioner()
+    precond.setup(small_diagonal_matrix)
+    return precond
 
 
 @pytest.fixture

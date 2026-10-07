@@ -22,8 +22,10 @@ class TestJacobiPreconditionerSparseDenseParity:
         torch.manual_seed(42)
         residual = torch.randn(poisson_1d_dense.shape[0], dtype=poisson_1d_dense.dtype)
 
-        dense_result = DenseJacobiPreconditioner(poisson_1d_dense).apply(residual)
-        sparse_result = JacobiPreconditioner(poisson_1d_dense.to_sparse_csr()).apply(residual)
+        dense_result = DenseJacobiPreconditioner().setup(poisson_1d_dense).apply(residual)
+        sparse_result = (
+            JacobiPreconditioner().setup(poisson_1d_dense.to_sparse_csr()).apply(residual)
+        )
 
         torch.testing.assert_close(sparse_result, dense_result)
 
@@ -31,8 +33,10 @@ class TestJacobiPreconditionerSparseDenseParity:
         torch.manual_seed(42)
         residual = torch.randn(poisson_2d_dense.shape[0], dtype=poisson_2d_dense.dtype)
 
-        dense_result = DenseJacobiPreconditioner(poisson_2d_dense).apply(residual)
-        sparse_result = JacobiPreconditioner(poisson_2d_dense.to_sparse_csr()).apply(residual)
+        dense_result = DenseJacobiPreconditioner().setup(poisson_2d_dense).apply(residual)
+        sparse_result = (
+            JacobiPreconditioner().setup(poisson_2d_dense.to_sparse_csr()).apply(residual)
+        )
 
         torch.testing.assert_close(sparse_result, dense_result)
 
@@ -45,13 +49,15 @@ class TestJacobiPreconditionerIsNnModule:
     """
 
     def test_inv_diag_is_registered_buffer(self, poisson_1d_csr: torch.Tensor) -> None:
-        precond = JacobiPreconditioner(poisson_1d_csr)
+        precond = JacobiPreconditioner()
+        precond.setup(poisson_1d_csr)
         buffer_names = dict(precond.named_buffers())
         assert "inv_diag" in buffer_names
         assert buffer_names["inv_diag"] is precond.inv_diag
 
     def test_to_dtype_moves_the_buffer(self, poisson_1d_csr: torch.Tensor) -> None:
-        precond = JacobiPreconditioner(poisson_1d_csr)
+        precond = JacobiPreconditioner()
+        precond.setup(poisson_1d_csr)
         assert precond.inv_diag.dtype == torch.float64
 
         precond = precond.to(dtype=torch.float32)

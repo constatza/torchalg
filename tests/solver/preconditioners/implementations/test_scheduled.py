@@ -43,9 +43,10 @@ def test_scheduled_preconditioner_limit_iters(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify ScheduledPreconditioner switches at limit_iters."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     fallback = Identity()
     scheduled = ScheduledPreconditioner(primary, fallback, limit_iters=5)
+    scheduled.setup(diagonal_matrix)
 
     # Before limit: use primary (Jacobi: z = r / diag = [2/2, 4/2] = [1, 2]).
     ctx = PreconditionerContext(iteration=3, residual_norm=1.0, rhs_norm=1.0)
@@ -68,8 +69,9 @@ def test_scheduled_preconditioner_default_fallback(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify ScheduledPreconditioner uses Identity as default fallback."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     scheduled = ScheduledPreconditioner(primary, fallback=None, limit_iters=2)
+    scheduled.setup(diagonal_matrix)
 
     # After limit: should use Identity (default fallback).
     ctx = PreconditionerContext(iteration=5, residual_norm=1.0, rhs_norm=1.0)
@@ -82,9 +84,10 @@ def test_scheduled_preconditioner_no_limit(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify ScheduledPreconditioner with no limit always uses primary."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     fallback = Identity()
     scheduled = ScheduledPreconditioner(primary, fallback, limit_iters=None)
+    scheduled.setup(diagonal_matrix)
 
     expected = torch.tensor([1.0, 2.0], dtype=residual_vector.dtype)
     for i in [0, 5, 10, 100]:
@@ -98,8 +101,9 @@ def test_scheduled_preconditioner_requires_context(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify ScheduledPreconditioner raises error when context is None."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     scheduled = ScheduledPreconditioner(primary, limit_iters=5)
+    scheduled.setup(diagonal_matrix)
 
     with pytest.raises(ValueError, match="requires context"):
         scheduled.apply(residual_vector, context=None)
@@ -121,9 +125,10 @@ def test_scheduled_preconditioner_iteration_zero(
     residual_vector: torch.Tensor,
 ) -> None:
     """Test that iteration=0 uses primary preconditioner when limit_iters > 0."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     fallback = Identity()
     scheduled = ScheduledPreconditioner(primary, fallback, limit_iters=5)
+    scheduled.setup(diagonal_matrix)
 
     ctx = PreconditionerContext(iteration=0, residual_norm=1.0, rhs_norm=1.0)
     z = scheduled.apply(residual_vector, ctx)
@@ -135,9 +140,10 @@ def test_scheduled_preconditioner_uses_fallback_before_start_iter(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify delayed schedules use fallback before start_iter."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     fallback = Identity()
     scheduled = ScheduledPreconditioner(primary, fallback, limit_iters=None, start_iter=3)
+    scheduled.setup(diagonal_matrix)
 
     ctx = PreconditionerContext(iteration=2, residual_norm=1.0, rhs_norm=1.0)
     z = scheduled.apply(residual_vector, ctx)
@@ -150,9 +156,10 @@ def test_scheduled_preconditioner_starts_primary_at_start_iter(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify delayed schedules activate primary at start_iter."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     fallback = Identity()
     scheduled = ScheduledPreconditioner(primary, fallback, limit_iters=None, start_iter=3)
+    scheduled.setup(diagonal_matrix)
 
     ctx = PreconditionerContext(iteration=3, residual_norm=1.0, rhs_norm=1.0)
     z = scheduled.apply(residual_vector, ctx)
@@ -165,9 +172,10 @@ def test_scheduled_preconditioner_delayed_limit_switches_back_to_fallback(
     residual_vector: torch.Tensor,
 ) -> None:
     """Verify limit_iters is measured from start_iter."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     fallback = Identity()
     scheduled = ScheduledPreconditioner(primary, fallback, limit_iters=2, start_iter=3)
+    scheduled.setup(diagonal_matrix)
 
     active_ctx = PreconditionerContext(iteration=4, residual_norm=1.0, rhs_norm=1.0)
     inactive_ctx = PreconditionerContext(iteration=5, residual_norm=1.0, rhs_norm=1.0)
@@ -193,6 +201,6 @@ def test_scheduled_preconditioner_rejects_negative_limit_iters() -> None:
 
 def test_primary_property_matches_constructor_arg(diagonal_matrix: torch.Tensor) -> None:
     """`primary` property returns exactly the preconditioner passed to `__init__`."""
-    primary = JacobiPreconditioner(diagonal_matrix)
+    primary = JacobiPreconditioner().setup(diagonal_matrix)
     scheduled = ScheduledPreconditioner(primary=primary, limit_iters=10, start_iter=0)
     assert scheduled.primary is primary

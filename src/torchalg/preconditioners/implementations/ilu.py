@@ -17,6 +17,8 @@ only - no fill-in beyond the original pattern, and no `drop_tol`/
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 from torch import nn
 
@@ -64,19 +66,31 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     Example:
         >>> import torch
         >>> matrix = torch.eye(3, dtype=torch.float64) * 2.0
-        >>> precond = ILUPreconditioner(matrix)
+        >>> precond = ILUPreconditioner()
+        >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
 
-    def __init__(self, matrix: torch.Tensor) -> None:
-        """Initialize from system matrix, registering the combined LU factor as a buffer.
+    def __init__(self) -> None:
+        """Register the (not yet computed) combined LU-factor buffer."""
+        nn.Module.__init__(self)
+        self._operator: torch.Tensor
+        self.register_buffer("_operator", None)
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Compute and register the dense ILU(0) factorization of ``matrix``.
 
         Args:
             matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.
+            context (PreconditionerContext | None): Ignored.
         """
-        nn.Module.__init__(self)
-        self._operator: torch.Tensor
-        self.register_buffer("_operator", self._compute_operator(matrix))
+        self._operator = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Compute the dense ILU(0) factorization of the system matrix.

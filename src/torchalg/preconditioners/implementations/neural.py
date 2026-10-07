@@ -10,6 +10,7 @@ from ..ports import ExtraInputPredictorPort, PredictorAdapter
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import Self
 
     import torch
 
@@ -19,10 +20,14 @@ logger = logging.getLogger(__name__)
 class NeuralPreconditioner(NonLinearPreconditioner):
     """Neural network preconditioner with automatic cleanup.
 
-    Loads a trained model from checkpoint and applies it to residuals.
-    Extra named inputs (matrix, coordinates, parameters) declared in
-    ``extra_input_names`` are pre-bound via ``bind_inputs()`` before the CG
-    loop and forwarded to the predictor on each ``apply()`` call.
+    Loads a trained model from checkpoint in ``setup()`` and applies it to
+    residuals in ``apply()``. Extra named inputs (matrix, coordinates,
+    parameters) declared in ``extra_input_names`` are pre-bound via
+    ``bind_inputs()`` before the CG loop and forwarded to the predictor on
+    each ``apply()`` call. Call ``setup()`` before ``bind_inputs()`` when
+    relying on ``extra_input_names``'s predictor-declared fallback (an
+    explicit ``extra_input_names`` constructor argument has no such
+    ordering requirement, since it never reads the predictor).
 
     GPU resources are automatically freed when the preconditioner is garbage
     collected.
@@ -53,6 +58,7 @@ class NeuralPreconditioner(NonLinearPreconditioner):
         >>> precond = NeuralPreconditioner(
         ...     Path("model.ckpt"), adapter=adapter, extra_input_names=("matrix",)
         ... )
+        >>> precond.setup(A)  # loads the checkpoint
         >>> precond.bind_inputs(matrix=A)  # done once before CG loop
         >>> z = precond.apply(residual)  # called each CG iteration
     """
@@ -65,7 +71,7 @@ class NeuralPreconditioner(NonLinearPreconditioner):
         adapter: PredictorAdapter | None = None,
         extra_input_names: tuple[str, ...] = (),
     ) -> None:
-        """Initialize neural preconditioner from checkpoint.
+        """Store checkpoint/adapter config; ``setup()`` loads the checkpoint.
 
         Args:
             checkpoint_path (Path): Path to trained model checkpoint.
@@ -85,13 +91,37 @@ class NeuralPreconditioner(NonLinearPreconditioner):
 
         self._extra_input_names: tuple[str, ...] = extra_input_names
         self._extra_inputs: dict[str, torch.Tensor] = {}
+        self._adapter = adapter
+        self._checkpoint_path = checkpoint_path
+        self._config_path = config_path
+        self._data_config_path = data_config_path
+        self._predictor: ExtraInputPredictorPort
 
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Load the predictor from checkpoint.
+
+        Args:
+            matrix (torch.Tensor): Ignored - accepted for interface
+                uniformity with every other ``Preconditioner``; the neural
+                predictor's setup cost is the checkpoint load/device
+                placement, not anything matrix-dependent.
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
         # Load predictor (GPU model); adapter contract guarantees ExtraInputPredictorPort.
-        self._predictor: ExtraInputPredictorPort = adapter.create_predictor(
-            checkpoint_path=checkpoint_path,
-            config_path=config_path,
-            data_config_path=data_config_path,
+        self._predictor = self._adapter.create_predictor(
+            checkpoint_path=self._checkpoint_path,
+            config_path=self._config_path,
+            data_config_path=self._data_config_path,
         )
+        self._mark_ready()
+        return self
 
     @property
     def extra_input_names(self) -> tuple[str, ...]:

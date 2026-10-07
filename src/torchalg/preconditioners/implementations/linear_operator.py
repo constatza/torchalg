@@ -12,6 +12,7 @@ scipy-specific wrapper type.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Self
 
 import torch
 
@@ -76,6 +77,24 @@ class LinearOperatorPreconditioner(Preconditioner):
                 applying ``M^{-1}`` to a residual vector.
         """
         self.operator = operator
+        self._mark_ready()
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """No-op: the wrapped callable is already usable after construction.
+
+        Args:
+            matrix (torch.Tensor): Ignored.
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, already ready.
+        """
+        self._mark_ready()
+        return self
 
     def apply(
         self,

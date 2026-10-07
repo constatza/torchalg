@@ -227,16 +227,20 @@ class TestIC0PreconditionerSparseDenseParity:
         torch.manual_seed(42)
         residual = torch.randn(poisson_1d_dense.shape[0], dtype=poisson_1d_dense.dtype)
 
-        dense_result = DenseIC0Preconditioner(poisson_1d_dense).apply(residual)
-        sparse_result = IC0Preconditioner(poisson_1d_dense.to_sparse_csr()).apply(residual)
+        dense_precond = DenseIC0Preconditioner()
+        dense_precond.setup(poisson_1d_dense)
+        sparse_precond = IC0Preconditioner()
+        sparse_precond.setup(poisson_1d_dense.to_sparse_csr())
 
-        torch.testing.assert_close(sparse_result, dense_result)
+        torch.testing.assert_close(sparse_precond.apply(residual), dense_precond.apply(residual))
 
     def test_matches_dense_on_poisson_2d(self, poisson_2d_dense: torch.Tensor) -> None:
         torch.manual_seed(42)
         residual = torch.randn(poisson_2d_dense.shape[0], dtype=poisson_2d_dense.dtype)
 
-        dense_result = DenseIC0Preconditioner(poisson_2d_dense).apply(residual)
-        sparse_result = IC0Preconditioner(poisson_2d_dense.to_sparse_csr()).apply(residual)
+        dense_precond = DenseIC0Preconditioner()
+        dense_precond.setup(poisson_2d_dense)
+        sparse_precond = IC0Preconditioner()
+        sparse_precond.setup(poisson_2d_dense.to_sparse_csr())
 
-        torch.testing.assert_close(sparse_result, dense_result)
+        torch.testing.assert_close(sparse_precond.apply(residual), dense_precond.apply(residual))

@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from torchalg.preconditioners.base import PreconditionerContext
 from torchalg.utils.spectral import approximate_spectral_radius
 from torchalg.utils.tentative import fit_candidates
 
@@ -56,6 +57,8 @@ from .smoothers import resolve_jacobi_default
 from .transfer import DenseTransferOperator
 
 if TYPE_CHECKING:
+    from typing import Self
+
     from .protocols import MultigridSmoother
 
 _SOLVE_TOLERANCE = 1e-20
@@ -456,13 +459,14 @@ def adaptive_sa_hierarchy(
 class AdaptiveSAPreconditioner(AMGPreconditioner):
     """Adaptive smoothed-aggregation AMG preconditioner (alpha-SA), PyAMG-faithful.
 
-    Runs ``adaptive_sa_hierarchy`` at construction, then applies one
+    Runs ``adaptive_sa_hierarchy`` in ``setup()``, then applies one
     V(1,1)-cycle with weighted-Jacobi smoothing by default and a pseudo-inverse
     coarse solve - a fixed symmetric linear operator, so plain PCG is valid.
     Adaptive candidate construction remains symmetric Gauss-Seidel to preserve
     the alpha-SA setup algorithm; ``smoother`` affects only solve-time cycles.
     Setup costs about ``num_candidates`` hierarchy builds, so it pays off when
-    one matrix is reused across many solves.
+    one matrix is reused across many solves (call ``setup()`` once, then
+    ``apply()`` many times).
 
     Args:
         matrix (torch.Tensor): SPD system matrix A (n x n).
@@ -497,7 +501,6 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
 
     def __init__(
         self,
-        matrix: torch.Tensor,
         num_candidates: int = 1,
         candidate_iters: int = 5,
         max_levels: int = 10,
@@ -512,10 +515,9 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         n_pre: int = 1,
         n_post: int = 1,
     ) -> None:
-        """Run the adaptive setup and wrap the resulting hierarchy.
+        """Store setup hyperparameters; ``setup()`` runs the adaptive algorithm.
 
         Args:
-            matrix (torch.Tensor): SPD system matrix A (n x n).
             num_candidates (int): Total number of candidates.
             candidate_iters (int): Relaxation sweeps / cycles per candidate step.
             max_levels (int): Maximum number of levels.
@@ -533,34 +535,60 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
                 smoother, or ``None`` for weighted Jacobi.
             n_pre (int): Solve-time pre-smoothing sweeps.
             n_post (int): Solve-time post-smoothing sweeps.
+        """
+        self._num_candidates = num_candidates
+        self._candidate_iters = candidate_iters
+        self._max_levels = max_levels
+        self._max_coarse = max_coarse
+        self._theta = theta
+        self._omega = omega
+        self._initial_candidates = initial_candidates
+        self._seed = seed
+        self._draw = draw
+        super().__init__(
+            matrix=torch.empty(0),
+            coarsening=PrebuiltCoarsening("adaptive SA"),
+            cycle=prebuilt_cycle(
+                resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
+            ),
+            n_levels=2,
+            linear=True,
+        )
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Run the adaptive setup algorithm and build the resulting hierarchy.
+
+        Args:
+            matrix (torch.Tensor): SPD system matrix A (n x n).
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
 
         Raises:
             ValueError: If the setup produced a single level (nothing to coarsen).
         """
         result = adaptive_sa_hierarchy(
             matrix,
-            initial_candidates=initial_candidates,
-            num_candidates=num_candidates,
-            candidate_iters=candidate_iters,
-            max_levels=max_levels,
-            max_coarse=max_coarse,
-            theta=theta,
-            omega=omega,
-            seed=seed,
-            draw=draw,
+            initial_candidates=self._initial_candidates,
+            num_candidates=self._num_candidates,
+            candidate_iters=self._candidate_iters,
+            max_levels=self._max_levels,
+            max_coarse=self._max_coarse,
+            theta=self._theta,
+            omega=self._omega,
+            seed=self._seed,
+            draw=self._draw,
         )
         if len(result.matrices) < 2:
             raise ValueError("adaptive setup produced a single level; lower max_coarse")
-        super().__init__(
-            matrix=matrix,
-            coarsening=PrebuiltCoarsening("adaptive SA"),
-            cycle=prebuilt_cycle(
-                resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
-            ),
-            n_levels=len(result.matrices),
-            linear=True,
-        )
         self._result = result
+        self._n_levels = len(result.matrices)
+        return super().setup(matrix, context)
 
     @property
     def result(self) -> AdaptiveSAResult:
@@ -568,7 +596,7 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
 
         Returns:
             AdaptiveSAResult: Levels, prolongations, and near-null-space
-                candidates from the setup that ran at construction.
+                candidates from the setup that last ran.
         """
         return self._result
 

@@ -343,16 +343,22 @@ def _pcg_cells(
                     if algorithm == "pcg":
                         preconditioner = None
                     elif algorithm == "pcg_jacobi":
+                        # setup() is intentionally inside the timed path for every
+                        # algorithm here, now that torchalg's Preconditioner is an
+                        # explicit two-phase (setup, apply) contract - this keeps
+                        # every branch measuring the same "construct + setup +
+                        # solve" cost a real caller pays, Jacobi's trivial setup
+                        # included.
                         preconditioner = (
-                            JacobiPreconditioner(operand)
+                            JacobiPreconditioner().setup(operand)
                             if fmt == "dense"
-                            else SparseJacobiPreconditioner(operand)
+                            else SparseJacobiPreconditioner().setup(operand)
                         )
                     elif algorithm == "pcg_sa_amg":
                         preconditioner = (
-                            vcycle_amg(operand, n_levels=3)
+                            vcycle_amg(operand, n_levels=3).setup(operand)
                             if fmt == "dense"
-                            else sparse_vcycle_amg(operand, n_levels=3)
+                            else sparse_vcycle_amg(operand, n_levels=3).setup(operand)
                         )
                     else:
                         # BootCMatch setup is intentionally inside the timed
@@ -363,9 +369,9 @@ def _pcg_cells(
                         # sweep's larger sparse-only sizes from building more
                         # levels than a solve actually benefits from.
                         preconditioner = (
-                            BootCMatchPreconditioner(operand, seed=0, max_levels=5)
+                            BootCMatchPreconditioner(seed=0, max_levels=5).setup(operand)
                             if fmt == "dense"
-                            else SparseBootCMatchPreconditioner(operand, seed=0, max_levels=5)
+                            else SparseBootCMatchPreconditioner(seed=0, max_levels=5).setup(operand)
                         )
                     return pcg(
                         operand,

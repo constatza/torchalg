@@ -64,7 +64,7 @@ def test_solver_iteration_count_reasonable_with_jacobi(
     """Well-conditioned small systems converge within a conservative bound."""
     matrix, rhs, _ = tridiagonal_system_known_solution_torch
     rtol, atol = convergence_tolerances
-    preconditioner = JacobiPreconditioner(matrix)
+    preconditioner = JacobiPreconditioner().setup(matrix)
     solver = flexible_cg if solver_name == "fcg" else pcg
 
     _, result = solver(

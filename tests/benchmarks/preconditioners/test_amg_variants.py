@@ -81,6 +81,7 @@ def test_amg_variant_converges(
     a = poisson_1d_factory(n)
     b = torch.ones(n, dtype=a.dtype)
     precond = amg_class(a, n_levels=n_levels)
+    precond.setup(a)
 
     x, info = flexible_cg(a, b, preconditioner=precond, rtol=1e-8, maxiter=200)
 
@@ -115,12 +116,12 @@ def test_wcycle_iters_not_worse_than_vcycle(
     a = poisson_1d_factory(n)
     b = torch.ones(n, dtype=a.dtype)
 
-    _, info_v = flexible_cg(
-        a, b, preconditioner=vcycle_amg(a, n_levels=n_levels), rtol=1e-8, maxiter=200
-    )
-    _, info_w = flexible_cg(
-        a, b, preconditioner=wcycle_amg(a, n_levels=n_levels), rtol=1e-8, maxiter=200
-    )
+    v_precond = vcycle_amg(a, n_levels=n_levels)
+    v_precond.setup(a)
+    w_precond = wcycle_amg(a, n_levels=n_levels)
+    w_precond.setup(a)
+    _, info_v = flexible_cg(a, b, preconditioner=v_precond, rtol=1e-8, maxiter=200)
+    _, info_w = flexible_cg(a, b, preconditioner=w_precond, rtol=1e-8, maxiter=200)
 
     assert info_v.converged and info_w.converged, "At least one variant did not converge"
     assert info_w.iterations <= info_v.iterations, (

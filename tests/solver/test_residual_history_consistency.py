@@ -51,7 +51,7 @@ def test_first_residual_is_r0_not_preconditioned_residual(
     rhs_progression_4_torch: torch.Tensor,
 ) -> None:
     """The first logged residual is ``||b - A @ x0||``, not ``||M^{-1}r0||``."""
-    preconditioner = JacobiPreconditioner(diagonal_4x4_torch)
+    preconditioner = JacobiPreconditioner().setup(diagonal_4x4_torch)
 
     _, result = flexible_cg(
         diagonal_4x4_torch,
@@ -74,8 +74,8 @@ def test_fcg_pcg_histories_match_with_jacobi(
     rhs_progression_4_torch: torch.Tensor,
 ) -> None:
     """FCG and PCG produce the same residual history for fixed Jacobi preconditioning."""
-    fcg_preconditioner = JacobiPreconditioner(diagonal_4x4_torch)
-    pcg_preconditioner = JacobiPreconditioner(diagonal_4x4_torch)
+    fcg_preconditioner = JacobiPreconditioner().setup(diagonal_4x4_torch)
+    pcg_preconditioner = JacobiPreconditioner().setup(diagonal_4x4_torch)
 
     _, result_fcg = flexible_cg(
         diagonal_4x4_torch,
@@ -141,7 +141,7 @@ def test_fcg_pcg_histories_match_with_finite_truncation_window(
         matrix,
         rhs,
         x0=x0,
-        preconditioner=JacobiPreconditioner(matrix),
+        preconditioner=JacobiPreconditioner().setup(matrix),
         rtol=1e-12,
         atol=1e-14,
         trace_mode=TraceMode.FULL,
@@ -150,7 +150,7 @@ def test_fcg_pcg_histories_match_with_finite_truncation_window(
         matrix,
         rhs,
         x0=x0,
-        preconditioner=JacobiPreconditioner(matrix),
+        preconditioner=JacobiPreconditioner().setup(matrix),
         m_max=3,
         rtol=1e-12,
         atol=1e-14,

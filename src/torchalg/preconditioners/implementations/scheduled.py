@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Self
+
 import torch
 
-from ..base import BindableInputs, NonLinearPreconditioner, Preconditioner, PreconditionerContext
+from ..base import (
+    BindableInputs,
+    NonLinearPreconditioner,
+    Preconditioner,
+    PreconditionerContext,
+    PreconditionerNotReadyError,
+)
 
 
 class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
@@ -34,11 +42,12 @@ class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
         >>> from .identity import Identity
         >>> from .jacobi import JacobiPreconditioner
         >>> scheduled = ScheduledPreconditioner(
-        ...     primary=JacobiPreconditioner(matrix),
+        ...     primary=JacobiPreconditioner(),
         ...     fallback=Identity(),
         ...     limit_iters=10,
         ...     start_iter=5,
         ... )
+        >>> scheduled.setup(matrix)
     """
 
     def __init__(
@@ -69,6 +78,33 @@ class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
         self._fallback = fallback
         self._limit_iters = limit_iters
         self._start_iter = start_iter
+
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Set up both the primary and fallback preconditioners.
+
+        Resolves the default ``Identity`` fallback (if none was supplied)
+        before setting it up, since both branches must be ready before this
+        preconditioner's ``apply()`` can dispatch to either of them.
+
+        Args:
+            matrix (torch.Tensor): System matrix A, forwarded to both.
+            context (PreconditionerContext | None): Forwarded to both.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        if self._fallback is None:
+            from .identity import Identity
+
+            self._fallback = Identity()
+        self._primary.setup(matrix, context)
+        self._fallback.setup(matrix, context)
+        self._mark_ready()
+        return self
 
     @property
     def primary(self) -> Preconditioner:
@@ -126,14 +162,13 @@ class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
         if context is None:
             raise ValueError("ScheduledPreconditioner requires context for iteration tracking")
 
+        if self._uses_primary(context.iteration):
+            return self._primary.apply(residual, context)
         if self._fallback is None:
-            from .identity import Identity
-
-            self._fallback = Identity()
-
-        precond = self._primary if self._uses_primary(context.iteration) else self._fallback
-
-        return precond.apply(residual, context)
+            raise PreconditionerNotReadyError(
+                f"{type(self).__name__}.setup() must be called before apply()."
+            )
+        return self._fallback.apply(residual, context)
 
     def _uses_primary(self, iteration: int) -> bool:
         """Return whether primary is active for the given zero-based iteration.

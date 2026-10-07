@@ -89,12 +89,12 @@ class TestResidualHistoryAgainstPyAMG:
         smoother = ("jacobi", {"omega": OMEGA, "iterations": 1, "withrho": False})
         change_smoothers(reference, smoother, smoother)
         ours = AdaptiveSAPreconditioner(
-            aniso_matrix,
             theta=0.25,
             draw=replay_draw(41),
             smoother_omega=OMEGA,
             **options,
         )
+        ours.setup(aniso_matrix)
         oracle = as_torch_preconditioner(reference, "V", torch_dtype)
         _, ours_info = pcg(aniso_matrix, rhs, preconditioner=ours, rtol=1e-10, trace_mode="minimal")
         _, oracle_info = pcg(
@@ -116,12 +116,12 @@ class TestResidualHistoryAgainstPyAMG:
     ) -> None:
         """Adaptive setup remains GS-faithful while its solve-time smoother is injectable."""
         preconditioner = AdaptiveSAPreconditioner(
-            aniso_matrix,
             num_candidates=1,
             max_levels=2,
             max_coarse=5,
             smoother=raising_smoother,
         )
+        preconditioner.setup(aniso_matrix)
         with pytest.raises(RuntimeError, match="configured smoother used"):
             preconditioner.apply(rhs)
 
@@ -131,11 +131,11 @@ class TestResidualHistoryAgainstPyAMG:
     ) -> None:
         """The quick solve path defaults to Jacobi without changing GS-based setup."""
         preconditioner = AdaptiveSAPreconditioner(
-            aniso_matrix,
             num_candidates=1,
             max_levels=2,
             max_coarse=5,
         )
+        preconditioner.setup(aniso_matrix)
         assert isinstance(
             preconditioner._cycle._smoother,  # ty: ignore[unresolved-attribute]
             JacobiSmoother,
@@ -147,11 +147,11 @@ class TestResidualHistoryAgainstPyAMG:
     ) -> None:
         """Solve-time sweep counts default to V(1,1), matching the historical hardcoded cycle."""
         preconditioner = AdaptiveSAPreconditioner(
-            aniso_matrix,
             num_candidates=1,
             max_levels=2,
             max_coarse=5,
         )
+        preconditioner.setup(aniso_matrix)
         assert preconditioner._cycle._n_pre == 1  # ty: ignore[unresolved-attribute]
         assert preconditioner._cycle._n_post == 1  # ty: ignore[unresolved-attribute]
 
@@ -161,13 +161,13 @@ class TestResidualHistoryAgainstPyAMG:
     ) -> None:
         """Sweep counts are experiment-specific in the source papers; expose them."""
         preconditioner = AdaptiveSAPreconditioner(
-            aniso_matrix,
             num_candidates=1,
             max_levels=2,
             max_coarse=5,
             n_pre=3,
             n_post=2,
         )
+        preconditioner.setup(aniso_matrix)
         assert preconditioner._cycle._n_pre == 3  # ty: ignore[unresolved-attribute]
         assert preconditioner._cycle._n_post == 2  # ty: ignore[unresolved-attribute]
 
@@ -175,16 +175,14 @@ class TestResidualHistoryAgainstPyAMG:
 class TestAdaptiveSAResultAndStr:
     def test_result_property_matches_private_attribute(self, aniso_matrix: torch.Tensor) -> None:
         """`result` property exposes exactly the setup result stored at construction."""
-        preconditioner = AdaptiveSAPreconditioner(
-            aniso_matrix, num_candidates=1, max_levels=2, max_coarse=5
-        )
+        preconditioner = AdaptiveSAPreconditioner(num_candidates=1, max_levels=2, max_coarse=5)
+        preconditioner.setup(aniso_matrix)
         assert preconditioner.result is preconditioner._result
 
     def test_str_reports_levels_candidates_and_coarse_dim(self, aniso_matrix: torch.Tensor) -> None:
         """`str()` reports the realized hierarchy shape, not a generic repr."""
-        preconditioner = AdaptiveSAPreconditioner(
-            aniso_matrix, num_candidates=2, max_levels=2, max_coarse=5
-        )
+        preconditioner = AdaptiveSAPreconditioner(num_candidates=2, max_levels=2, max_coarse=5)
+        preconditioner.setup(aniso_matrix)
         text = str(preconditioner)
         assert "alpha-SA" in text
         assert f"n_levels={len(preconditioner.result.matrices)}" in text

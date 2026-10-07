@@ -267,7 +267,6 @@ class TestBootstrapAMGPreconditioner:
         sparse_matrix = poisson_1d_large_dense.to_sparse_csr()
 
         dense_precond = DenseBootstrapAMGPreconditioner(
-            poisson_1d_large_dense,
             k_r=6,
             eta=2,
             n_bootstrap_cycles=1,
@@ -278,8 +277,8 @@ class TestBootstrapAMGPreconditioner:
             max_coarse=4,
             seed=5,
         )
+        dense_precond.setup(poisson_1d_large_dense)
         sparse_precond = BootstrapAMGPreconditioner(
-            sparse_matrix,
             k_r=6,
             eta=2,
             n_bootstrap_cycles=1,
@@ -290,6 +289,7 @@ class TestBootstrapAMGPreconditioner:
             max_coarse=4,
             seed=5,
         )
+        sparse_precond.setup(sparse_matrix)
 
         assert len(sparse_precond.result.matrices) == len(dense_precond.result.matrices)
         for sparse_level, dense_level in zip(
@@ -319,7 +319,6 @@ class TestBootstrapAMGPreconditioner:
         from torchalg.sparse.preconditioners.amg.bootstrap import BootstrapAMGPreconditioner
 
         dense_preconditioner = DenseBootstrapAMGPreconditioner(
-            poisson_1d_large_dense,
             k_r=6,
             eta=2,
             n_bootstrap_cycles=1,
@@ -330,8 +329,8 @@ class TestBootstrapAMGPreconditioner:
             max_coarse=4,
             seed=5,
         )
+        dense_preconditioner.setup(poisson_1d_large_dense)
         sparse_preconditioner = BootstrapAMGPreconditioner(
-            poisson_1d_large_dense.to_sparse_csr(),
             k_r=6,
             eta=2,
             n_bootstrap_cycles=1,
@@ -342,6 +341,7 @@ class TestBootstrapAMGPreconditioner:
             max_coarse=4,
             seed=5,
         )
+        sparse_preconditioner.setup(poisson_1d_large_dense.to_sparse_csr())
 
         dense_solution, dense_info = pcg(
             poisson_1d_large_dense,
@@ -364,5 +364,6 @@ class TestBootstrapAMGPreconditioner:
     def test_raises_on_single_level(self, poisson_1d_csr: torch.Tensor) -> None:
         from torchalg.sparse.preconditioners.amg.bootstrap import BootstrapAMGPreconditioner
 
+        preconditioner = BootstrapAMGPreconditioner(max_coarse=poisson_1d_csr.shape[0])
         with pytest.raises(ValueError, match="single level"):
-            BootstrapAMGPreconditioner(poisson_1d_csr, max_coarse=poisson_1d_csr.shape[0])
+            preconditioner.setup(poisson_1d_csr)

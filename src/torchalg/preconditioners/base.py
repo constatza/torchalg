@@ -16,7 +16,10 @@ is framework-agnostic by design.
 Design Principles:
     - ABC-based: Clear inheritance hierarchy with fail-fast validation.
     - Clean categories: Linear vs Non-linear vs Contextual.
-    - Minimal interfaces: Single ``apply()`` method is the only requirement.
+    - Minimal interfaces: ``setup(matrix)`` then ``apply(residual)`` are the
+      only two required methods, applied uniformly across every
+      preconditioner - see ``Preconditioner``'s docstring for the two-phase
+      contract.
 
 Mathematical Background:
     Preconditioners accelerate iterative solvers by transforming the linear
@@ -45,11 +48,25 @@ References:
 
 from __future__ import annotations
 
+import functools
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 import torch
+
+
+class PreconditionerNotReadyError(RuntimeError):
+    """Raised when ``apply()`` is called before ``setup()`` has run.
+
+    Every ``Preconditioner`` follows an explicit two-phase contract:
+    ``setup(matrix)`` builds whatever internal state ``apply()`` needs, and
+    only then may ``apply()`` be called (possibly many times, e.g. once per
+    solver iteration or across multiple right-hand sides against the same
+    matrix). This error makes a caller that skips ``setup()`` fail fast
+    with a clear message instead of hitting an attribute error deep inside
+    a subclass's ``apply()`` implementation.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +97,16 @@ class PreconditionerContext:
 class Preconditioner(ABC):
     """Base class for all preconditioners.
 
-    All preconditioners must implement ``apply(residual) -> result``. This is
-    the ONLY required interface.
+    Every preconditioner follows an explicit two-phase contract:
+    ``setup(matrix)`` builds whatever internal state is needed (a
+    factorization, a multigrid hierarchy, a loaded checkpoint, ...), then
+    ``apply(residual) -> result`` applies it - callable many times after one
+    ``setup()`` call (e.g. once per solver iteration, or across several
+    right-hand sides against the same matrix). ``apply()`` raises
+    ``PreconditionerNotReadyError`` if called before ``setup()``; every
+    concrete subclass's ``apply`` is wrapped with this guard automatically
+    (see ``__init_subclass__`` below), so no subclass needs to implement the
+    check itself.
 
     Mathematical interpretation::
 
@@ -97,8 +122,73 @@ class Preconditioner(ABC):
         ... )
         >>> matrix = torch.eye(3, dtype=torch.float64) * 2.0
         >>> precond = JacobiPreconditioner(matrix)
+        >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Wrap a freshly-defined ``apply`` with the ``setup()``-readiness guard.
+
+        Runs once per subclass, at class-definition time, only when that
+        subclass itself defines ``apply`` (``"apply" in cls.__dict__``) -
+        an intermediate subclass that merely inherits ``apply`` from a
+        parent (whose own ``apply`` was already wrapped when that parent
+        was defined) is left alone, so ``apply`` is wrapped exactly once
+        per concrete implementation.
+
+        Args:
+            **kwargs (object): Forwarded to ``ABC.__init_subclass__``.
+        """
+        super().__init_subclass__(**kwargs)
+        if "apply" not in cls.__dict__:
+            return
+        unguarded_apply = cls.__dict__["apply"]
+
+        @functools.wraps(unguarded_apply)
+        def guarded_apply(self: Preconditioner, *args: object, **inner_kwargs: object) -> object:
+            if not getattr(self, "_is_ready", False):
+                raise PreconditionerNotReadyError(
+                    f"{type(self).__name__}.setup() must be called before apply()."
+                )
+            return unguarded_apply(self, *args, **inner_kwargs)
+
+        cls.apply = guarded_apply  # ty: ignore[invalid-assignment]
+
+    def _mark_ready(self) -> None:
+        """Record that ``setup()`` has completed, unblocking ``apply()``.
+
+        Every ``setup()`` implementation calls this as its last step.
+        """
+        self._is_ready = True
+
+    @abstractmethod
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Build whatever internal state ``apply()`` needs for ``matrix``.
+
+        Must be called once before the first ``apply()`` call, and again
+        (discarding any previously built state) to rebind this
+        preconditioner to a new or changed matrix. After ``setup()``
+        returns, ``apply()`` may be called any number of times.
+
+        Returns ``self``, matching ``nn.Module.to()``/``.cuda()``'s
+        chaining convention (also already followed by
+        ``AMGPreconditioner._apply``) - e.g. ``precond.setup(A).apply(r)``.
+
+        Args:
+            matrix (torch.Tensor): System matrix A that this preconditioner
+                approximates/operates on.
+            context (PreconditionerContext | None): Optional iteration
+                context; ignored by preconditioners whose setup does not
+                depend on solver iteration state.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        ...
 
     @abstractmethod
     def apply(
@@ -120,6 +210,9 @@ class Preconditioner(ABC):
         Returns:
             torch.Tensor: Preconditioned residual z, shape matching
                 ``residual``.
+
+        Raises:
+            PreconditionerNotReadyError: If ``setup()`` has not been called.
         """
         ...
 
@@ -185,10 +278,9 @@ class LinearPreconditioner[T](Preconditioner):
     """Base for matrix-based linear preconditioners.
 
     These compute ``M^{-1}r`` where M is derived from system matrix A.
-    Subclasses override ``_compute_operator(matrix)`` to build M.
-
-    The key design principle: the user passes a matrix, and the
-    preconditioner computes what it needs internally.
+    Subclasses override ``_compute_operator(matrix)`` to build M; ``setup()``
+    is what actually calls it, per the two-phase ``Preconditioner`` contract
+    - ``__init__`` is config-only.
 
     Type parameter ``T`` defines the internal operator type (e.g.
     ``torch.Tensor`` for Jacobi).
@@ -196,16 +288,27 @@ class LinearPreconditioner[T](Preconditioner):
     Example:
         >>> # User passes matrix - simple!
         >>> precond = JacobiPreconditioner(matrix)
+        >>> precond.setup(matrix)
         >>> z = precond.apply(residual)  # z = D^{-1}r
     """
 
-    def __init__(self, matrix: torch.Tensor) -> None:
-        """Initialize from system matrix.
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Compute the internal operator ``M`` from ``matrix``.
 
         Args:
-            matrix (torch.Tensor): System matrix A (will compute M from this).
+            matrix (torch.Tensor): System matrix A.
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
         """
         self._operator: T = self._compute_operator(matrix)
+        self._mark_ready()
+        return self
 
     @abstractmethod
     def _compute_operator(self, matrix: torch.Tensor) -> T:

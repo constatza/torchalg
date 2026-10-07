@@ -27,7 +27,8 @@ def test_ic0_factorization_approximates_matrix(tridiagonal_spd_small_torch: torc
         exactly and reproduces ``A`` almost exactly (no fill-in is needed).
     """
     a = tridiagonal_spd_small_torch
-    precond = IC0Preconditioner(a)
+    precond = IC0Preconditioner()
+    precond.setup(a)
     factor = precond._operator
 
     reconstructed = factor @ factor.T
@@ -46,13 +47,15 @@ def test_ic0_preserves_sparsity_pattern(tridiagonal_spd_small_torch: torch.Tenso
     a = tridiagonal_spd_small_torch
     a_lower_mask = torch.tril(a).abs() >= 1e-14
 
-    precond_strict = IC0Preconditioner(a, threshold=0.0)
+    precond_strict = IC0Preconditioner(threshold=0.0)
+    precond_strict.setup(a)
     factor_strict = precond_strict._operator
     factor_strict_mask = factor_strict != 0
 
     assert torch.equal(factor_strict_mask, a_lower_mask)
 
-    precond_default = IC0Preconditioner(a)
+    precond_default = IC0Preconditioner()
+    precond_default.setup(a)
     factor_default = precond_default._operator
     nnz_factor_default = torch.count_nonzero(factor_default)
     nnz_a_lower = torch.count_nonzero(torch.tril(a))
@@ -61,7 +64,7 @@ def test_ic0_preserves_sparsity_pattern(tridiagonal_spd_small_torch: torch.Tenso
 
 
 def test_ic0_raises_on_non_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) -> None:
-    """Verify IC(0) raises ValueError constructing from a non-SPD matrix.
+    """Verify IC(0) raises ValueError setting up from a non-SPD matrix.
 
     Note:
         IC(0) is designed for symmetric positive definite matrices. This
@@ -70,7 +73,7 @@ def test_ic0_raises_on_non_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) ->
         instead of producing a factor full of ``nan``.
     """
     with pytest.raises(ValueError, match="breakdown"):
-        IC0Preconditioner(non_spd_matrix_2x2_torch)
+        IC0Preconditioner().setup(non_spd_matrix_2x2_torch)
 
 
 def test_ic0_raises_on_near_singular_matrix(near_singular_matrix_torch: torch.Tensor) -> None:
@@ -85,7 +88,7 @@ def test_ic0_raises_on_near_singular_matrix(near_singular_matrix_torch: torch.Te
         silently produce a singular, unusable factor.
     """
     with pytest.raises(ValueError, match="breakdown"):
-        IC0Preconditioner(near_singular_matrix_torch, threshold=1e-14)
+        IC0Preconditioner(threshold=1e-14).setup(near_singular_matrix_torch)
 
 
 def test_ic0_threshold_drops_small_entries(
@@ -100,10 +103,12 @@ def test_ic0_threshold_drops_small_entries(
     """
     a = tridiagonal_spd_small_perturbed_torch
 
-    ic0_strict = IC0Preconditioner(a, threshold=1e-16)
+    ic0_strict = IC0Preconditioner(threshold=1e-16)
+    ic0_strict.setup(a)
     nnz_strict = torch.count_nonzero(ic0_strict._operator)
 
-    ic0_aggressive = IC0Preconditioner(a, threshold=1e-10)
+    ic0_aggressive = IC0Preconditioner(threshold=1e-10)
+    ic0_aggressive.setup(a)
     nnz_aggressive = torch.count_nonzero(ic0_aggressive._operator)
 
     assert nnz_aggressive <= nnz_strict
@@ -129,9 +134,9 @@ def test_ic0_improves_convergence(
     _, result_identity = flexible_cg(
         a, b, preconditioner=Identity(), rtol=rtol, atol=atol, maxiter=200
     )
-    _, result_ic0 = flexible_cg(
-        a, b, preconditioner=IC0Preconditioner(a), rtol=rtol, atol=atol, maxiter=200
-    )
+    ic0_precond = IC0Preconditioner()
+    ic0_precond.setup(a)
+    _, result_ic0 = flexible_cg(a, b, preconditioner=ic0_precond, rtol=rtol, atol=atol, maxiter=200)
 
     assert result_identity.converged
     assert result_ic0.converged
@@ -155,12 +160,14 @@ def test_ic0_compares_favorably_with_jacobi(
     a, b, _ = tridiagonal_system_known_solution_torch
     rtol, atol = integration_tolerances
 
+    jacobi_precond = JacobiPreconditioner()
+    jacobi_precond.setup(a)
     _, result_jacobi = flexible_cg(
-        a, b, preconditioner=JacobiPreconditioner(a), rtol=rtol, atol=atol, maxiter=200
+        a, b, preconditioner=jacobi_precond, rtol=rtol, atol=atol, maxiter=200
     )
-    _, result_ic0 = flexible_cg(
-        a, b, preconditioner=IC0Preconditioner(a), rtol=rtol, atol=atol, maxiter=200
-    )
+    ic0_precond = IC0Preconditioner()
+    ic0_precond.setup(a)
+    _, result_ic0 = flexible_cg(a, b, preconditioner=ic0_precond, rtol=rtol, atol=atol, maxiter=200)
 
     assert result_jacobi.converged
     assert result_ic0.converged
@@ -172,11 +179,13 @@ class TestIC0PropertyAndStr:
         self, tridiagonal_spd_small_torch: torch.Tensor
     ) -> None:
         """`threshold` property returns exactly what was passed to `__init__`."""
-        precond = IC0Preconditioner(tridiagonal_spd_small_torch, threshold=1e-6)
+        precond = IC0Preconditioner(threshold=1e-6)
+        precond.setup(tridiagonal_spd_small_torch)
         assert precond.threshold == 1e-6
 
     def test_str_includes_threshold(self, tridiagonal_spd_small_torch: torch.Tensor) -> None:
         """`str()` reports the threshold, never crashes."""
-        precond = IC0Preconditioner(tridiagonal_spd_small_torch, threshold=1e-6)
+        precond = IC0Preconditioner(threshold=1e-6)
+        precond.setup(tridiagonal_spd_small_torch)
         assert "IC0" in str(precond)
         assert "1e-06" in str(precond)

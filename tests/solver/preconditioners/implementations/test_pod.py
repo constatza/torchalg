@@ -245,6 +245,7 @@ class TestPOD2GPreconditioner:
     ) -> None:
         """apply() output must match residual shape."""
         precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond.setup(poisson_1d)
         z = precond.apply(poisson_rhs)
         assert z.shape == poisson_rhs.shape
 
@@ -256,6 +257,7 @@ class TestPOD2GPreconditioner:
     ) -> None:
         """apply() output dtype must match the working dtype (no float64 hardcode)."""
         precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond.setup(poisson_1d)
         assert precond.apply(poisson_rhs).dtype == poisson_1d.dtype
 
     def test_uses_configured_smoother(
@@ -272,6 +274,7 @@ class TestPOD2GPreconditioner:
             rank=10,
             smoother=raising_smoother,
         )
+        precond.setup(poisson_1d)
         with pytest.raises(RuntimeError, match="configured smoother used"):
             precond.apply(poisson_rhs)
 
@@ -311,6 +314,7 @@ class TestPOD2GWithFCGSolver:
         from torchalg import flexible_cg
 
         precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=15)
+        precond.setup(poisson_1d)
         x, info = flexible_cg(poisson_1d, poisson_rhs, preconditioner=precond, rtol=1e-8)
         assert info.converged, f"FCG+POD-2G did not converge: {info}"
         torch.testing.assert_close(poisson_1d @ x, poisson_rhs, rtol=1e-6, atol=1e-6)

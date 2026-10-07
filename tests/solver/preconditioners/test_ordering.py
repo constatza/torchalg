@@ -42,8 +42,8 @@ def test_preconditioner_ordering(
     A, b, _ = tridiagonal_system_known_solution_torch
     rtol, atol = integration_tolerances
     identity = Identity()
-    jacobi = JacobiPreconditioner(A)
-    ilu = ILUPreconditioner(A)
+    jacobi = JacobiPreconditioner().setup(A)
+    ilu = ILUPreconditioner().setup(A)
 
     _, result_identity = flexible_cg(
         A,
