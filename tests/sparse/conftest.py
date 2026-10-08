@@ -150,9 +150,9 @@ def poisson_2d_dense(anisotropic_2d_factory: Callable[[int, float], torch.Tensor
     """Dense 9x9 2D isotropic Poisson matrix (5-point stencil on a 3x3 grid).
 
     Unlike ``poisson_1d_dense`` (tridiagonal, exactly one row per dependency
-    level), this gives a genuine multi-row-per-level schedule, exercising the
-    vectorized multi-row path in ``triangular.level_schedule``/
-    ``triangular_solve``.
+    level), this gives a genuine multi-row-per-level schedule, exercising
+    wavefront grouping in ``triangular.level_schedule`` and vectorized row
+    updates in ``triangular_solve``.
 
     Args:
         anisotropic_2d_factory: 2D anisotropic Poisson factory

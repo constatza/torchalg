@@ -18,7 +18,7 @@ from typing import Literal
 import torch
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LevelSchedule:
     """A row partition into independence levels for triangular substitution.
 
@@ -30,6 +30,118 @@ class LevelSchedule:
 
     row_order: torch.Tensor
     level_sizes: torch.Tensor
+
+
+def _cpu_dependency_levels(
+    dep_row: torch.Tensor,
+    dep_col: torch.Tensor,
+    n: int,
+    direction: Literal["forward", "backward"],
+) -> torch.Tensor:
+    """Compute triangular dependency levels with scalar-free tensor access.
+
+    The recurrence is inherently ordered, so on CPU a linear Python pass
+    over native integers avoids the overhead of one scalar tensor operation
+    per dependency while retaining ``O(n + nnz)`` work.
+
+    Args:
+        dep_row: Row owning each strict triangular dependency.
+        dep_col: Dependency column for each entry in ``dep_row``.
+        n: Matrix dimension.
+        direction: Triangular traversal direction.
+
+    Returns:
+        One int64 level per row on the CPU.
+    """
+    boundaries = torch.searchsorted(dep_row, torch.arange(n + 1)).tolist()
+    dependencies = dep_col.tolist()
+    levels = [0] * n
+    row_range = range(n) if direction == "forward" else range(n - 1, -1, -1)
+
+    for row in row_range:
+        start, end = boundaries[row], boundaries[row + 1]
+        if start != end:
+            levels[row] = 1 + max(levels[dependencies[position]] for position in range(start, end))
+
+    return torch.tensor(levels, dtype=torch.int64)
+
+
+def _ragged_positions(starts: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    """Expand grouped ``start``/``length`` pairs into flat storage positions.
+
+    Args:
+        starts: Start position of each selected group.
+        lengths: Number of positions in each selected group.
+
+    Returns:
+        Concatenated positions for all selected groups.
+    """
+    repeated_starts = torch.repeat_interleave(starts, lengths)
+    repeated_offsets = torch.repeat_interleave(torch.cumsum(lengths, dim=0) - lengths, lengths)
+    within_group = torch.arange(repeated_starts.numel(), device=starts.device) - repeated_offsets
+    return repeated_starts + within_group
+
+
+def _device_dependency_schedule(
+    dep_row: torch.Tensor,
+    dep_col: torch.Tensor,
+    n: int,
+) -> LevelSchedule:
+    """Build a level schedule by processing each dependency edge once.
+
+    Reverse adjacency groups dependent rows by the row they depend on. Each
+    wavefront therefore touches only edges leaving that frontier instead of
+    rescanning the full dependency set for every level.
+
+    Args:
+        dep_row: Row owning each strict triangular dependency.
+        dep_col: Dependency column for each entry in ``dep_row``.
+        n: Matrix dimension.
+
+    Returns:
+        Rows grouped into deterministic ascending wavefronts.
+
+    Raises:
+        RuntimeError: If the dependency graph cannot schedule every row.
+    """
+    device = dep_row.device
+    unresolved = torch.bincount(dep_row, minlength=n)
+
+    reverse_order = torch.argsort(dep_col, stable=True)
+    reverse_dependency = dep_col[reverse_order]
+    reverse_dependent = dep_row[reverse_order]
+    reverse_counts = torch.bincount(reverse_dependency, minlength=n)
+    reverse_crow = torch.zeros(n + 1, dtype=torch.int64, device=device)
+    reverse_crow[1:] = torch.cumsum(reverse_counts, dim=0)
+
+    frontier = torch.nonzero(unresolved == 0, as_tuple=True)[0]
+    frontiers: list[torch.Tensor] = []
+    level_sizes: list[int] = []
+    scheduled = 0
+
+    while scheduled < n:
+        frontier_size = frontier.numel()
+        if frontier_size == 0:
+            raise RuntimeError("triangular dependency graph contains an unschedulable cycle")
+
+        frontiers.append(frontier)
+        level_sizes.append(frontier_size)
+        scheduled += frontier_size
+
+        starts = reverse_crow[frontier]
+        lengths = reverse_counts[frontier]
+        positions = _ragged_positions(starts, lengths)
+        affected_rows = reverse_dependent[positions]
+        decrements = torch.bincount(affected_rows, minlength=n)
+        unresolved = unresolved - decrements
+
+        candidates = torch.unique(affected_rows, sorted=True)
+        frontier = candidates[unresolved[candidates] == 0]
+
+    return LevelSchedule(
+        row_order=torch.cat(frontiers),
+        level_sizes=torch.tensor(level_sizes, dtype=torch.int64, device=device),
+    )
 
 
 def _require_csr(matrix: torch.Tensor, caller: str) -> None:
@@ -100,19 +212,10 @@ def level_schedule(
 
     dep_row = row_index[is_strict_dependency]
     dep_col = col[is_strict_dependency]
-    boundaries = torch.searchsorted(dep_row, torch.arange(n + 1, device=matrix.device))
+    if matrix.device.type != "cpu":
+        return _device_dependency_schedule(dep_row, dep_col, n)
 
-    level = torch.zeros(n, dtype=torch.int64, device=matrix.device)
-    row_range = range(n) if direction == "forward" else range(n - 1, -1, -1)
-    boundaries_list = boundaries.tolist()
-    dep_col_list = dep_col.tolist()
-    for row in row_range:
-        start, end = boundaries_list[row], boundaries_list[row + 1]
-        if start == end:
-            level[row] = 0
-        else:
-            level[row] = 1 + max(level[dep_col_list[k]] for k in range(start, end))
-
+    level = _cpu_dependency_levels(dep_row, dep_col, n, direction)
     num_levels = int(level.max()) + 1
     order = torch.argsort(level, stable=True)
     level_sizes = torch.bincount(level[order], minlength=num_levels)

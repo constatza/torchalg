@@ -148,6 +148,11 @@ solves, sparse Galerkin products, and sparse-specific preconditioners. Models,
 convergence policy, diagnostics, and representation-independent Krylov control
 flow remain shared rather than being copied into a sparse mirror.
 
+Sparse preconditioner siblings may share private sparse-local solve-state
+helpers when they execute the same kernel lifecycle. In particular, IC(0),
+ICholesky, and ILU reuse one setup-owned triangular-solve cache rather than
+duplicating factor/schedule registration and device-propagation behavior.
+
 The dependency direction is:
 
 ```text

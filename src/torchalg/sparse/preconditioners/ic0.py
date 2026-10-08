@@ -44,7 +44,10 @@ from torchalg.sparse.kernels.triangular import (
     _require_csr,
     level_schedule,
 )
-from torchalg.sparse.preconditioners._triangular import sparse_cholesky_factor_solve
+from torchalg.sparse.preconditioners._triangular import (
+    SparseTriangularSolveCache,
+    build_sparse_cholesky_solve_cache,
+)
 
 _DEFAULT_THRESHOLD = 0.0
 """Default drop tolerance: entries with |value| <= threshold are treated as
@@ -282,7 +285,8 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           loop itself is bounded by ``num_levels * max_row_degree_in_level``,
           not ``nnz`` or row count - see the module docstring's per-level,
           per-degree-position batching description.
-        - Application: ``O(nnz(L))`` per level-scheduled triangular solve.
+        - Application: two ``O(nnz(L))`` level-scheduled triangular solves;
+          the transpose and both schedules are prepared once during setup.
 
     Breakdown:
         IC(0) is not guaranteed to exist for every SPD matrix (it can
@@ -313,6 +317,7 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         nn.Module.__init__(self)
         self._threshold = threshold
         self._operator: torch.Tensor
+        self._solve_cache: SparseTriangularSolveCache
         self.register_buffer("_operator", None)
 
     def setup(
@@ -327,7 +332,10 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
                 system matrix ``A``, shape ``(n, n)``.
             context (PreconditionerContext | None): Ignored.
         """
-        self._operator = self._compute_operator(matrix)
+        operator = self._compute_operator(matrix)
+        solve_cache = build_sparse_cholesky_solve_cache(operator)
+        self._operator = operator
+        self._solve_cache = solve_cache
         self._mark_ready()
         return self
 
@@ -368,8 +376,8 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     ) -> torch.Tensor:
         """Solve ``(L @ L.T) z = r`` via forward/backward sparse triangular solves.
 
-        Delegates to ``_triangular.sparse_cholesky_factor_solve`` - shared
-        with ``ICholeskyPreconditioner``, which solves the identical
+        Delegates to the setup-owned ``_triangular.SparseTriangularSolveCache``
+        shared with ``ICholeskyPreconditioner``, which solves the identical
         ``(L @ L.T) z = r`` system for an externally supplied ``L`` rather
         than one computed by ``sparse_ic0``.
 
@@ -382,4 +390,4 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Preconditioned residual ``z = M^{-1}r``.
         """
-        return sparse_cholesky_factor_solve(self._operator, residual)
+        return self._solve_cache.solve(self._operator, residual)

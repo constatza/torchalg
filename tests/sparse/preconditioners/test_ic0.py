@@ -244,3 +244,12 @@ class TestIC0PreconditionerSparseDenseParity:
         sparse_precond.setup(poisson_2d_dense.to_sparse_csr())
 
         torch.testing.assert_close(sparse_precond.apply(residual), dense_precond.apply(residual))
+
+    def test_batched_apply_matches_dense(self, poisson_2d_dense: torch.Tensor) -> None:
+        """A matrix RHS is handled by the native batched triangular solve."""
+        torch.manual_seed(42)
+        residual = torch.randn(poisson_2d_dense.shape[0], 3, dtype=poisson_2d_dense.dtype)
+        dense_precond = DenseIC0Preconditioner().setup(poisson_2d_dense)
+        sparse_precond = IC0Preconditioner().setup(poisson_2d_dense.to_sparse_csr())
+
+        torch.testing.assert_close(sparse_precond.apply(residual), dense_precond.apply(residual))

@@ -30,7 +30,8 @@ import torch
 from torch import nn
 
 from torchalg.preconditioners.base import LinearPreconditioner, PreconditionerContext
-from torchalg.sparse.kernels.triangular import _require_csr, level_schedule, triangular_solve
+from torchalg.sparse.kernels.triangular import _require_csr, level_schedule
+from torchalg.sparse.preconditioners._triangular import SparseTriangularSolveCache
 
 from .ic0 import LevelSchedule, _build_lookup, _lookup
 
@@ -267,7 +268,10 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """Register the (not yet computed) combined LU-factor buffer."""
         nn.Module.__init__(self)
         self._operator: torch.Tensor
+        self._lower: torch.Tensor
+        self._solve_cache: SparseTriangularSolveCache
         self.register_buffer("_operator", None)
+        self.register_buffer("_lower", None, persistent=False)
 
     def setup(
         self,
@@ -281,7 +285,16 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
                 ``(n, n)``.
             context (PreconditionerContext | None): Ignored.
         """
-        self._operator = self._compute_operator(matrix)
+        operator = self._compute_operator(matrix)
+        row_index = _expand_row_index(operator)
+        upper_mask = operator.col_indices() >= row_index
+        lower = _materialize_unit_lower(operator)
+        upper = _csr_from_mask(operator, upper_mask)
+        solve_cache = SparseTriangularSolveCache.build(lower, upper)
+
+        self._operator = operator
+        self._lower = lower
+        self._solve_cache = solve_cache
         self._mark_ready()
         return self
 
@@ -321,20 +334,4 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Preconditioned residual ``z = (LU)^{-1}r``.
         """
-        if residual.ndim > 1:
-            columns = [self.apply(residual[:, k]) for k in range(residual.shape[1])]
-            return torch.stack(columns, dim=1)
-
-        combined = self._operator
-        row_index = _expand_row_index(combined)
-        col = combined.col_indices()
-        upper_mask = col >= row_index
-
-        lower = _materialize_unit_lower(combined)
-        upper = _csr_from_mask(combined, upper_mask)
-
-        forward_schedule = level_schedule(lower, direction="forward")
-        backward_schedule = level_schedule(upper, direction="backward")
-
-        y = triangular_solve(lower, forward_schedule, residual, direction="forward")
-        return triangular_solve(upper, backward_schedule, y, direction="backward")
+        return self._solve_cache.solve(self._lower, residual)

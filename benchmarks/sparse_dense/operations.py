@@ -13,12 +13,9 @@ reimplemented, so "the representative op" really is the op the algorithms
 use, not a lookalike.
 
 Some sparse/native alternatives may be unavailable on a given torch build or
-device (e.g. ``torch.sparse.spsolve`` needs a cuDSS-enabled build even on
-CUDA - standard wheels raise ``NotImplementedError`` on CPU and
-``RuntimeError`` on CUDA without cuDSS). Callers (``run.py``) are
-expected to catch ``(NotImplementedError, RuntimeError)`` around each cell
-and record it as a skip rather than a crash - operations.py itself stays a
-plain function registry with no try/except noise.
+device. Callers (``run.py``) catch ``(NotImplementedError, RuntimeError)``
+around each cell and record it as a skip rather than a crash; this registry
+itself stays free of error-policy branches.
 """
 
 from __future__ import annotations
@@ -30,6 +27,7 @@ from scipy.sparse.linalg import eigsh, spilu, svds
 from torchalg.preconditioners.implementations._masked_factorization import dense_ic0, dense_ilu0
 from torchalg.preconditioners.implementations._triangular import cholesky_factor_solve
 from torchalg.sparse.preconditioners.ic0 import sparse_ic0
+from torchalg.sparse.preconditioners.icholesky import ICholeskyPreconditioner
 
 # ---------------------------------------------------------------------------
 # Family 1: matvec + dot/AXPY (CG inner loop)
@@ -210,45 +208,39 @@ def triangular_apply_dense(factor: torch.Tensor, residual: torch.Tensor) -> torc
 
 
 def triangular_apply_sparse(factor_sparse: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
-    """Apply a precomputed sparse Cholesky-style factor via ``torch.sparse.spsolve``.
+    """Set up and apply torchalg's sparse Cholesky-style solve.
 
-    Two sparse solves (forward with ``L``, backward with ``L.T``), mirroring
-    the dense two-triangular-solve apply above. ``torch.sparse.spsolve`` has
-    no CPU kernel (raises ``NotImplementedError``), and on CUDA it needs
-    PyTorch built against cuDSS - standard CUDA wheels aren't, so it raises
-    there too (``RuntimeError``, worded "...is not supported in ROCm build,"
-    which fires on plain CUDA builds without cuDSS and is misleading - it
-    is not a ROCm-specific check). Callers should treat either as "this leg
-    isn't available here," not a bug.
-
-    Why not pip-install cuDSS and move on: official PyTorch CUDA wheels
-    (verified by inspecting ``libtorch_cuda.so`` - no ``NEEDED`` entry and
-    no ``dlopen`` reference to any ``libcudss``) have the cuDSS code path
-    compiled out entirely, not merely missing an optional runtime library.
-    Getting a working cuDSS-backed ``spsolve`` needs a PyTorch built from
-    source with ``-DUSE_CUDSS=1`` against the cuDSS SDK - out of scope here.
-
-    A real alternative exists for the CUDA leg: CuPy's
-    ``cupyx.scipy.sparse.linalg.spsolve_triangular`` runs on cuSPARSE
-    directly, no cuDSS needed, and CUDA tensors can move to/from CuPy
-    zero-copy via DLPack (``cupy.from_dlpack``/``torch.from_dlpack``). Not
-    wired in here: it needs its own dependency, and the DLPack conversion
-    is an extra cost that would have to be timed separately from the solve
-    itself (same reasoning as ``h2d``/``to_sparse`` being their own rows
-    rather than folded into a compute cell) - deferred until a CUDA sparse
-    solve leg is actually needed, not added speculatively.
+    This compatibility helper accepts the same precomputed factor as the
+    dense operation. Repeated-apply benchmarks should prepare the
+    preconditioner once and call :func:`triangular_apply_sparse_prepared`.
 
     Args:
-        factor_sparse: Sparse lower-triangular factor ``L``, CSR, shape
-            ``(n, n)``.
+        factor_sparse: Sparse CSR lower triangular factor.
         residual: Dense ``(n,)`` residual vector.
 
     Returns:
         torch.Tensor: ``(n,)`` preconditioned residual.
     """
-    intermediate = torch.sparse.spsolve(factor_sparse, residual)
-    upper = factor_sparse.t().to_sparse_csr()
-    return torch.sparse.spsolve(upper, intermediate)
+    return ICholeskyPreconditioner().setup(factor_sparse).apply(residual)
+
+
+def triangular_apply_sparse_prepared(
+    preconditioner: ICholeskyPreconditioner, residual: torch.Tensor
+) -> torch.Tensor:
+    """Apply an already setup-prepared sparse Cholesky-style solve.
+
+    The preconditioner is prepared outside the timed operation, so this
+    measures the repeated ``apply()`` path used by PCG: two level-scheduled
+    sparse solves with no transpose or schedule reconstruction.
+
+    Args:
+        preconditioner: Sparse preconditioner already bound to ``L``.
+        residual: Dense ``(n,)`` residual vector.
+
+    Returns:
+        torch.Tensor: ``(n,)`` preconditioned residual.
+    """
+    return preconditioner.apply(residual)
 
 
 # ---------------------------------------------------------------------------

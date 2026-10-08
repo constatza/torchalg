@@ -7,10 +7,10 @@ and sparse must be separate implementations, not an internal branch"). Same
 name, disambiguated by package, never imported by the dense class. Like its
 dense sibling, no factorization happens here - the caller supplies the
 sparse CSR lower triangular factor ``L`` directly (e.g. from
-``sparse_ic0``). Reuses ``_triangular.sparse_cholesky_factor_solve``, the
-exact level-scheduled forward/backward solve ``IC0Preconditioner.apply()``
-already uses - the plan's own framing for this class: "mostly reuse, not new
-numerical code."
+``sparse_ic0``). Reuses ``_triangular.SparseTriangularSolveCache``, the exact
+setup-prepared forward/backward solve state ``IC0Preconditioner`` already
+uses - the plan's own framing for this class: "mostly reuse, not new numerical
+code."
 """
 
 from __future__ import annotations
@@ -21,7 +21,10 @@ import torch
 from torch import nn
 
 from torchalg.preconditioners.base import LinearPreconditioner, PreconditionerContext
-from torchalg.sparse.preconditioners._triangular import sparse_cholesky_factor_solve
+from torchalg.sparse.preconditioners._triangular import (
+    SparseTriangularSolveCache,
+    build_sparse_cholesky_solve_cache,
+)
 
 
 class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
@@ -52,11 +55,11 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         - Storage: ``O(nnz(L))`` - ``L`` is stored exactly as supplied, a
           true sparse CSR structure (no factorization, hence no additional
           fill-in beyond whatever the caller's ``L`` already has).
-        - Setup: none - ``_compute_operator`` returns the supplied ``L``
-          unchanged.
+        - Setup: ``O(nnz(L))`` to materialize ``L.T`` and build both level
+          schedules; ``_compute_operator`` returns the supplied ``L`` unchanged.
         - Application: two ``O(nnz(L))`` level-scheduled triangular solves,
           same as ``IC0Preconditioner``'s application cost (both share
-          ``_triangular.sparse_cholesky_factor_solve``).
+          ``_triangular.SparseTriangularSolveCache``).
 
     Example:
         >>> import torch
@@ -72,6 +75,7 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """Register the (not yet stored) lower-triangular-factor buffer."""
         nn.Module.__init__(self)
         self._operator: torch.Tensor
+        self._solve_cache: SparseTriangularSolveCache
         self.register_buffer("_operator", None)
 
     def setup(
@@ -86,7 +90,10 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
                 shape ``(n, n)``.
             context (PreconditionerContext | None): Ignored.
         """
-        self._operator = self._compute_operator(matrix)
+        operator = self._compute_operator(matrix)
+        solve_cache = build_sparse_cholesky_solve_cache(operator)
+        self._operator = operator
+        self._solve_cache = solve_cache
         self._mark_ready()
         return self
 
@@ -117,4 +124,4 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Preconditioned residual ``z = (L @ L.T)^{-1}r``.
         """
-        return sparse_cholesky_factor_solve(self._operator, residual)
+        return self._solve_cache.solve(self._operator, residual)

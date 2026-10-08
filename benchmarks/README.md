@@ -42,6 +42,8 @@ uv run --group benchmark python -m benchmarks.sparse_dense.run \
 ```
 
 The broad runner records one row for each attempted or intentionally skipped
-cell. Its static exclusions avoid known impractical dense cubic operations and
-unsupported sparse solves; runtime memory and timeout guards remain a second
-line of protection for attempted cells.
+cell. Its triangular-apply family compares dense Cholesky application with
+torchalg's setup-prepared, level-scheduled CSR application; factor and schedule
+construction remain outside the timed repeated-apply callable. Static
+exclusions avoid known impractical dense cubic operations, while runtime memory
+and timeout guards remain a second line of protection for attempted cells.

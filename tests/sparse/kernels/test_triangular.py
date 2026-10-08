@@ -7,7 +7,23 @@ from typing import Literal
 import pytest
 import torch
 
-from torchalg.sparse.kernels.triangular import level_schedule, triangular_solve
+from torchalg.sparse.kernels.triangular import (
+    _device_dependency_schedule,
+    level_schedule,
+    triangular_solve,
+)
+
+
+@pytest.fixture
+def diagonal_csr(torch_dtype: torch.dtype) -> torch.Tensor:
+    """Return a diagonal CSR matrix whose rows are all independent."""
+    return torch.eye(5, dtype=torch_dtype).to_sparse_csr()
+
+
+@pytest.fixture
+def empty_csr(torch_dtype: torch.dtype) -> torch.Tensor:
+    """Return the empty square CSR matrix."""
+    return torch.empty((0, 0), dtype=torch_dtype).to_sparse_csr()
 
 
 class TestLevelScheduleAndTriangularSolve:
@@ -64,6 +80,74 @@ class TestLevelScheduleAndTriangularSolve:
         schedule = level_schedule(poisson_1d_dense.to_sparse_csr())
         with pytest.raises(ValueError, match="sparse CSR"):
             triangular_solve(poisson_1d_dense, schedule, torch.zeros(poisson_1d_dense.shape[0]))
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_diagonal_matrix_has_one_level(
+        self,
+        diagonal_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        """All rows of a diagonal matrix belong to the same level."""
+        schedule = level_schedule(diagonal_csr, direction=direction)
+
+        torch.testing.assert_close(schedule.row_order, torch.arange(5))
+        torch.testing.assert_close(schedule.level_sizes, torch.tensor([5]))
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_empty_matrix_has_empty_schedule(
+        self,
+        empty_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        """The empty matrix has neither scheduled rows nor levels."""
+        schedule = level_schedule(empty_csr, direction=direction)
+
+        assert schedule.row_order.numel() == 0
+        assert schedule.level_sizes.numel() == 0
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_every_dependency_precedes_its_row(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        """Every triangular dependency is assigned to an earlier level."""
+        schedule = level_schedule(poisson_2d_csr, direction=direction)
+        levels = torch.empty(poisson_2d_csr.shape[0], dtype=torch.int64)
+        levels[schedule.row_order] = torch.repeat_interleave(
+            torch.arange(len(schedule.level_sizes)), schedule.level_sizes
+        )
+
+        rows = torch.repeat_interleave(
+            torch.arange(poisson_2d_csr.shape[0]),
+            poisson_2d_csr.crow_indices()[1:] - poisson_2d_csr.crow_indices()[:-1],
+        )
+        cols = poisson_2d_csr.col_indices()
+        dependency = cols < rows if direction == "forward" else cols > rows
+
+        assert bool((levels[cols[dependency]] < levels[rows[dependency]]).all())
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_wavefront_schedule_matches_cpu_recurrence(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        """The accelerator wavefront algorithm preserves exact schedule semantics."""
+        rows = torch.repeat_interleave(
+            torch.arange(poisson_2d_csr.shape[0]),
+            poisson_2d_csr.crow_indices()[1:] - poisson_2d_csr.crow_indices()[:-1],
+        )
+        cols = poisson_2d_csr.col_indices()
+        dependency = cols < rows if direction == "forward" else cols > rows
+
+        expected = level_schedule(poisson_2d_csr, direction=direction)
+        actual = _device_dependency_schedule(
+            rows[dependency], cols[dependency], poisson_2d_csr.shape[0]
+        )
+
+        torch.testing.assert_close(actual.row_order, expected.row_order)
+        torch.testing.assert_close(actual.level_sizes, expected.level_sizes)
 
     def test_zero_diagonal_row_freezes_to_target(self, torch_dtype: torch.dtype) -> None:
         """A structurally-zero diagonal entry freezes that row to ``target`` instead of dividing."""

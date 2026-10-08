@@ -186,7 +186,7 @@ path = "torchalg.sparse.preconditioners.icholesky"
 depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.preconditioners._triangular"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.ilu"
-depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners.ic0"]
+depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._triangular", "torchalg.sparse.preconditioners.ic0"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.jacobi"
 depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.diagonal"]

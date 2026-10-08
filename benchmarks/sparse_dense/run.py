@@ -11,10 +11,9 @@ Cartesian-product reductions applied before any cell runs (see
    O(N^3), known ~20GB/hours-long blowup by N=50k), dense "ic0" (a
    Python-level loop whose measured wall time grows far worse than N^3 -
    18.5s already at N=3000), dense "eigvalsh" (O(N^3) full eigendecomposition),
-   and the native sparse triangular "spsolve" leg (unsupported on CPU and,
-   without a cuDSS-enabled build, on CUDA too - a complete capability gap at
-   every N, not a scale effect) all have well-established, previously-
-   measured results (see ``docs/plan.md``'s "At-scale evidence") that a
+   and the native sparse triangular ``torch.sparse.spsolve`` leg (superseded
+   here by torchalg's level-scheduled implementation) all have well-established,
+   previously measured results (see ``docs/plan.md``'s "At-scale evidence") that a
    future benchmark run gains nothing by re-confirming; keeping them in the
    grid only burns wall-clock time reaching the same already-known
    conclusion (or, for "spsolve", produces nothing but an "unsupported" skip
@@ -59,8 +58,10 @@ from time import perf_counter
 from typing import Self
 
 import torch
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, tril
 from torch.utils.benchmark import Timer
+
+from torchalg.sparse.preconditioners.icholesky import ICholeskyPreconditioner
 
 from . import matrices, memory
 from . import operations as ops
@@ -482,18 +483,15 @@ def _cells_for_n_and_device(
         compile_modes=compile_modes,
     )
 
-    # --- Family 4: triangular apply (factor already computed; dense only -
-    # native sparse "spsolve" removed, see module docstring point 2: a
-    # complete capability gap at every N on this build, not a scale effect,
-    # so it never produced a real measurement - `torchalg.sparse.kernels
-    # .triangular`'s own level-scheduled solve is the real replacement). The
+    # --- Family 4: triangular apply (factor and structural solve state are
+    # prepared outside the timed callable). The
     # matrix's own lower triangle stands in for "an already-computed
     # Cholesky-style factor": same shape/bandwidth, and a positive diagonal
     # (true for this SPD lattice Laplacian), so it's a valid operand for
-    # timing the O(N^2) apply - computing a *real* Cholesky factor here
-    # would cost O(N^3) just to set up a benchmark meant to run the full
-    # 50k sweep uncapped, which defeats the point of family 4 being
-    # apply-only.
+    # timing dense O(N^2) versus sparse O(nnz) application - computing a
+    # *real* Cholesky factor here would cost O(N^3) just to set up a benchmark
+    # meant to run the full 50k sweep uncapped, which defeats the point of
+    # family 4 being apply-only.
     def build_triangular_dense():
         dense = matrices.to_torch_dense(scipy_matrix, dtype).to(device)
         factor = torch.tril(dense)
@@ -507,6 +505,23 @@ def _cells_for_n_and_device(
         device_label,
         n,
         build_triangular_dense,
+        compile_modes=compile_modes,
+    )
+
+    def build_triangular_sparse():
+        lower_scipy = tril(scipy_matrix, format="csr")
+        factor = matrices.to_torch_sparse_csr(lower_scipy, dtype).to(device)
+        preconditioner = ICholeskyPreconditioner().setup(factor)
+        residual = torch.randn(n, dtype=dtype, device=device)
+        return (lambda: ops.triangular_apply_sparse_prepared(preconditioner, residual)), factor
+
+    yield from _emit(
+        "triangular_apply",
+        "level_scheduled",
+        "sparse",
+        device_label,
+        n,
+        build_triangular_sparse,
         compile_modes=compile_modes,
     )
 
