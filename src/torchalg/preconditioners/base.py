@@ -16,10 +16,10 @@ is framework-agnostic by design.
 Design Principles:
     - ABC-based: Clear inheritance hierarchy with fail-fast validation.
     - Clean categories: Linear vs Non-linear vs Contextual.
-    - Minimal interfaces: ``setup(matrix)`` then ``apply(residual)`` are the
-      only two required methods, applied uniformly across every
-      preconditioner - see ``Preconditioner``'s docstring for the two-phase
-      contract.
+    - Minimal interfaces: ``apply(residual)`` is the one method every
+      preconditioner shares; ``setup()`` is split by role (see
+      ``MatrixSetupPreconditioner``/``StaticSetupPreconditioner`` below)
+      since not every preconditioner's setup needs the system matrix.
 
 Mathematical Background:
     Preconditioners accelerate iterative solvers by transforming the linear
@@ -97,16 +97,40 @@ class PreconditionerContext:
 class Preconditioner(ABC):
     """Base class for all preconditioners.
 
-    Every preconditioner follows an explicit two-phase contract:
-    ``setup(matrix)`` builds whatever internal state is needed (a
-    factorization, a multigrid hierarchy, a loaded checkpoint, ...), then
-    ``apply(residual) -> result`` applies it - callable many times after one
-    ``setup()`` call (e.g. once per solver iteration, or across several
-    right-hand sides against the same matrix). ``apply()`` raises
-    ``PreconditionerNotReadyError`` if called before ``setup()``; every
-    concrete subclass's ``apply`` is wrapped with this guard automatically
-    (see ``__init_subclass__`` below), so no subclass needs to implement the
-    check itself.
+    Every preconditioner follows an explicit two-phase contract: ``setup()``
+    builds whatever internal state is needed (a factorization, a multigrid
+    hierarchy, a loaded checkpoint, ...), then ``apply(residual) -> result``
+    applies it - callable many times after one ``setup()`` call (e.g. once
+    per solver iteration, or across several right-hand sides against the
+    same matrix). ``apply()`` raises ``PreconditionerNotReadyError`` if
+    called before ``setup()``; every concrete subclass's ``apply`` is
+    wrapped with this guard automatically (see ``__init_subclass__`` below),
+    so no subclass needs to implement the check itself.
+
+    ``setup()`` itself is deliberately NOT declared here. Forcing every
+    preconditioner to accept a ``matrix`` argument - even the ones whose
+    setup never reads it (``NeuralPreconditioner``, ``CallablePreconditioner``,
+    ``LinearOperatorPreconditioner``, ``Identity`` all used to carry a
+    ``matrix: Ignored`` parameter for this reason alone) - is an Interface
+    Segregation violation: those implementers depended on a parameter they
+    never used. Pick the role interface that matches what your
+    preconditioner's setup actually needs:
+
+    - ``MatrixSetupPreconditioner``: setup genuinely depends on the system
+      matrix (Jacobi, IC0, ILU, ICholesky, every AMG variant - anything
+      that factorizes or builds a hierarchy from A's actual values).
+    - ``StaticSetupPreconditioner``: setup never needs the matrix (a
+      checkpoint load, a wrapped callable that's already usable after
+      construction, ...).
+
+    This is a property of what a given concrete class's ``setup()`` body
+    actually does, decided once per class - never inferred from a family
+    label like "neural" vs "classical". A neural preconditioner whose setup
+    builds something from the matrix (e.g. a GNN constructing message-passing
+    edges from A's connectivity before it can run) is a
+    ``MatrixSetupPreconditioner`` like Jacobi or AMG, not a
+    ``StaticSetupPreconditioner`` - "data-driven" and "needs the matrix at
+    setup" are independent axes.
 
     Mathematical interpretation::
 
@@ -160,35 +184,6 @@ class Preconditioner(ABC):
         Every ``setup()`` implementation calls this as its last step.
         """
         self._is_ready = True
-
-    @abstractmethod
-    def setup(
-        self,
-        matrix: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> Self:
-        """Build whatever internal state ``apply()`` needs for ``matrix``.
-
-        Must be called once before the first ``apply()`` call, and again
-        (discarding any previously built state) to rebind this
-        preconditioner to a new or changed matrix. After ``setup()``
-        returns, ``apply()`` may be called any number of times.
-
-        Returns ``self``, matching ``nn.Module.to()``/``.cuda()``'s
-        chaining convention (also already followed by
-        ``AMGPreconditioner._apply``) - e.g. ``precond.setup(A).apply(r)``.
-
-        Args:
-            matrix (torch.Tensor): System matrix A that this preconditioner
-                approximates/operates on.
-            context (PreconditionerContext | None): Optional iteration
-                context; ignored by preconditioners whose setup does not
-                depend on solver iteration state.
-
-        Returns:
-            Self: This preconditioner, now ready for ``apply()``.
-        """
-        ...
 
     @abstractmethod
     def apply(
@@ -274,7 +269,79 @@ class BindableInputs(Protocol):
         ...
 
 
-class LinearPreconditioner[T](Preconditioner):
+class MatrixSetupPreconditioner(Preconditioner, ABC):
+    """Role interface for preconditioners whose setup depends on the matrix.
+
+    Covers every preconditioner that factorizes, or builds a hierarchy
+    from, the system matrix's actual values - Jacobi, IC0, ILU, ICholesky,
+    every AMG/BootCMatch variant. Must be called again (discarding any
+    previously built state) whenever the matrix changes.
+    """
+
+    @abstractmethod
+    def setup(
+        self,
+        matrix: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> Self:
+        """Build whatever internal state ``apply()`` needs for ``matrix``.
+
+        Must be called once before the first ``apply()`` call, and again
+        (discarding any previously built state) to rebind this
+        preconditioner to a new or changed matrix. After ``setup()``
+        returns, ``apply()`` may be called any number of times, including
+        across several right-hand sides against the same matrix.
+
+        Returns ``self``, matching ``nn.Module.to()``/``.cuda()``'s
+        chaining convention (also already followed by
+        ``AMGPreconditioner._apply``) - e.g. ``precond.setup(A).apply(r)``.
+
+        Args:
+            matrix (torch.Tensor): System matrix A that this preconditioner
+                approximates/operates on.
+            context (PreconditionerContext | None): Optional iteration
+                context; ignored by preconditioners whose setup does not
+                depend on solver iteration state.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        ...
+
+
+class StaticSetupPreconditioner(Preconditioner, ABC):
+    """Role interface for preconditioners whose setup never needs the matrix.
+
+    Covers anything whose setup is matrix-independent by construction - a
+    checkpoint load (``NeuralPreconditioner``), a wrapped callable that's
+    already usable after ``__init__`` (``CallablePreconditioner``,
+    ``LinearOperatorPreconditioner``), or a stateless no-op (``Identity``).
+    Because the matrix never enters this contract at all, one ``setup()``
+    call serves any number of systems, including systems of different
+    dimensions or entirely different matrices - not just different
+    right-hand sides against a fixed matrix.
+    """
+
+    @abstractmethod
+    def setup(self, context: PreconditionerContext | None = None) -> Self:
+        """Build whatever internal state ``apply()`` needs, independent of any matrix.
+
+        Must be called once before the first ``apply()`` call. After
+        ``setup()`` returns, ``apply()`` may be called any number of times,
+        against any sequence of systems.
+
+        Args:
+            context (PreconditionerContext | None): Optional iteration
+                context; ignored by preconditioners whose setup does not
+                depend on solver iteration state.
+
+        Returns:
+            Self: This preconditioner, now ready for ``apply()``.
+        """
+        ...
+
+
+class LinearPreconditioner[T](MatrixSetupPreconditioner):
     """Base for matrix-based linear preconditioners.
 
     These compute ``M^{-1}r`` where M is derived from system matrix A.
@@ -330,9 +397,13 @@ class NonLinearPreconditioner(Preconditioner):
     """Base for non-linear preconditioners.
 
     These compute ``z = f(r)`` where f is not necessarily linear. Examples:
-    neural networks, adaptive strategies, custom functions.
-
-    Subclasses just implement ``apply()`` - no matrix needed.
+    neural networks, adaptive strategies, custom functions. This base only
+    fixes ``requires_flexible_cg = True``; it says nothing about whether
+    setup needs the matrix - concrete subclasses additionally extend
+    ``MatrixSetupPreconditioner`` or ``StaticSetupPreconditioner`` for that
+    (most wrapper preconditioners here are matrix-agnostic, but
+    ``ScheduledPreconditioner`` composes sub-preconditioners that may need
+    the matrix, so it is not universal).
     """
 
     @property

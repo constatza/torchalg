@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ..base import NonLinearPreconditioner, PreconditionerContext
+from ..base import NonLinearPreconditioner, PreconditionerContext, StaticSetupPreconditioner
 from ..ports import ExtraInputPredictorPort, PredictorAdapter
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class NeuralPreconditioner(NonLinearPreconditioner):
+class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
     """Neural network preconditioner with automatic cleanup.
 
     Loads a trained model from checkpoint in ``setup()`` and applies it to
@@ -58,7 +58,7 @@ class NeuralPreconditioner(NonLinearPreconditioner):
         >>> precond = NeuralPreconditioner(
         ...     Path("model.ckpt"), adapter=adapter, extra_input_names=("matrix",)
         ... )
-        >>> precond.setup(A)  # loads the checkpoint
+        >>> precond.setup()  # loads the checkpoint
         >>> precond.bind_inputs(matrix=A)  # done once before CG loop
         >>> z = precond.apply(residual)  # called each CG iteration
     """
@@ -97,18 +97,15 @@ class NeuralPreconditioner(NonLinearPreconditioner):
         self._data_config_path = data_config_path
         self._predictor: ExtraInputPredictorPort
 
-    def setup(
-        self,
-        matrix: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> Self:
+    def setup(self, context: PreconditionerContext | None = None) -> Self:
         """Load the predictor from checkpoint.
 
+        The predictor's checkpoint load/device placement is this
+        preconditioner's entire setup cost - nothing here is
+        matrix-dependent, so this `StaticSetupPreconditioner` takes no
+        matrix argument at all.
+
         Args:
-            matrix (torch.Tensor): Ignored - accepted for interface
-                uniformity with every other ``Preconditioner``; the neural
-                predictor's setup cost is the checkpoint load/device
-                placement, not anything matrix-dependent.
             context (PreconditionerContext | None): Ignored.
 
         Returns:

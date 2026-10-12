@@ -81,7 +81,7 @@ the sparse coarse matrices in PyAMG (unsorted after sparse products); this
 port uses ascending order, PyAMG's result on a sorted-index copy of the same
 graph.
 
-Every `Preconditioner` follows an explicit two-phase contract: `setup(matrix)`
+Every `Preconditioner` follows an explicit two-phase contract: `setup()`
 builds whatever internal state `apply()` needs, and only then may `apply()`
 be called (any number of times - e.g. once per solver iteration, or across
 several right-hand sides against the same matrix). `apply()` raises
@@ -89,7 +89,22 @@ several right-hand sides against the same matrix). `apply()` raises
 wraps every concrete subclass's `apply` with this guard automatically
 (`Preconditioner.__init_subclass__`), so no subclass implements the check
 itself. `pcg()`/`flexible_cg()` (`factories.py`) only ever call `.apply()` -
-the caller is responsible for calling `.setup(A)` first.
+the caller is responsible for calling `.setup()` first.
+
+`setup()`'s signature is split by role rather than declared once on
+`Preconditioner` (an Interface Segregation fix - several implementations
+used to carry an unused `matrix` parameter for no reason but uniformity):
+`MatrixSetupPreconditioner.setup(matrix, context=None)` for anything that
+factorizes or builds a hierarchy from the matrix's actual values (Jacobi,
+IC0, ILU, ICholesky, every AMG/BootCMatch variant - so `.setup(A)` is still
+correct for those), and `StaticSetupPreconditioner.setup(context=None)` -
+no matrix at all - for anything whose setup is matrix-independent by
+construction (`NeuralPreconditioner`'s checkpoint load, `CallablePreconditioner`/
+`LinearOperatorPreconditioner`'s wrapped callables, `Identity`). This is a
+property of what a given concrete class's `setup()` body actually does,
+not of "neural vs classical" - a future neural preconditioner whose setup
+does depend on the matrix (e.g. a GNN building edges from connectivity)
+is a `MatrixSetupPreconditioner`.
 
 `AMGPreconditioner.setup` calls `_make_hierarchy` unconditionally and stores
 the result; `_make_hierarchy` is the hook subclasses override when their

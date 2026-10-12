@@ -7,10 +7,10 @@ from typing import Self
 
 import torch
 
-from ..base import NonLinearPreconditioner, PreconditionerContext
+from ..base import NonLinearPreconditioner, PreconditionerContext, StaticSetupPreconditioner
 
 
-class CallablePreconditioner(NonLinearPreconditioner):
+class CallablePreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
     """Wrap an arbitrary function as a preconditioner.
 
     For custom/experimental preconditioners provided as plain functions.
@@ -40,15 +40,10 @@ class CallablePreconditioner(NonLinearPreconditioner):
         self._func = func
         self._mark_ready()
 
-    def setup(
-        self,
-        matrix: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> Self:
+    def setup(self, context: PreconditionerContext | None = None) -> Self:
         """No-op: the wrapped function is already usable after construction.
 
         Args:
-            matrix (torch.Tensor): Ignored.
             context (PreconditionerContext | None): Ignored.
 
         Returns:

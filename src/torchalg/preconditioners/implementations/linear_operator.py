@@ -16,7 +16,7 @@ from typing import Self
 
 import torch
 
-from ..base import Preconditioner, PreconditionerContext
+from ..base import PreconditionerContext, StaticSetupPreconditioner
 
 
 def _ensure_tensor(
@@ -49,7 +49,7 @@ def _ensure_tensor(
     return value
 
 
-class LinearOperatorPreconditioner(Preconditioner):
+class LinearOperatorPreconditioner(StaticSetupPreconditioner):
     """Wrap an arbitrary linear-operator callable so it can be used by the solvers.
 
     Provides an adapter for any ``M^{-1}``-applying callable that isn't
@@ -79,15 +79,10 @@ class LinearOperatorPreconditioner(Preconditioner):
         self.operator = operator
         self._mark_ready()
 
-    def setup(
-        self,
-        matrix: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> Self:
+    def setup(self, context: PreconditionerContext | None = None) -> Self:
         """No-op: the wrapped callable is already usable after construction.
 
         Args:
-            matrix (torch.Tensor): Ignored.
             context (PreconditionerContext | None): Ignored.
 
         Returns:

@@ -47,7 +47,7 @@ from torch import nn
 
 from torchalg.preconditioners.base import (
     BindableInputs,
-    Preconditioner,
+    MatrixSetupPreconditioner,
     PreconditionerContext,
     PreconditionerNotReadyError,
 )
@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from .protocols import CoarseningStrategy, MultigridCycle
 
 
-class AMGPreconditioner(Preconditioner, nn.Module):
+class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
     """Algebraic Multigrid preconditioner.
 
     Builds a multigrid hierarchy from a system matrix and applies a multigrid

@@ -12,7 +12,7 @@ that class hard-assumes exactly one ``(hierarchy, cycle)`` pair (its
 ``apply`` is literally ``self._cycle.apply(self._hierarchy, residual)``,
 singular). Forcing a composite of several hierarchies into its
 single-hierarchy constructor would need a meaningless dummy argument.
-Instead this class implements ``Preconditioner`` + ``nn.Module`` directly,
+Instead this class implements ``MatrixSetupPreconditioner`` + ``nn.Module`` directly,
 the established pattern for any preconditioner owning precomputed tensor
 state (``JacobiPreconditioner``, ``BootstrapAMGPreconditioner``, etc.):
 ``register_buffer`` for ``.to(device/dtype)`` propagation, never
@@ -46,7 +46,7 @@ from torch import nn
 
 from torchalg.multigrid import MultigridHierarchy, MultigridLevel, VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
-from torchalg.preconditioners.base import Preconditioner, PreconditionerContext
+from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
 
 from ._presets import prebuilt_cycle, seeded_draw
 from .bootcmatch_coarsening import BootCMatchCoarsening
@@ -86,7 +86,7 @@ def _move_hierarchy(hierarchy: MultigridHierarchy, like: torch.Tensor) -> Multig
     )
 
 
-class BootCMatchPreconditioner(Preconditioner, nn.Module):
+class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
     """BootCMatch preconditioner (TOMS Sections 4-5), dense.
 
     Runs ``BootCMatchSetup.run`` in ``setup()`` to build a composite of

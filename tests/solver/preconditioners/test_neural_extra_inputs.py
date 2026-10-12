@@ -95,7 +95,7 @@ def neural_with_matrix(adapter: _MockAdapter, dummy_checkpoint: Path) -> NeuralP
         adapter=adapter,
         extra_input_names=("matrix",),
     )
-    precond.setup(torch.eye(3, dtype=torch.float64))
+    precond.setup()
     return precond
 
 
@@ -130,7 +130,7 @@ def test_apply_without_bind_sends_no_extras(
         adapter=adapter,
         extra_input_names=("matrix",),
     )
-    precond.setup(residual)
+    precond.setup()
     precond.apply(residual)
     assert adapter.predictor.extras[-1] == {}
 
@@ -151,7 +151,7 @@ def test_apply_after_bind_forwards_extra(
 def test_no_extra_input_names_by_default(adapter: _MockAdapter, dummy_checkpoint: Path) -> None:
     """Test that NeuralPreconditioner has empty extra_input_names by default."""
     precond = NeuralPreconditioner(checkpoint_path=dummy_checkpoint, adapter=adapter)
-    precond.setup(torch.eye(3, dtype=torch.float64))
+    precond.setup()
     assert precond.extra_input_names == ()
 
 
@@ -159,7 +159,7 @@ def test_extra_input_names_fall_back_to_predictor_required_inputs(dummy_checkpoi
     """NeuralPreconditioner exposes predictor-declared extras without redeclaration."""
     adapter = _MockAdapter(required_inputs=("matrix",))
     precond = NeuralPreconditioner(checkpoint_path=dummy_checkpoint, adapter=adapter)
-    precond.setup(torch.eye(3, dtype=torch.float64))
+    precond.setup()
 
     assert precond.extra_input_names == ("matrix",)
 
@@ -172,7 +172,7 @@ def test_bind_inputs_keeps_predictor_required_inputs(
     """Binding honors predictor-declared extras when constructor names are omitted."""
     adapter = _MockAdapter(required_inputs=("matrix",))
     precond = NeuralPreconditioner(checkpoint_path=dummy_checkpoint, adapter=adapter)
-    precond.setup(residual)
+    precond.setup()
 
     precond.bind_inputs(matrix=small_matrix, ignored_key=torch.ones(3))
     precond.apply(residual)

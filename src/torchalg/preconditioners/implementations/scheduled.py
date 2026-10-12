@@ -8,14 +8,45 @@ import torch
 
 from ..base import (
     BindableInputs,
+    MatrixSetupPreconditioner,
     NonLinearPreconditioner,
     Preconditioner,
     PreconditionerContext,
     PreconditionerNotReadyError,
+    StaticSetupPreconditioner,
 )
 
 
-class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
+def _setup_sub(
+    precond: Preconditioner, matrix: torch.Tensor, context: PreconditionerContext | None
+) -> None:
+    """Set up one wrapped sub-preconditioner, dispatching on its role interface.
+
+    ``ScheduledPreconditioner`` cannot assume both ``primary`` and
+    ``fallback`` need the matrix - one might be a cheap ``StaticSetupPreconditioner``
+    (e.g. ``Identity``) wrapped around an expensive ``MatrixSetupPreconditioner``.
+
+    Args:
+        precond (Preconditioner): The sub-preconditioner to set up.
+        matrix (torch.Tensor): System matrix A, forwarded only if ``precond`` needs it.
+        context (PreconditionerContext | None): Forwarded either way.
+
+    Raises:
+        TypeError: If ``precond`` satisfies neither role interface.
+    """
+    match precond:
+        case StaticSetupPreconditioner():
+            precond.setup(context)
+        case MatrixSetupPreconditioner():
+            precond.setup(matrix, context)
+        case _:
+            raise TypeError(
+                f"{type(precond).__name__} is neither a MatrixSetupPreconditioner "
+                "nor a StaticSetupPreconditioner; ScheduledPreconditioner cannot set it up."
+            )
+
+
+class ScheduledPreconditioner(NonLinearPreconditioner, MatrixSetupPreconditioner, BindableInputs):
     """Preconditioner that switches between primary and fallback by iteration.
 
     Uses the fallback before ``start_iter``, the primary while the schedule
@@ -28,6 +59,11 @@ class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
     plain class - no ``nn.Module`` needed here, even though the wrapped
     ``primary``/``fallback`` preconditioners may themselves be ``nn.Module``
     subclasses (e.g. ``JacobiPreconditioner``).
+
+    Declares itself a ``MatrixSetupPreconditioner`` conservatively: it can't
+    promise matrix-agnosticism unless both ``primary`` and ``fallback`` are,
+    so it always accepts a matrix and forwards it only to whichever
+    sub-preconditioner actually needs it (see ``_setup_sub``).
 
     Args:
         primary (Preconditioner): Main preconditioner to apply.
@@ -101,8 +137,8 @@ class ScheduledPreconditioner(NonLinearPreconditioner, BindableInputs):
             from .identity import Identity
 
             self._fallback = Identity()
-        self._primary.setup(matrix, context)
-        self._fallback.setup(matrix, context)
+        _setup_sub(self._primary, matrix, context)
+        _setup_sub(self._fallback, matrix, context)
         self._mark_ready()
         return self
 

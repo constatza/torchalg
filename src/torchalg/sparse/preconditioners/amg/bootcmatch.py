@@ -22,7 +22,7 @@ from torch import nn
 
 from torchalg.multigrid import MultigridHierarchy, MultigridLevel, VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
-from torchalg.preconditioners.base import Preconditioner, PreconditionerContext
+from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
 
 from ._presets import prebuilt_cycle, seeded_draw
 from .bootcmatch_coarsening import BootCMatchCoarsening
@@ -58,7 +58,7 @@ def _move_hierarchy(hierarchy: MultigridHierarchy, like: torch.Tensor) -> Multig
     )
 
 
-class BootCMatchPreconditioner(Preconditioner, nn.Module):
+class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
     """BootCMatch preconditioner (TOMS Sections 4-5), sparse-CSR sibling.
 
     Runs ``BootCMatchSetup.run`` in ``setup()`` to build a composite of

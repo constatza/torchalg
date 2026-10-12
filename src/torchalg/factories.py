@@ -85,7 +85,9 @@ def flexible_cg(
             CG). A plain callable is wrapped in ``CallablePreconditioner``.
             Every ``Preconditioner`` follows an explicit two-phase contract
             (see ``torchalg.preconditioners.base.Preconditioner``): the
-            caller must call ``.setup(A)`` on it before passing it in here -
+            caller must call its ``setup()`` (passing ``A`` for a
+            ``MatrixSetupPreconditioner``; no argument for a
+            ``StaticSetupPreconditioner``) before passing it in here -
             ``flexible_cg()`` only ever calls ``.apply()``, never
             ``.setup()``. This is what lets one ``setup()`` call be reused
             across multiple solves against the same ``A`` (e.g. several
@@ -194,7 +196,9 @@ def pcg(
             CG). A plain callable is wrapped in ``CallablePreconditioner``.
             Every ``Preconditioner`` follows an explicit two-phase contract
             (see ``torchalg.preconditioners.base.Preconditioner``): the
-            caller must call ``.setup(A)`` on it before passing it in here -
+            caller must call its ``setup()`` (passing ``A`` for a
+            ``MatrixSetupPreconditioner``; no argument for a
+            ``StaticSetupPreconditioner``) before passing it in here -
             ``pcg()`` only ever calls ``.apply()``, never ``.setup()``. This
             is what lets one ``setup()`` call be reused across multiple
             solves against the same ``A`` (e.g. several right-hand sides):

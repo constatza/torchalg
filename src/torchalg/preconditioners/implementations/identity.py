@@ -6,10 +6,10 @@ from typing import Self
 
 import torch
 
-from ..base import Preconditioner, PreconditionerContext
+from ..base import PreconditionerContext, StaticSetupPreconditioner
 
 
-class Identity(Preconditioner):
+class Identity(StaticSetupPreconditioner):
     """Identity preconditioner: z = r (no preconditioning).
 
     Returns the residual unchanged, equivalent to M = I. Used for standard
@@ -28,8 +28,7 @@ class Identity(Preconditioner):
 
     Stateless, so it is always ready - construction alone satisfies the
     ``setup()``-before-``apply()`` contract (``setup()`` is still provided,
-    as a no-op, so passing an explicit matrix through the uniform
-    ``Preconditioner`` interface works too).
+    as a no-op, for callers that always call it uniformly).
 
     Example:
         >>> import torch
@@ -44,15 +43,10 @@ class Identity(Preconditioner):
         """Mark ready immediately; identity has no matrix-dependent state."""
         self._mark_ready()
 
-    def setup(
-        self,
-        matrix: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> Self:
-        """No-op: identity has no matrix-dependent state to build.
+    def setup(self, context: PreconditionerContext | None = None) -> Self:
+        """No-op: identity has no state to build at all.
 
         Args:
-            matrix (torch.Tensor): Ignored.
             context (PreconditionerContext | None): Ignored.
 
         Returns:
