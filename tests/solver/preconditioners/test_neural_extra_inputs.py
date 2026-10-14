@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import torch
 
 from torchalg.preconditioners.implementations.neural import NeuralPreconditioner
-from torchalg.preconditioners.ports import ExtraInputPredictorPort, PredictorAdapter
+from torchalg.preconditioners.ports import ExtraInputPredictorPort
 
 
 class _RecordingPredictor(ExtraInputPredictorPort):
@@ -47,56 +45,16 @@ class _RecordingPredictor(ExtraInputPredictorPort):
         """No-op cleanup."""
 
 
-class _MockAdapter(PredictorAdapter):
-    """Mock adapter that provides a recording predictor."""
-
-    def __init__(self, required_inputs: tuple[str, ...] = ()) -> None:
-        """Initialize with a fresh recording predictor."""
-        self.predictor = _RecordingPredictor(required_inputs)
-
-    def create_predictor(
-        self,
-        checkpoint_path: Path,
-        config_path: Path | None = None,
-        data_config_path: Path | None = None,
-    ) -> ExtraInputPredictorPort:
-        """Return the shared recording predictor instance.
-
-        Args:
-            checkpoint_path: Ignored in mock.
-            config_path: Ignored in mock.
-            data_config_path: Ignored in mock.
-
-        Returns:
-            The shared _RecordingPredictor instance.
-        """
-        return self.predictor
+@pytest.fixture
+def predictor() -> _RecordingPredictor:
+    """Fixture: recording predictor the preconditioner borrows."""
+    return _RecordingPredictor()
 
 
 @pytest.fixture
-def adapter() -> _MockAdapter:
-    """Fixture: mock adapter with recording predictor."""
-    return _MockAdapter()
-
-
-@pytest.fixture
-def dummy_checkpoint(tmp_path: Path) -> Path:
-    """Fixture: dummy checkpoint file path."""
-    checkpoint = tmp_path / "model.ckpt"
-    checkpoint.touch()
-    return checkpoint
-
-
-@pytest.fixture
-def neural_with_matrix(adapter: _MockAdapter, dummy_checkpoint: Path) -> NeuralPreconditioner:
-    """Fixture: NeuralPreconditioner expecting a matrix extra input, already set up."""
-    precond = NeuralPreconditioner(
-        checkpoint_path=dummy_checkpoint,
-        adapter=adapter,
-        extra_input_names=("matrix",),
-    )
-    precond.setup()
-    return precond
+def neural_with_matrix(predictor: _RecordingPredictor) -> NeuralPreconditioner:
+    """Fixture: NeuralPreconditioner expecting a matrix extra input."""
+    return NeuralPreconditioner(predictor, extra_input_names=("matrix",))
 
 
 @pytest.fixture
@@ -111,32 +69,29 @@ def test_extra_input_names_stored(neural_with_matrix: NeuralPreconditioner) -> N
 
 
 def test_bind_inputs_filters_to_declared_names(
-    adapter: _MockAdapter, neural_with_matrix: NeuralPreconditioner, small_matrix: torch.Tensor
+    predictor: _RecordingPredictor,
+    neural_with_matrix: NeuralPreconditioner,
+    small_matrix: torch.Tensor,
 ) -> None:
     """Test that bind_inputs only keeps keys declared in extra_input_names."""
     neural_with_matrix.bind_inputs(matrix=small_matrix, ignored_key=torch.ones(3))
     neural_with_matrix.apply(torch.ones(3))
-    extra = adapter.predictor.extras[-1]
+    extra = predictor.extras[-1]
     assert "matrix" in extra
     assert "ignored_key" not in extra
 
 
 def test_apply_without_bind_sends_no_extras(
-    adapter: _MockAdapter, dummy_checkpoint: Path, residual: torch.Tensor
+    predictor: _RecordingPredictor, residual: torch.Tensor
 ) -> None:
     """Test that apply sends empty extras if bind_inputs was not called."""
-    precond = NeuralPreconditioner(
-        checkpoint_path=dummy_checkpoint,
-        adapter=adapter,
-        extra_input_names=("matrix",),
-    )
-    precond.setup()
+    precond = NeuralPreconditioner(predictor, extra_input_names=("matrix",))
     precond.apply(residual)
-    assert adapter.predictor.extras[-1] == {}
+    assert predictor.extras[-1] == {}
 
 
 def test_apply_after_bind_forwards_extra(
-    adapter: _MockAdapter,
+    predictor: _RecordingPredictor,
     neural_with_matrix: NeuralPreconditioner,
     residual: torch.Tensor,
     small_matrix: torch.Tensor,
@@ -144,37 +99,31 @@ def test_apply_after_bind_forwards_extra(
     """Test that apply forwards bound extra inputs to the predictor."""
     neural_with_matrix.bind_inputs(matrix=small_matrix)
     neural_with_matrix.apply(residual)
-    extra = adapter.predictor.extras[-1]
+    extra = predictor.extras[-1]
     assert torch.equal(extra["matrix"], small_matrix)
 
 
-def test_no_extra_input_names_by_default(adapter: _MockAdapter, dummy_checkpoint: Path) -> None:
+def test_no_extra_input_names_by_default(predictor: _RecordingPredictor) -> None:
     """Test that NeuralPreconditioner has empty extra_input_names by default."""
-    precond = NeuralPreconditioner(checkpoint_path=dummy_checkpoint, adapter=adapter)
-    precond.setup()
-    assert precond.extra_input_names == ()
+    assert NeuralPreconditioner(predictor).extra_input_names == ()
 
 
-def test_extra_input_names_fall_back_to_predictor_required_inputs(dummy_checkpoint: Path) -> None:
+def test_extra_input_names_fall_back_to_predictor_required_inputs() -> None:
     """NeuralPreconditioner exposes predictor-declared extras without redeclaration."""
-    adapter = _MockAdapter(required_inputs=("matrix",))
-    precond = NeuralPreconditioner(checkpoint_path=dummy_checkpoint, adapter=adapter)
-    precond.setup()
+    precond = NeuralPreconditioner(_RecordingPredictor(required_inputs=("matrix",)))
 
     assert precond.extra_input_names == ("matrix",)
 
 
 def test_bind_inputs_keeps_predictor_required_inputs(
-    dummy_checkpoint: Path,
     residual: torch.Tensor,
     small_matrix: torch.Tensor,
 ) -> None:
     """Binding honors predictor-declared extras when constructor names are omitted."""
-    adapter = _MockAdapter(required_inputs=("matrix",))
-    precond = NeuralPreconditioner(checkpoint_path=dummy_checkpoint, adapter=adapter)
-    precond.setup()
+    predictor = _RecordingPredictor(required_inputs=("matrix",))
+    precond = NeuralPreconditioner(predictor)
 
     precond.bind_inputs(matrix=small_matrix, ignored_key=torch.ones(3))
     precond.apply(residual)
 
-    assert adapter.predictor.extras[-1] == {"matrix": small_matrix}
+    assert predictor.extras[-1] == {"matrix": small_matrix}

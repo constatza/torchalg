@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import gc
 
 import pytest
 import torch
 
 from torchalg.preconditioners.implementations.neural import NeuralPreconditioner
-from torchalg.preconditioners.ports import ExtraInputPredictorPort, PredictorAdapter
+from torchalg.preconditioners.ports import ExtraInputPredictorPort
 
 
 class DummyPredictor(ExtraInputPredictorPort):
@@ -44,90 +44,55 @@ class DummyPredictor(ExtraInputPredictorPort):
         self.cleaned_up = True
 
 
-class DummyAdapter(PredictorAdapter):
-    """Adapter stub that returns a stable predictor instance."""
-
-    def __init__(self, predictor: DummyPredictor) -> None:
-        """Initialize with a fixed predictor.
-
-        Args:
-            predictor: The predictor to return from create_predictor.
-        """
-        self.predictor = predictor
-
-    def create_predictor(
-        self,
-        checkpoint_path: Path,
-        config_path: Path | None = None,
-        data_config_path: Path | None = None,
-    ) -> ExtraInputPredictorPort:
-        """Return the fixed predictor if checkpoint exists.
-
-        Args:
-            checkpoint_path: Must exist.
-            config_path: Unused.
-            data_config_path: Unused.
-
-        Returns:
-            The shared DummyPredictor instance.
-
-        Raises:
-            FileNotFoundError: If checkpoint does not exist.
-        """
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(checkpoint_path)
-        return self.predictor
-
-
 @pytest.fixture
-def checkpoint_path(tmp_path: Path) -> Path:
-    """Create a throwaway checkpoint path for adapter wiring."""
-    checkpoint = tmp_path / "model.ckpt"
-    checkpoint.write_text("checkpoint")
-    return checkpoint
+def predictor() -> DummyPredictor:
+    """A predictor the caller owns."""
+    return DummyPredictor()
 
 
-def test_neural_preconditioner_requires_adapter(checkpoint_path: Path) -> None:
-    """NeuralPreconditioner refuses construction without an explicit adapter."""
-    with pytest.raises(ValueError, match="adapter"):
-        NeuralPreconditioner(checkpoint_path=checkpoint_path)
-
-
-def test_neural_preconditioner_applies_predictor_output(checkpoint_path: Path) -> None:
-    """NeuralPreconditioner delegates `apply` to the predictor port."""
-    predictor = DummyPredictor()
-    preconditioner = NeuralPreconditioner(
-        checkpoint_path=checkpoint_path,
-        adapter=DummyAdapter(predictor),
-    )
+def test_neural_preconditioner_applies_predictor_output(predictor: DummyPredictor) -> None:
+    """NeuralPreconditioner delegates `apply` to the predictor it was given."""
+    preconditioner = NeuralPreconditioner(predictor)
 
     residual = torch.tensor([2.0, 4.0, 6.0], dtype=torch.float64)
-    preconditioner.setup()
     result = preconditioner.apply(residual)
 
     torch.testing.assert_close(result, residual * 0.5)
 
 
-def test_neural_preconditioner_requires_flexible_cg(checkpoint_path: Path) -> None:
+def test_neural_preconditioner_is_ready_after_construction(predictor: DummyPredictor) -> None:
+    """The predictor is injected, so there is nothing left for `setup()` to load."""
+    preconditioner = NeuralPreconditioner(predictor)
+    residual = torch.ones(3, dtype=torch.float64)
+
+    before = preconditioner.apply(residual)
+    after = preconditioner.setup().apply(residual)
+
+    torch.testing.assert_close(before, after)
+
+
+def test_neural_preconditioner_requires_flexible_cg(predictor: DummyPredictor) -> None:
     """NeuralPreconditioner is non-linear, so it requires Flexible CG."""
-    preconditioner = NeuralPreconditioner(
-        checkpoint_path=checkpoint_path,
-        adapter=DummyAdapter(DummyPredictor()),
-    )
-
-    assert preconditioner.requires_flexible_cg is True
+    assert NeuralPreconditioner(predictor).requires_flexible_cg is True
 
 
-def test_neural_preconditioner_cleanup_is_idempotent(checkpoint_path: Path) -> None:
-    """Repeated cleanup calls are safe and reach the predictor once loaded."""
-    predictor = DummyPredictor()
-    preconditioner = NeuralPreconditioner(
-        checkpoint_path=checkpoint_path,
-        adapter=DummyAdapter(predictor),
-    )
-    preconditioner.setup()
+def test_neural_preconditioner_never_releases_the_predictor(predictor: DummyPredictor) -> None:
+    """The caller owns the predictor: dropping a preconditioner must not unload it."""
+    preconditioner = NeuralPreconditioner(predictor)
 
-    preconditioner.cleanup()
-    preconditioner.cleanup()
+    del preconditioner
+    gc.collect()
 
-    assert predictor.cleaned_up is True
+    assert predictor.cleaned_up is False
+
+
+def test_one_predictor_can_back_several_preconditioners(predictor: DummyPredictor) -> None:
+    """Sharing is safe because no preconditioner releases the predictor on its own."""
+    first = NeuralPreconditioner(predictor)
+    second = NeuralPreconditioner(predictor)
+    residual = torch.ones(2, dtype=torch.float64)
+
+    del first
+    gc.collect()
+
+    torch.testing.assert_close(second.apply(residual), residual * 0.5)

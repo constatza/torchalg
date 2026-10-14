@@ -26,9 +26,10 @@ Populated incrementally, stage by stage (see ``docs/plan.md``). So far
 - ``pod2g_preconditioner``: Proper Orthogonal Decomposition two-grid
   preconditioner factory, reusing the ``.amg`` engine with POD-basis
   coarsening; see ``.pod`` for the full public API.
-- ``NeuralPreconditioner``: Wraps a caller-supplied predictor (via
-  ``preconditioners.ports.PredictorAdapter``/``ExtraInputPredictorPort``)
-  as a non-linear preconditioner.
+- ``NeuralPreconditioner``: Wraps a caller-supplied, already-loaded
+  ``preconditioners.ports.ExtraInputPredictorPort`` as a non-linear
+  preconditioner. The caller owns the predictor and releases it; the
+  preconditioner never does, so one predictor may back several of them.
 """
 
 from .amg import AdaptiveSAPreconditioner, AMGPreconditioner, BootstrapAMGPreconditioner

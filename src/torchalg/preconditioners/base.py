@@ -120,7 +120,7 @@ class Preconditioner(ABC):
       matrix (Jacobi, IC0, ILU, ICholesky, every AMG variant - anything
       that factorizes or builds a hierarchy from A's actual values).
     - ``StaticSetupPreconditioner``: setup never needs the matrix (a
-      checkpoint load, a wrapped callable that's already usable after
+      injected predictor or a wrapped callable that's already usable after
       construction, ...).
 
     This is a property of what a given concrete class's ``setup()`` body
@@ -312,8 +312,8 @@ class MatrixSetupPreconditioner(Preconditioner, ABC):
 class StaticSetupPreconditioner(Preconditioner, ABC):
     """Role interface for preconditioners whose setup never needs the matrix.
 
-    Covers anything whose setup is matrix-independent by construction - a
-    checkpoint load (``NeuralPreconditioner``), a wrapped callable that's
+    Covers anything whose setup is matrix-independent by construction - an
+    injected predictor (``NeuralPreconditioner``), a wrapped callable that's
     already usable after ``__init__`` (``CallablePreconditioner``,
     ``LinearOperatorPreconditioner``), or a stateless no-op (``Identity``).
     Because the matrix never enters this contract at all, one ``setup()``

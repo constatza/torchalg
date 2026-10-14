@@ -12,6 +12,12 @@ factorization rules. `ScheduledPreconditioner` rejects negative `start_iter`
 and negative bounded windows, and `NeuralPreconditioner` binds extra tensors
 against the same public `extra_input_names` contract used by solver factories.
 
+`NeuralPreconditioner` is constructed from an already-loaded
+`ExtraInputPredictorPort` and knows nothing about checkpoints or frameworks;
+loading (`PredictorAdapter`) is the caller's job. Ownership follows from that:
+the caller releases the predictor, and the preconditioner never calls
+`cleanup()`, so a predictor can be shared by several preconditioners.
+
 `PODCoarseningStrategy` splits construction from fitting: `__init__(rank)`
 stores the target rank without registering a basis buffer, and `fit(snapshots)`
 runs the one-shot SVD and registers it. This lets an instance exist before
@@ -99,7 +105,7 @@ factorizes or builds a hierarchy from the matrix's actual values (Jacobi,
 IC0, ILU, ICholesky, every AMG/BootCMatch variant - so `.setup(A)` is still
 correct for those), and `StaticSetupPreconditioner.setup(context=None)` -
 no matrix at all - for anything whose setup is matrix-independent by
-construction (`NeuralPreconditioner`'s checkpoint load, `CallablePreconditioner`/
+construction (`NeuralPreconditioner`'s injected predictor, `CallablePreconditioner`/
 `LinearOperatorPreconditioner`'s wrapped callables, `Identity`). This is a
 property of what a given concrete class's `setup()` body actually does,
 not of "neural vs classical" - a future neural preconditioner whose setup

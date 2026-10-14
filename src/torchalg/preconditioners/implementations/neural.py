@@ -6,10 +6,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..base import NonLinearPreconditioner, PreconditionerContext, StaticSetupPreconditioner
-from ..ports import ExtraInputPredictorPort, PredictorAdapter
+from ..ports import ExtraInputPredictorPort
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from typing import Self
 
     import torch
@@ -18,105 +17,72 @@ logger = logging.getLogger(__name__)
 
 
 class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
-    """Neural network preconditioner with automatic cleanup.
+    """Neural network preconditioner built on a caller-supplied predictor.
 
-    Loads a trained model from checkpoint in ``setup()`` and applies it to
-    residuals in ``apply()``. Extra named inputs (matrix, coordinates,
-    parameters) declared in ``extra_input_names`` are pre-bound via
-    ``bind_inputs()`` before the CG loop and forwarded to the predictor on
-    each ``apply()`` call. Call ``setup()`` before ``bind_inputs()`` when
-    relying on ``extra_input_names``'s predictor-declared fallback (an
-    explicit ``extra_input_names`` constructor argument has no such
-    ordering requirement, since it never reads the predictor).
+    Applies the predictor to residuals in ``apply()``. Extra named inputs
+    (matrix, coordinates, parameters) declared in ``extra_input_names`` are
+    pre-bound via ``bind_inputs()`` before the CG loop and forwarded to the
+    predictor on each ``apply()`` call.
 
-    GPU resources are automatically freed when the preconditioner is garbage
-    collected.
+    The predictor is injected, already loaded: this class knows nothing about
+    checkpoints, files or frameworks, so how a model is loaded, where it lives
+    and when it is released are the caller's concern. It follows that the
+    caller *owns* the predictor and releases it (``predictor.cleanup()`` or its
+    context manager); this class never does, which is also what makes one
+    loaded predictor safe to share between several preconditioners.
 
     This class owns no persistent tensor state of its own - it delegates
-    inference to the injected ``adapter``/predictor and only caches the
-    currently-bound extra-input tensors (replaced wholesale on every
-    ``bind_inputs()`` call, not accumulated). It therefore stays a plain
-    class, matching ``ScheduledPreconditioner``/``CallablePreconditioner``
-    (wrapper/delegator preconditioners that hold references to other
-    objects, not their own tensor buffers, do not need ``nn.Module`` - see
-    ``docs/plan.md``'s ``nn.Module`` architecture decision). The one real
-    ``nn.Module`` in this picture is the caller-supplied predictor model
-    living behind ``adapter``/``PredictorPort``, which this class touches
-    only through that plain ABC boundary, never subclassing or wrapping it.
+    inference to the injected predictor and only caches the currently-bound
+    extra-input tensors (replaced wholesale on every ``bind_inputs()`` call,
+    not accumulated). It therefore stays a plain class, matching
+    ``ScheduledPreconditioner``/``CallablePreconditioner`` (wrapper/delegator
+    preconditioners that hold references to other objects, not their own
+    tensor buffers, do not need ``nn.Module`` - see ``docs/plan.md``'s
+    ``nn.Module`` architecture decision).
 
     Args:
-        checkpoint_path (Path): Path to trained model checkpoint.
-        config_path (Path | None): Optional model configuration.
-        data_config_path (Path | None): Optional data configuration.
-        adapter (PredictorAdapter | None): Predictor adapter supplied by the
-            caller. Must not be ``None`` at runtime.
+        predictor (ExtraInputPredictorPort): Loaded predictor. Not released
+            by this class.
         extra_input_names (tuple[str, ...]): Names of extra inputs the model
             expects beyond the residual (e.g. ``("matrix",)``). Matched
-            against ``bind_inputs()`` keys.
+            against ``bind_inputs()`` keys. When empty, the predictor's own
+            ``required_inputs`` apply.
 
     Example:
-        >>> precond = NeuralPreconditioner(
-        ...     Path("model.ckpt"), adapter=adapter, extra_input_names=("matrix",)
-        ... )
-        >>> precond.setup()  # loads the checkpoint
-        >>> precond.bind_inputs(matrix=A)  # done once before CG loop
-        >>> z = precond.apply(residual)  # called each CG iteration
+        >>> with adapter.create_predictor(Path("model.ckpt")) as predictor:
+        ...     precond = NeuralPreconditioner(predictor, extra_input_names=("matrix",))
+        ...     precond.bind_inputs(matrix=A)  # done once before CG loop
+        ...     z = precond.apply(residual)  # called each CG iteration
     """
 
     def __init__(
         self,
-        checkpoint_path: Path,
-        config_path: Path | None = None,
-        data_config_path: Path | None = None,
-        adapter: PredictorAdapter | None = None,
+        predictor: ExtraInputPredictorPort,
         extra_input_names: tuple[str, ...] = (),
     ) -> None:
-        """Store checkpoint/adapter config; ``setup()`` loads the checkpoint.
+        """Store the predictor; nothing is left to load.
 
         Args:
-            checkpoint_path (Path): Path to trained model checkpoint.
-            config_path (Path | None): Optional model configuration.
-            data_config_path (Path | None): Optional data configuration.
-            adapter (PredictorAdapter | None): Predictor adapter supplied by
-                the caller. Must not be ``None`` at runtime.
+            predictor (ExtraInputPredictorPort): Loaded predictor, owned and
+                released by the caller.
             extra_input_names (tuple[str, ...]): Names of extra inputs the
                 model expects beyond the residual (e.g. ``("matrix",)``).
                 Matched against ``bind_inputs()`` keys.
-
-        Raises:
-            ValueError: If ``adapter`` is ``None``.
         """
-        if adapter is None:
-            raise ValueError("NeuralPreconditioner requires an explicit predictor adapter.")
-
+        self._predictor = predictor
         self._extra_input_names: tuple[str, ...] = extra_input_names
         self._extra_inputs: dict[str, torch.Tensor] = {}
-        self._adapter = adapter
-        self._checkpoint_path = checkpoint_path
-        self._config_path = config_path
-        self._data_config_path = data_config_path
-        self._predictor: ExtraInputPredictorPort
+        self._mark_ready()
 
     def setup(self, context: PreconditionerContext | None = None) -> Self:
-        """Load the predictor from checkpoint.
-
-        The predictor's checkpoint load/device placement is this
-        preconditioner's entire setup cost - nothing here is
-        matrix-dependent, so this `StaticSetupPreconditioner` takes no
-        matrix argument at all.
+        """No-op: the predictor is already usable after construction.
 
         Args:
             context (PreconditionerContext | None): Ignored.
 
         Returns:
-            Self: This preconditioner, now ready for ``apply()``.
+            Self: This preconditioner, already ready.
         """
-        # Load predictor (GPU model); adapter contract guarantees ExtraInputPredictorPort.
-        self._predictor = self._adapter.create_predictor(
-            checkpoint_path=self._checkpoint_path,
-            config_path=self._config_path,
-            data_config_path=self._data_config_path,
-        )
         self._mark_ready()
         return self
 
@@ -172,21 +138,3 @@ class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
             torch.Tensor: Preconditioned residual ``z_k = network(r_k, **extra_inputs)``.
         """
         return self._predictor.apply(residual, **self._extra_inputs)
-
-    def cleanup(self) -> None:
-        """Free GPU resources manually.
-
-        Called automatically by ``__del__``, but can be called explicitly
-        if you want to free resources before garbage collection.
-        """
-        # Check if _predictor exists (might not if __init__ failed).
-        if hasattr(self, "_predictor") and hasattr(self._predictor, "cleanup"):
-            self._predictor.cleanup()
-
-    def __del__(self) -> None:
-        """Automatic cleanup on garbage collection.
-
-        Ensures GPU resources are freed when the preconditioner is no
-        longer referenced.
-        """
-        self.cleanup()
