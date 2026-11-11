@@ -244,8 +244,9 @@ def _elementary_cells(
             rhs = torch.ones(n, dtype=dtype, device=device)
             initial = torch.zeros(n, dtype=dtype, device=device)
             smoother = GaussSeidelSmoother() if fmt == "dense" else SparseGaussSeidelSmoother()
+            prepared = smoother.prepare(operand)
             return (
-                lambda: smoother.smooth(operand, rhs, initial, steps=1),
+                lambda: prepared.smooth(rhs, initial, 1),
                 operand,
                 (operand, rhs, initial),
             )

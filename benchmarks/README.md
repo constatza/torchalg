@@ -10,6 +10,36 @@ small cross-format correctness coverage lives in
 `tests/integration/sparse_dense/` and runs in the ordinary test suite; timing
 and report generation never run as part of pytest.
 
+## Performance suites (pytest)
+
+Two permanent tiers, so a regression or win can be attributed to either level:
+
+- `primitives/` — one operation each (coarse solve, smoothing sweeps, triangular
+  solve, Galerkin product, neighborhoods, LS interpolation, spectral estimate, CG
+  vector ops).
+- `algorithms/` — full preconditioners, each timed as separate `setup`,
+  `first_apply`, `apply` and `solve` phases. The gap between `first_apply` and
+  `apply` exposes lazy one-off work. `solve` runs PCG to a tolerance and asserts
+  convergence, so it doubles as an end-to-end correctness check.
+
+`tmp/` (git-ignored) holds throwaway `compare_<topic>.py` scripts that put a
+baseline and a candidate variant side by side on identical inputs. When a candidate
+lands in `src/`, its benchmark moves into `primitives/` or `algorithms/` and the
+script is deleted.
+
+```sh
+uv run pytest benchmarks -m benchmark                 # whole suite
+uv run pytest benchmarks/primitives -m benchmark      # one tier
+TORCHALG_BENCH_OUT=before.json uv run pytest benchmarks -m benchmark
+python -m benchmarks.compare before.json after.json   # speed-up table
+```
+
+The default `uv run pytest` excludes these (`-m "not benchmark"`). Suites record
+timings to `artifacts/benchmarks/<timestamp>.json` (device, torch version and
+threads included) and assert only correctness, never time. Matrix cases come from
+`cases.py` (seeded, file-free); timing goes through `harness.time_callable`
+(warm-up, CUDA synchronization, median).
+
 ## Running sparse-vs-dense experiments
 
 Install the benchmark dependency group, then invoke the modules from the
