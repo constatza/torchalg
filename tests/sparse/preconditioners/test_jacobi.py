@@ -7,6 +7,7 @@ parity tests for the established pattern).
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from torchalg.preconditioners.implementations import (
@@ -39,6 +40,28 @@ class TestJacobiPreconditionerSparseDenseParity:
         )
 
         torch.testing.assert_close(sparse_result, dense_result)
+
+
+@pytest.fixture
+def diagonal_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
+    """4x4 diagonal SPD matrix matching ``residual_block``'s row count."""
+    return torch.diag(torch.tensor([4.0, 3.0, 2.0, 2.0], dtype=torch_dtype))
+
+
+class TestJacobiPreconditionerResidualBlock:
+    """An ``(n, k)`` residual block matches the dense sibling column by column."""
+
+    def test_matches_dense_on_block(
+        self, diagonal_matrix: torch.Tensor, residual_block: torch.Tensor
+    ) -> None:
+        dense_result = DenseJacobiPreconditioner().setup(diagonal_matrix).apply(residual_block)
+        sparse_result = (
+            JacobiPreconditioner().setup(diagonal_matrix.to_sparse_csr()).apply(residual_block)
+        )
+
+        expected = residual_block / torch.diagonal(diagonal_matrix).unsqueeze(-1)
+        torch.testing.assert_close(dense_result, expected, rtol=1e-14, atol=0.0)
+        torch.testing.assert_close(sparse_result, dense_result, rtol=0.0, atol=0.0)
 
 
 class TestJacobiPreconditionerIsNnModule:

@@ -57,6 +57,19 @@ def test_jacobi_correctness_on_well_conditioned_diagonal(
     torch.testing.assert_close(z, expected, rtol=1e-14, atol=1e-14)
 
 
+def test_jacobi_scales_rows_of_a_residual_block(
+    well_conditioned_matrix: torch.Tensor,
+    residual_block: torch.Tensor,
+) -> None:
+    """An ``(n, k)`` residual is preconditioned column by column (rows scaled by ``1/A_ii``)."""
+    precond = JacobiPreconditioner().setup(well_conditioned_matrix)
+
+    z = precond.apply(residual_block)
+
+    expected = residual_block / torch.diagonal(well_conditioned_matrix).unsqueeze(-1)
+    torch.testing.assert_close(z, expected, rtol=1e-14, atol=0.0)
+
+
 def test_jacobi_preconditioner_from_matrix(torch_dtype: torch.dtype) -> None:
     """Verify Jacobi preconditioner computes diagonal inverse from matrix."""
     matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0], dtype=torch_dtype))

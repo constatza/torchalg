@@ -154,3 +154,17 @@ def anisotropic_2d_factory(torch_dtype: torch.dtype) -> Callable[[int, float], t
         return torch.kron(eye, stencil) + eps * torch.kron(stencil, eye)
 
     return build
+
+
+@pytest.fixture(params=[3, 4], ids=["k=3", "k=n"])
+def residual_block(request: pytest.FixtureRequest, torch_dtype: torch.dtype) -> torch.Tensor:
+    """Block of residual columns ``(4, k)`` for the 4x4 matrix fixtures.
+
+    ``k = n`` matters: a ``(n,)`` per-row scale broadcast over the last axis
+    of an ``(n, n)`` block silently scales columns instead of rows.
+
+    Returns:
+        torch.Tensor: Shape ``(4, k)`` with distinct entries.
+    """
+    columns = request.param
+    return torch.arange(1.0, 4 * columns + 1, dtype=torch_dtype).reshape(4, columns)

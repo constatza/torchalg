@@ -101,11 +101,15 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """Apply diagonal scaling.
 
         Args:
-            residual (torch.Tensor): Residual vector r.
+            residual (torch.Tensor): Residual vector ``(n,)`` or block ``(n, k)``.
             context (PreconditionerContext | None): Ignored (Jacobi doesn't
                 need context).
 
         Returns:
-            torch.Tensor: Preconditioned residual z = D^{-1}r.
+            torch.Tensor: Preconditioned residual z = D^{-1}r, same shape as
+                ``residual``. A block is scaled row-wise (one column per
+                right-hand side), never broadcast over its columns.
         """
-        return self.inv_diag * residual
+        if residual.ndim == 1:
+            return self.inv_diag * residual
+        return self.inv_diag.unsqueeze(-1) * residual
