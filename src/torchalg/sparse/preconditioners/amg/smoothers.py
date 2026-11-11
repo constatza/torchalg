@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
+from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 
 from ._gauss_seidel_format import SymmetricGaussSeidel, prepare_gauss_seidel
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
@@ -35,13 +36,27 @@ class PreparedJacobi:
     """Weighted Jacobi bound to one sparse CSR matrix.
 
     Attributes:
-        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
+        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``, with int32
+            indices where it fits (``kernels.index_dtype``), since every sweep and
+            residual multiplies by it.
         diag_inv (torch.Tensor): ``omega / diag(A)`` with ``0`` where the
             diagonal is (near) zero, shape ``(n,)``.
     """
 
     matrix: torch.Tensor
     diag_inv: torch.Tensor
+
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Return ``rhs - A x`` with the bound level matrix.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape as ``rhs``.
+
+        Returns:
+            torch.Tensor: Residual, same shape as ``rhs``.
+        """
+        return rhs - self.matrix @ x
 
     def _scale(self, residual: torch.Tensor) -> torch.Tensor:
         """``diag_inv * residual`` for a vector ``(n,)`` or a block ``(n, k)``."""
@@ -120,7 +135,7 @@ class JacobiSmoother:
             omega / diag,
             torch.zeros_like(diag),
         )
-        return PreparedJacobi(matrix=A, diag_inv=diag_inv)
+        return PreparedJacobi(matrix=compact_csr_indices(A), diag_inv=diag_inv)
 
 
 class GaussSeidelSmoother:

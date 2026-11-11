@@ -73,6 +73,13 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   support `smooth`, `smooth_from_zero` (which skips the first strict-upper matvec) and
   `smooth(..., rows=)` (PyAMG's indexed sweep); a zero pivot freezes a row to the
   sweep's target in both.
+- Every prepared smoother also implements `residual(rhs, x) = rhs - A x`, and the
+  V- and W-cycles form level residuals through it, so the operator each level
+  multiplies by is the one `prepare` stored. Sparse prepared smoothers and
+  `SparseTransferOperator` store their CSR operators with int32 indices
+  (`kernels.index_dtype.compact_csr_indices`): PyTorch's CPU sparse BLAS narrows
+  int64 indices on every product, so narrowing once at setup makes SpMV
+  1.5-2.5x faster and the AMG V-cycles 1.2-1.8x faster, bit-identical.
 - `_jacobi_omega.jacobi_omega` / `jacobi_spectral_radius` are pure and
   uncached. Setup code that needs rho (prolongation smoothing in
   coarsening and adaptive setup, the Jacobi smoother's `prepare`) calls them

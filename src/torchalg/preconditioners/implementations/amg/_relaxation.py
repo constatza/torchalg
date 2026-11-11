@@ -129,12 +129,26 @@ class PreparedSymmetricGaussSeidel:
     """Symmetric Gauss-Seidel bound to one matrix (``PreparedSmoother``).
 
     Attributes:
+        matrix (torch.Tensor): The dense matrix ``A`` (for cycle residuals).
         forward (_PreparedSweep): Ascending sweep ``(D + L) x_new = b - U x_old``.
         backward (_PreparedSweep): Descending sweep ``(D + U) x_new = b - L x_old``.
     """
 
+    matrix: torch.Tensor
     forward: _PreparedSweep
     backward: _PreparedSweep
+
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Return ``rhs - A x`` with the bound level matrix.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape as ``rhs``.
+
+        Returns:
+            torch.Tensor: Residual, same shape as ``rhs``.
+        """
+        return rhs - self.matrix @ x
 
     def smooth(self, rhs: torch.Tensor, x: torch.Tensor, steps: int) -> torch.Tensor:
         """Apply ``steps`` symmetric iterations (forward then backward) from ``x``.
@@ -198,6 +212,7 @@ def prepare_symmetric_gauss_seidel(
         active = torch.zeros(matrix.shape[0], dtype=torch.bool, device=matrix.device)
         active[rows] = True
     return PreparedSymmetricGaussSeidel(
+        matrix=matrix,
         forward=_prepare_sweep(matrix, forward=True, active=active),
         backward=_prepare_sweep(matrix, forward=False, active=active),
     )

@@ -298,6 +298,9 @@ class _PreparedDenseOracle:
     def smooth_from_zero(self, rhs: torch.Tensor, steps: int) -> torch.Tensor:
         return self._sweeps(self._matrix, torch.zeros_like(rhs), rhs, steps)
 
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        return rhs - self._matrix @ x
+
 
 class DenseRelaxation:
     """Dense ``MultigridSmoother`` backed by the ``solve_triangular`` oracle."""

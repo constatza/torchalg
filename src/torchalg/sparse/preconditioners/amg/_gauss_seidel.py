@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 import torch
 
+from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 from torchalg.sparse.kernels.triangular import (
     PreparedTriangularSolve,
     _expand_row_index,
@@ -70,7 +71,8 @@ class PreparedSymmetricGaussSeidel:
     Build with ``build``; every field is matrix-only structure computed once.
 
     Attributes:
-        matrix (torch.Tensor): The sparse CSR matrix ``A``, shape ``(n, n)``.
+        matrix (torch.Tensor): The sparse CSR matrix ``A``, shape ``(n, n)``, with
+            int32 indices where it fits (used only for residuals).
         upper (_StrictTriangle): Strict upper entries (``col > row``).
         lower (_StrictTriangle): Strict lower entries (``col < row``).
         forward (PreparedTriangularSolve): ``(D + L)`` substitution of the forward sweep.
@@ -82,6 +84,18 @@ class PreparedSymmetricGaussSeidel:
     lower: _StrictTriangle
     forward: PreparedTriangularSolve
     backward: PreparedTriangularSolve
+
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Return ``rhs - A x`` with the bound level matrix.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape as ``rhs``.
+
+        Returns:
+            torch.Tensor: Residual, same shape as ``rhs``.
+        """
+        return rhs - self.matrix @ x
 
     @classmethod
     def build(cls, matrix: torch.Tensor) -> PreparedSymmetricGaussSeidel:
@@ -105,7 +119,7 @@ class PreparedSymmetricGaussSeidel:
             return _StrictTriangle(row_index[selected], col[selected], values[selected])
 
         return cls(
-            matrix=matrix,
+            matrix=compact_csr_indices(matrix),
             upper=triangle(col > row_index),
             lower=triangle(col < row_index),
             forward=PreparedTriangularSolve(matrix, "forward", row_index=row_index),

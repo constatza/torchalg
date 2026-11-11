@@ -71,6 +71,18 @@ class PreparedJacobi:
     matrix: torch.Tensor
     diag_inv: torch.Tensor
 
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Return ``rhs - A x`` with the bound level matrix.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape as ``rhs``.
+
+        Returns:
+            torch.Tensor: Residual, same shape as ``rhs``.
+        """
+        return rhs - self.matrix @ x
+
     def _scale_for(self, rhs: torch.Tensor) -> torch.Tensor:
         return self.diag_inv.unsqueeze(-1) if rhs.ndim == 2 else self.diag_inv
 

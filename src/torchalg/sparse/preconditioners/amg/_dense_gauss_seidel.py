@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 import torch
 
+from torchalg.sparse.kernels.index_dtype import compact_csr_indices
+
 _PIVOT_TOL = 1e-14
 """Diagonal magnitude at or below this freezes the row, as in ``PreparedTriangularSolve``."""
 
@@ -36,6 +38,8 @@ class DenseBackedSymmetricGaussSeidel:
     """Symmetric Gauss-Seidel bound to one matrix, solved against dense triangles.
 
     Attributes:
+        matrix: The sparse CSR matrix ``A`` (int32 indices where it fits), used only
+            for cycle residuals so they stay O(nnz).
         frozen: Rows whose pivot is (near) zero; they take the sweep's target value.
         upper: Strict upper triangle ``U`` (applied to the old iterate in the forward sweep).
         lower: Strict lower triangle ``L`` (applied in the backward sweep).
@@ -43,11 +47,24 @@ class DenseBackedSymmetricGaussSeidel:
         backward: ``D + U`` with frozen rows replaced by identity rows.
     """
 
+    matrix: torch.Tensor
     frozen: torch.Tensor
     upper: torch.Tensor
     lower: torch.Tensor
     forward: torch.Tensor
     backward: torch.Tensor
+
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Return ``rhs - A x`` with the bound level matrix.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape as ``rhs``.
+
+        Returns:
+            torch.Tensor: Residual, same shape as ``rhs``.
+        """
+        return rhs - self.matrix @ x
 
     @classmethod
     def build(cls, matrix: torch.Tensor) -> DenseBackedSymmetricGaussSeidel:
@@ -62,6 +79,7 @@ class DenseBackedSymmetricGaussSeidel:
         dense = matrix.to_dense()
         frozen = dense.diagonal().abs() <= _PIVOT_TOL
         return cls(
+            matrix=compact_csr_indices(matrix),
             frozen=frozen,
             upper=torch.triu(dense, 1),
             lower=torch.tril(dense, -1),

@@ -82,6 +82,22 @@ class PreparedSmoother(Protocol):
         """
         ...
 
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Return ``rhs - A x`` for the level matrix this smoother is bound to.
+
+        The cycle forms every level residual here, so the operator used for the matvec
+        is the one ``prepare`` stored (e.g. a CSR copy with int32 indices), not the raw
+        level matrix.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side vector (or block of columns).
+            x (torch.Tensor): Current iterate.
+
+        Returns:
+            torch.Tensor: Residual, same shape as ``rhs``.
+        """
+        ...
+
 
 class MultigridSmoother(Protocol):
     """Damps high-frequency error on one grid level.

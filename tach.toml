@@ -83,6 +83,9 @@ depends_on = ["torchalg.models.history", "torchalg.models.result"]
 path = "torchalg.sparse.kernels.diagonal"
 depends_on = []
 [[modules]]
+path = "torchalg.sparse.kernels.index_dtype"
+depends_on = []
+[[modules]]
 path = "torchalg.sparse.kernels.rowscale"
 depends_on = []
 [[modules]]
@@ -117,16 +120,16 @@ path = "torchalg.sparse.kernels.bootcmatch_weights"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.triangular"]
 [[modules]]
 path = "torchalg.sparse.kernels"
-depends_on = ["torchalg.sparse.kernels.algebraic_distance", "torchalg.sparse.kernels.bootcmatch_matching", "torchalg.sparse.kernels.bootcmatch_weights", "torchalg.sparse.kernels.depth_neighborhood", "torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.galerkin", "torchalg.sparse.kernels.lsr_correction", "torchalg.sparse.kernels.prolongation", "torchalg.sparse.kernels.row_max", "torchalg.sparse.kernels.rowscale", "torchalg.sparse.kernels.strength", "torchalg.sparse.kernels.triangular"]
+depends_on = ["torchalg.sparse.kernels.algebraic_distance", "torchalg.sparse.kernels.bootcmatch_matching", "torchalg.sparse.kernels.bootcmatch_weights", "torchalg.sparse.kernels.depth_neighborhood", "torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.galerkin", "torchalg.sparse.kernels.index_dtype", "torchalg.sparse.kernels.lsr_correction", "torchalg.sparse.kernels.prolongation", "torchalg.sparse.kernels.row_max", "torchalg.sparse.kernels.rowscale", "torchalg.sparse.kernels.strength", "torchalg.sparse.kernels.triangular"]
 
 # Preconditioners: complete algorithms, each a standalone sibling class/
 # function to the dense tree - never imported by it.
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg._gauss_seidel"
-depends_on = ["torchalg.sparse.kernels.triangular"]
+depends_on = ["torchalg.sparse.kernels.index_dtype", "torchalg.sparse.kernels.triangular"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg._dense_gauss_seidel"
-depends_on = []
+depends_on = ["torchalg.sparse.kernels.index_dtype"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg._gauss_seidel_format"
 depends_on = ["torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners.amg._dense_gauss_seidel", "torchalg.sparse.preconditioners.amg._gauss_seidel"]
@@ -135,10 +138,10 @@ path = "torchalg.sparse.preconditioners.amg._jacobi_omega"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.rowscale", "torchalg.utils.spectral"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.smoothers"
-depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.preconditioners.amg._gauss_seidel_format", "torchalg.sparse.preconditioners.amg._jacobi_omega"]
+depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.index_dtype", "torchalg.sparse.preconditioners.amg._gauss_seidel_format", "torchalg.sparse.preconditioners.amg._jacobi_omega"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.transfer"
-depends_on = []
+depends_on = ["torchalg.sparse.kernels.index_dtype"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.aggregation"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.rowscale"]

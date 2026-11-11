@@ -2,8 +2,7 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.cycle``
 (see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor`` and
-``numpy.linalg.solve`` replaced by a prepared (factor-once) coarsest direct solve. Both cycles are format-agnostic: every op here is either
-``matrix @ x`` (works identically for dense or sparse CSR) or delegated to
+``numpy.linalg.solve`` replaced by a prepared (factor-once) coarsest direct solve. Both cycles are format-agnostic: every op is delegated to
 the injected ``MultigridSmoother``/``TransferOperator``/coarse-solver factory,
 so a sparse ``CoarseningStrategy`` keeps every non-coarsest level sparse CSR
 throughout the cycle - only the coarsest-level solve is format-committing
@@ -125,7 +124,6 @@ class VCycle:
         level_idx: int,
     ) -> torch.Tensor:
         level = hierarchy.levels[level_idx]
-        matrix = level.matrix
 
         # Coarsest level: prepared direct solve.
         if level.transfer is None:
@@ -137,7 +135,7 @@ class VCycle:
         x = smoother.smooth_from_zero(rhs, self._n_pre)
 
         # Restrict residual to coarse grid.
-        r_fine = rhs - matrix @ x
+        r_fine = smoother.residual(rhs, x)
         r_coarse = level.transfer.restrict(r_fine)
 
         # Recursive coarse-grid correction.
@@ -236,7 +234,6 @@ class WCycle:
         level_idx: int,
     ) -> torch.Tensor:
         level = hierarchy.levels[level_idx]
-        matrix = level.matrix
 
         # Coarsest level: prepared direct solve.
         if level.transfer is None:
@@ -249,7 +246,7 @@ class WCycle:
 
         # gamma = 2: two coarse-grid corrections, recomputing residual each time.
         for _ in range(2):
-            r_fine = rhs - matrix @ x
+            r_fine = smoother.residual(rhs, x)
             r_coarse = level.transfer.restrict(r_fine)
             e_coarse = self._wcycle(hierarchy, r_coarse, level_idx + 1)
             x = x + level.transfer.prolongate(e_coarse)

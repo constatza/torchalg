@@ -37,6 +37,10 @@ class RecordingPrepared:
         self._log.append(f"zero:{steps}")
         return self.smooth(rhs, torch.zeros_like(rhs), steps)
 
+    def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        self._log.append("residual")
+        return rhs - self._matrix @ x
+
 
 class RecordingSmoother:
     """Smoother factory that counts ``prepare`` calls."""
@@ -107,3 +111,14 @@ class TestPreparedSmoothers:
 
         with pytest.raises(HierarchyNotPreparedError):
             cycle.apply(hierarchy, rhs)
+
+    def test_residual_comes_from_the_prepared_smoother(
+        self, cycle_class: type[VCycle | WCycle], hierarchy: MultigridHierarchy, rhs: torch.Tensor
+    ) -> None:
+        """The cycle forms each level's residual through the smoother's bound operator."""
+        smoother = RecordingSmoother()
+        cycle = cycle_class(smoother, n_pre=N_PRE, n_post=N_POST)
+
+        cycle.apply(cycle.prepare(hierarchy), rhs)
+
+        assert "residual" in smoother.sweep_log

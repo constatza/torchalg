@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import torch
 
+from torchalg.sparse.kernels.index_dtype import compact_csr_indices
+
 
 class SparseTransferOperator:
     """Transfer operator backed by a sparse CSR prolongation matrix P.
@@ -37,8 +39,10 @@ class SparseTransferOperator:
                 n_coarse).
         """
         with torch.inference_mode(False):
-            self._P = P.clone() if P.is_inference() else P
-            self._R = self._P.t().to_sparse_csr()
+            prolongation = P.clone() if P.is_inference() else P
+            # int32 indices: ``P``/``R`` are applied every cycle (``kernels.index_dtype``).
+            self._P = compact_csr_indices(prolongation)
+            self._R = compact_csr_indices(prolongation.t().to_sparse_csr())
 
     def prolongate(self, coarse: torch.Tensor) -> torch.Tensor:
         """Interpolate coarse-grid vector to fine grid.
