@@ -182,8 +182,11 @@ unconditionally, since CR's relaxation *is* the coarsening criterion
 changes only the applied V-cycle, never which nodes CR marks coarse.
 Preset instances still declare themselves linear; a custom smoother therefore
 must be a fixed linear map. Plain PCG additionally requires a symmetric
-positive-definite cycle, so nonsymmetric or stateful custom relaxation belongs
-in a manually wired `AMGPreconditioner(linear=False)` used with flexible CG.
+positive-definite cycle: post-smoothing must be the transpose of pre-smoothing,
+so unequal `n_pre`/`n_post` or a nonsymmetric smoother breaks it (weighted
+Jacobi and symmetric Gauss-Seidel are safe). Nonsymmetric or stateful custom
+relaxation belongs in a manually wired `AMGPreconditioner(linear=False)` used
+with flexible CG.
 
 AMG hierarchy depth is counted as total levels, including the finest matrix.
 `n_levels=2` is the minimum valid multigrid hierarchy and means one fine level

@@ -93,12 +93,10 @@ class TestSolverParams:
             rtol=1e-6,
             atol=1e-14,
             max_iterations=500,
-            stopping_criterion="residual_norm",
             m_max=10,
             breakdown_tol=1e-14,
         )
         assert params.max_iterations == 500
-        assert params.stopping_criterion == "residual_norm"
 
     def test_breakdown_tol_accepts_none(self) -> None:
         """``breakdown_tol`` can be explicitly disabled via ``None``."""
@@ -106,7 +104,6 @@ class TestSolverParams:
             rtol=1e-6,
             atol=1e-14,
             max_iterations=500,
-            stopping_criterion="fixed_iterations",
             m_max=10,
             breakdown_tol=None,
         )
@@ -118,7 +115,6 @@ class TestSolverParams:
             rtol=1e-6,
             atol=1e-14,
             max_iterations=500,
-            stopping_criterion="residual_norm",
             m_max=10,
             breakdown_tol=1e-14,
         )

@@ -85,8 +85,6 @@ class SolverParams:
         rtol (float): Relative convergence tolerance.
         atol (float): Absolute convergence tolerance.
         max_iterations (int): Maximum iterations allowed.
-        stopping_criterion (Literal["residual_norm", "fixed_iterations"]):
-            When to stop iteration.
         m_max (int): FCG orthogonalization restart parameter.
         breakdown_tol (float | None): Breakdown detection tolerance.
     """
@@ -94,6 +92,5 @@ class SolverParams:
     rtol: float
     atol: float
     max_iterations: int
-    stopping_criterion: Literal["residual_norm", "fixed_iterations"]
     m_max: int
     breakdown_tol: float | None
