@@ -409,3 +409,29 @@ def jacobi_preconditioned_spd_system(
         return vector / diag_values
 
     return matrix, apply_jacobi
+
+
+@pytest.fixture(
+    params=["nonsymmetric", "poisson", "breakdown"],
+)
+def arnoldi_matrix(request: pytest.FixtureRequest, test_seed: int) -> torch.Tensor:
+    """Matrices spanning the Arnoldi paths: generic, structured, early breakdown.
+
+    ``breakdown`` has three distinct eigenvalues, so the Krylov space is
+    exhausted after three steps and the happy-breakdown branch is taken.
+    """
+    n = 40
+    generator = torch.Generator().manual_seed(test_seed)
+    if request.param == "nonsymmetric":
+        return torch.rand(n, n, generator=generator, dtype=torch.float64) + n * torch.eye(
+            n, dtype=torch.float64
+        )
+    if request.param == "poisson":
+        return (
+            2.0 * torch.eye(n, dtype=torch.float64)
+            - torch.diag(torch.ones(n - 1, dtype=torch.float64), 1)
+            - torch.diag(torch.ones(n - 1, dtype=torch.float64), -1)
+        )
+    return torch.diag(
+        torch.tensor([1.0, 2.0, 5.0] * (n // 3) + [1.0] * (n % 3), dtype=torch.float64)
+    )

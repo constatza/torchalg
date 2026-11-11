@@ -39,35 +39,45 @@ def _arnoldi(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], bool]:
     """Arnoldi projection of ``matrix`` and its Ritz eigen-decomposition.
 
+    The Krylov loop never reads a device value back: breakdown is detected
+    afterwards from one host copy of the Hessenberg matrix, and the steps
+    taken past a breakdown are discarded. The arithmetic is unchanged, so
+    the result equals the step-by-step check of PyAMG's routine; the loop
+    costs one device-to-host transfer per pass instead of one per step. The
+    small eigenproblem is solved on the host, which keeps it independent of
+    device ``linalg.eig`` support.
+
     Args:
         matrix (torch.Tensor): Square matrix.
         start (torch.Tensor): Starting vector, shape ``(n,)``.
         maxiter (int): Maximum Krylov dimension (clamped to ``n``).
 
     Returns:
-        tuple: ``(ritz_vectors, ritz_values, H, V, breakdown)``.
+        tuple: ``(ritz_vectors, ritz_values, H, V, breakdown)``; the Ritz
+            data and ``H`` live on the host, ``V`` on the matrix's device.
     """
     steps = min(matrix.shape[0], maxiter)
     basis = [start / torch.linalg.norm(start)]
     dtype = torch.promote_types(basis[0].dtype, matrix.dtype)
     matrix = matrix.to(dtype)
     hessenberg = torch.zeros(steps + 1, steps, dtype=dtype, device=matrix.device)
-    threshold = _breakdown_tolerance(dtype)
-    breakdown = False
     for j in range(steps):
         w = matrix @ basis[-1]
         for i, v in enumerate(basis):
             hessenberg[i, j] = torch.vdot(v, w)
             w = w - hessenberg[i, j] * v
-        hessenberg[j + 1, j] = torch.linalg.norm(w)
-        if hessenberg[j + 1, j].real < threshold:
-            breakdown = True
-            if hessenberg[j + 1, j] != 0.0:
-                w = w / hessenberg[j + 1, j]
-            basis.append(w)
-            break
-        basis.append(w / hessenberg[j + 1, j])
-    values, vectors = torch.linalg.eig(hessenberg[: j + 1, : j + 1])
+        norm = torch.linalg.norm(w)
+        hessenberg[j + 1, j] = norm
+        # A zero norm leaves ``w`` unscaled, as the early-exit form did.
+        basis.append(w / torch.where(norm == 0.0, torch.ones_like(norm), norm))
+    hessenberg = hessenberg.cpu()
+    threshold = _breakdown_tolerance(dtype)
+    below = (hessenberg.diagonal(-1).real < threshold).tolist()
+    broken_at = next((j for j, flag in enumerate(below) if flag), None)
+    breakdown = broken_at is not None
+    count = steps if broken_at is None else broken_at + 1
+    del basis[count + 1 :]
+    values, vectors = torch.linalg.eig(hessenberg[:count, :count])
     return vectors, values, hessenberg, basis, breakdown
 
 
@@ -104,7 +114,8 @@ def approximate_spectral_radius(
         count = values.shape[0]
         top = int(torch.argmax(values.abs()))
         error = hessenberg[count, count - 1] * vectors[-1, top]
-        start = torch.stack(basis[:-1], dim=1).to(vectors.dtype) @ vectors[:, top]
+        ritz_vector = vectors[:, top].to(matrix.device)
+        start = torch.stack(basis[:-1], dim=1).to(vectors.dtype) @ ritz_vector
         if float(error.abs() / values[top].abs()) < tol or breakdown:
             break
-    return values[top].abs()
+    return values[top].abs().to(matrix.device)
