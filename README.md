@@ -83,43 +83,13 @@ package index — so **your project chooses the torch build**:
 
 - **NVIDIA GPU or CPU-only:** nothing more to do. PyPI's torch on Linux is the
   CUDA build, and it also runs on machines without a GPU.
-- **AMD GPU (ROCm):** route torch and its Triton runtime to the PyTorch ROCm
-  index in your own project:
+- **AMD GPUs (ROCm) are not supported.** PyTorch's sparse CSR kernels on ROCm
+  fail on consumer RDNA2 hardware (tested: RX 6800 XT, gfx1030, torch
+  2.14.1+rocm7.2): `csr @ x` aborts with a GPU memory access fault inside
+  rocSPARSE and the CSR triangular solve faults on its second call. torchalg's
+  sparse tree depends on both.
 
-  ```bash
-  uv add torch "triton-rocm; sys_platform == 'linux'" \
-      --index pytorch-rocm=https://download.pytorch.org/whl/rocm7.2
-  ```
-
-  This writes the index and a `[tool.uv.sources]` pin for both packages into
-  your `pyproject.toml`, so a plain `uv sync` keeps the ROCm build from then on.
-  `triton-rocm` must come from the same index as torch.
-- **A library that supports both:** keep `torch` plain in your published
-  dependencies and select the backend through conflicting dependency groups
-  (groups are never published, so they never constrain your own consumers) —
-  copy the `cuda`/`rocm` block from this repository's `pyproject.toml`.
-
-Caveats: the ROCm index trails PyPI by about one minor torch release (2.14.1
-versus 2.15.0 at the time of writing); PyPI's default CUDA build (13.2) needs an
-NVIDIA driver R580 or newer. On an RX 6800 XT (gfx1030) with the rocm7.2
-wheels, CSR sparse-matrix products (`csr @ x`) abort with a GPU memory access
-fault inside rocSPARSE, while COO products, dense ops and the CSR triangular
-solve work; see `docs/implementations/device-and-gpu.md`.
-
-### Developing torchalg itself
-
-`uv sync` installs PyPI's CUDA torch. On an AMD machine use the `rocm` group:
-
-```bash
-uv sync --group rocm
-export UV_NO_SYNC=1   # otherwise `uv run` re-syncs back to the CUDA build
-uv run python -c "import torch; print(torch.version.hip)"
-```
-
-uv has no persistent per-machine group or extra selection, so every later
-`uv sync`/`uv lock` on that machine needs `--group rocm` again; `UV_NO_SYNC=1`
-covers `uv run`/`uv add`. `uv sync --all-groups` fails by design (`cuda` and
-`rocm` conflict).
+PyPI's default CUDA build (13.2) needs an NVIDIA driver R580 or newer.
 
 ## Quickstart
 

@@ -16,10 +16,6 @@ dev = [
     "ty>=0.0.22",
 ]
 benchmark = ["matplotlib>=3.10.0"]
-# Backend selectors (see [tool.uv] conflicts). `cuda` exists only as the second member of
-# the conflict pair: plain `uv sync` already installs PyPI's CUDA torch.
-cuda = ["torch>=2.8.0,<3.0"]
-rocm = ["torch>=2.8.0,<3.0", "triton-rocm; sys_platform == 'linux'"]
 
 [tool.ruff]
 line-length = 100
@@ -82,20 +78,6 @@ markers = [
 
 [tool.uv]
 package = true
-# `cuda` and `rocm` select the torch build for this repository's own environment only;
-# dependency groups are never published, so consumers see the plain `torch` requirement.
-conflicts = [[{ group = "cuda" }, { group = "rocm" }]]
-
-[tool.uv.sources]
-# PyPI torch on Linux is already the CUDA build, so only ROCm needs routing. Its Triton
-# runtime must come from the same index (PyPI only carries an old `triton-rocm` pre-release).
-torch = [{ index = "pytorch-rocm", group = "rocm", marker = "sys_platform == 'linux'" }]
-triton-rocm = [{ index = "pytorch-rocm", group = "rocm", marker = "sys_platform == 'linux'" }]
-
-[[tool.uv.index]]
-name = "pytorch-rocm"
-url = "https://download.pytorch.org/whl/rocm7.2"
-explicit = true
 
 [tool.uv.workspace]
 members = [
