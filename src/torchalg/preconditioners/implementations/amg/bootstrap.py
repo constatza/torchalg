@@ -220,6 +220,8 @@ from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetu
 from torchalg.preconditioners.base import PreconditionerContext
 
 from ._algebraic_distance import (
+    NeighborhoodCache,
+    NeighborhoodOf,
     algebraic_distance,
     depth_neighborhood,
     strength_graph,
@@ -333,6 +335,7 @@ class BAMGCoarsening:
         depth: int = 1,
         draw: Callable[[int], torch.Tensor] | None = None,
         seed: int = 0,
+        neighborhood_of: NeighborhoodOf = depth_neighborhood,
     ) -> None:
         """Store hyperparameters and the finest-level test vectors.
 
@@ -349,7 +352,11 @@ class BAMGCoarsening:
             draw (Callable[[int], torch.Tensor] | None): Uniform ``[0, 1)``
                 random-vector source for CR.
             seed (int): Seed of the default draw source.
+            neighborhood_of (NeighborhoodOf): Evaluates a level matrix's
+                neighborhoods; pass the setup run's ``NeighborhoodCache`` so
+                the finest level's are evaluated once per run, not per pass.
         """
+        self._neighborhood_of = neighborhood_of
         self._relaxation = relaxation
         self._nu = nu
         self._delta = delta
@@ -420,7 +427,13 @@ class BAMGCoarsening:
         """
         test_vectors = self._vectors[A.shape[0]]
         composite = self._composite
-        distance = algebraic_distance(test_vectors, A, depth=self._depth, composite=composite)
+        distance = algebraic_distance(
+            test_vectors,
+            A,
+            depth=self._depth,
+            composite=composite,
+            neighborhood_of=self._neighborhood_of,
+        )
         coarse_mask = self._coarse_mask(A, distance)
         prolongation = self._prolongation(
             A, test_vectors, coarse_mask, distance, composite=composite
@@ -579,7 +592,7 @@ class BAMGCoarsening:
 
         weights = test_vector_weights(test_vectors, A, composite=composite)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
-        neighborhood = depth_neighborhood(A, self._depth + 2)
+        neighborhood = self._neighborhood_of(A, self._depth + 2)
         n_fine = fine_points.numel()
 
         # Build each fine row's coarse-neighbor candidate set as one padded
@@ -839,29 +852,36 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             n_pre (int): Solve-time pre-smoothing sweeps.
             n_post (int): Solve-time post-smoothing sweeps.
         """
-        self._bootstrap_setup = BootstrapSetup(
-            coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
-                vectors,
-                relaxation,
-                nu=nu,
-                delta=delta,
-                theta_ad=theta_ad,
-                caliber=caliber,
-                gamma=gamma,
-                use_lsr=use_lsr,
-                draw=draw,
-            ),
-            transfer_operator_factory=DenseTransferOperator,
-            relaxation=GaussSeidelSmoother(),
-            setup_cycle=GS_SETUP_CYCLE,
-            eta=eta,
-            k_r=k_r,
-            k_e=k_e,
-            eigensolver=multigrid_eigensolver if k_e > 0 else None,
-            n_bootstrap_cycles=n_bootstrap_cycles,
-            max_levels=max_levels,
-            max_coarse=max_coarse,
-        )
+
+        def new_bootstrap_setup() -> BootstrapSetup:
+            # Fresh per ``setup()``: the cache holds the run's matrices alive.
+            neighborhoods = NeighborhoodCache()
+            return BootstrapSetup(
+                coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
+                    vectors,
+                    relaxation,
+                    nu=nu,
+                    delta=delta,
+                    theta_ad=theta_ad,
+                    caliber=caliber,
+                    gamma=gamma,
+                    use_lsr=use_lsr,
+                    draw=draw,
+                    neighborhood_of=neighborhoods,
+                ),
+                transfer_operator_factory=DenseTransferOperator,
+                relaxation=GaussSeidelSmoother(),
+                setup_cycle=GS_SETUP_CYCLE,
+                eta=eta,
+                k_r=k_r,
+                k_e=k_e,
+                eigensolver=multigrid_eigensolver if k_e > 0 else None,
+                n_bootstrap_cycles=n_bootstrap_cycles,
+                max_levels=max_levels,
+                max_coarse=max_coarse,
+            )
+
+        self._new_bootstrap_setup = new_bootstrap_setup
         self._run_draw = draw if draw is not None else seeded_draw(seed)
         self._seed_vectors = seed_vectors
         self._test_vector_draw = test_vector_draw
@@ -893,7 +913,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             ValueError: If the setup produced a single level (nothing to
                 coarsen).
         """
-        result = self._bootstrap_setup.run(
+        result = self._new_bootstrap_setup().run(
             matrix,
             self._run_draw,
             seed_vectors=self._seed_vectors,

@@ -70,11 +70,14 @@ import torch
 
 from torchalg.utils.test_vector_weights import test_vector_weights
 
-from ._graph import depth_neighborhood
+from ._graph import NeighborhoodCache, NeighborhoodOf, depth_neighborhood
 from ._least_squares import lsr_correction
 
 __all__ = [
+    "NeighborhoodCache",
+    "NeighborhoodOf",
     "algebraic_distance",
+    "depth_neighborhood",
     "strength_graph",
     "test_vector_weights",
 ]
@@ -121,6 +124,7 @@ def algebraic_distance(
     matrix: torch.Tensor,
     depth: int = 1,
     composite: torch.Tensor | None = None,
+    neighborhood_of: NeighborhoodOf = depth_neighborhood,
 ) -> torch.Tensor:
     """Pairwise caliber-one algebraic distance ``r_ij`` ([AD11] eq. 4.3).
 
@@ -153,13 +157,15 @@ def algebraic_distance(
         composite (torch.Tensor | None): Composite interpolation ``C`` passed
             through to ``test_vector_weights``; ``None`` for the ``T = I``
             reduction (see that function's docstring).
+        neighborhood_of (NeighborhoodOf): Evaluates ``(matrix, depth)``'s
+            neighborhood; pass a ``NeighborhoodCache`` to share it across calls.
 
     Returns:
         torch.Tensor: Dense algebraic-distance matrix ``r``, shape
         ``(n, n)``, zero outside the depth-``d`` neighborhood. Not
         symmetric in general.
     """
-    neighborhood = depth_neighborhood(matrix, depth)
+    neighborhood = neighborhood_of(matrix, depth)
     weights = test_vector_weights(test_vectors, matrix, composite=composite)
     corrected = _residual_corrected_vectors(test_vectors, matrix)
 

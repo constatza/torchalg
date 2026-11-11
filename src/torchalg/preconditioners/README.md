@@ -267,6 +267,10 @@ itself is confirmed directly against [STATUS14]; whether `omega_kappa` is
 actually meant to use this `T_l` is **not** confirmed (rests only on an
 unverifiable [BAMG11] attribution) - see `bootstrap.py`'s
 `TODO(bamg-fidelity, needs-check)` marker.
+
+Each `BootstrapAMGPreconditioner.setup()` builds a fresh `BootstrapSetup` around its
+own `NeighborhoodCache`, so `depth_neighborhood` of the finest matrix (identical in
+every bootstrap pass) is evaluated once per setup run per depth, not once per pass.
 `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
