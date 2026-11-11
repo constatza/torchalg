@@ -22,6 +22,18 @@ from __future__ import annotations
 import torch
 
 
+def _indices_per_row(pattern: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    """Split a boolean ``(n, n)`` pattern into per-row column-index tensors.
+
+    One ``nonzero`` and one host transfer of the ``n`` row counts for the whole
+    pattern, so the elimination loops below index with ready-made views and
+    never synchronize per pivot.
+    """
+    counts = pattern.sum(dim=1).tolist()
+    columns = pattern.nonzero()[:, 1]
+    return torch.split(columns, counts)
+
+
 def dense_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     """Compute a dense ILU(0) factorization: combined ``L``/``U`` factors.
 
@@ -35,6 +47,19 @@ def dense_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     strictly-lower part is ``L`` (with an implicit unit diagonal), and the
     upper part (including the diagonal) is ``U``.
 
+    Evaluated right-looking (KJI order, the form ``dense_ic0`` uses): at
+    pivot ``k`` the stored entries of column ``k`` below the diagonal are
+    scaled by the pivot, then one masked rank-1 update
+    ``F[i, j] -= L[i, k] * U[k, j]`` is applied to the block spanned by those
+    rows and by the stored entries of row ``k`` right of the diagonal. Every
+    entry receives the same updates, in the same order and with the same
+    operands, as the scalar IKJ triple loop, so results are bit-identical;
+    only the structurally zero ``i, j`` pairs are never visited, which makes
+    the cost ``O(sum_k nnz(L[:, k]) * nnz(U[k, :]))`` instead of
+    ``O(n^3)`` Python-level scalar steps. (Entries outside the pattern are
+    exactly zero, so skipping them only differs from the scalar loop on
+    breakdown inputs where a zero pivot already produced ``inf``/``nan``.)
+
     Args:
         matrix (torch.Tensor): Dense system matrix ``A``, shape ``(n, n)``.
 
@@ -44,14 +69,20 @@ def dense_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     n = matrix.shape[0]
     mask = matrix != 0
     factors = matrix.clone()
-    for i in range(1, n):
-        for k in range(i):
-            if not mask[i, k]:
-                continue
-            factors[i, k] = factors[i, k] / factors[k, k]
-            for j in range(k + 1, n):
-                if mask[i, j]:
-                    factors[i, j] = factors[i, j] - factors[i, k] * factors[k, j]
+    rows_below = _indices_per_row(mask.tril(-1).T)
+    columns_right = _indices_per_row(mask.triu(1))
+    for k in range(n - 1):
+        rows, columns = rows_below[k], columns_right[k]
+        if rows.numel() == 0:
+            continue
+        lower_column = factors[rows, k] / factors[k, k]
+        factors[rows, k] = lower_column
+        if columns.numel() == 0:
+            continue
+        block = (rows.unsqueeze(1), columns.unsqueeze(0))
+        update = torch.outer(lower_column, factors[k, columns])
+        update.masked_fill_(~mask[block], 0)
+        factors[block] -= update
     return factors
 
 
@@ -95,31 +126,22 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     ``matrix`` (entries with ``|value| <= threshold`` are treated as zero
     and never filled in).
 
-    Vectorized right-looking Cholesky-Crout: at each step ``k``, column
-    ``k`` is scaled by its (square-rooted) pivot in one slice op, then the
-    rank-1 update ``L[i, j] -= L[i, k] * L[j, k]`` is applied to the whole
-    trailing block as a single masked outer product, rather than as scalar
-    Python-level updates over ``i``/``j``. Entries outside the original
-    sparsity pattern are exactly zero from the initial mask, and stay zero
-    permanently (they are only ever combined with, or overwritten by, other
-    exact zeros) - so ``factor[i, k]`` and ``factor[j, k]`` being outside the
-    column-``k`` pattern falls out of the outer product for free, and the
+    Right-looking Cholesky-Crout: at each step ``k``, the stored entries
+    of column ``k`` below the diagonal are scaled by the (square-rooted)
+    pivot, then the rank-1 update ``L[i, j] -= L[i, k] * L[j, k]`` is applied
+    as one masked outer product on the block spanned by those rows. Entries
+    outside the original sparsity pattern are exactly zero from the initial
+    mask and are never visited, so the cost per pivot is
+    ``O(nnz(L[:, k])^2)`` instead of the trailing block's ``O((n-k)^2)``;
+    the per-row index lists come from a single ``nonzero`` up front. The
     remaining ``(i, j)``-in-pattern condition is applied by masking the
-    trailing block before subtracting. Same elimination order as a scalar
-    IKJ loop, so results are bit-identical; only the inner two loops become
-    one vectorized op each, per ``k``.
+    block (in place with ``masked_fill_``, on the outer product's own
+    buffer) before subtracting. Same elimination order and operands as a
+    scalar IKJ loop, so results are bit-identical.
 
-    The mask is applied via an in-place ``masked_fill_`` on the outer
-    product itself, not ``torch.where`` against a freshly allocated
-    zero-tensor: ``where`` needs its "false" branch materialized at the
-    trailing block's full size before it can select from it, so per step it
-    was allocating two full ``(n-k, n-k)`` tensors (the zero branch, then
-    the selected result) on top of the outer product that's actually
-    needed. ``masked_fill_`` reuses the outer product's own buffer, cutting
-    that to zero extra allocations - this loop runs ``n`` times, so the
-    saved allocations are the dominant per-step cost at moderate ``n``.
-    The complement mask is also precomputed once, outside the loop, since
-    ``~sparsity_mask`` doesn't depend on ``k``.
+    The positive-pivot check runs once after the loop (see
+    ``_raise_on_breakdown``) rather than synchronizing with the device at
+    every pivot.
 
     Args:
         matrix (torch.Tensor): Symmetric positive-definite system matrix
@@ -134,28 +156,49 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     """
     n = matrix.shape[0]
     sparsity_mask = ic0_sparsity_mask(matrix, threshold)
-    not_sparsity_mask = ~sparsity_mask
+    rows_below = _indices_per_row(sparsity_mask.tril(-1).T)
 
     factor = torch.where(sparsity_mask, torch.tril(matrix), torch.zeros_like(matrix))
+    pivots = torch.empty(n, dtype=matrix.dtype, device=matrix.device)
 
     for k in range(n):
         pivot = factor[k, k]
-        if pivot <= 0:
-            raise ValueError(
-                f"IC(0) breakdown at pivot {k}: diagonal value {pivot.item()} is "
-                "non-positive, so no real factor L exists for this matrix "
-                "(Saad, Iterative Methods for Sparse Linear Systems, 2nd ed., "
-                "Sec. 10.3) - not every SPD matrix admits an IC(0) factorization."
-            )
-        factor[k, k] = torch.sqrt(pivot)
-        if k + 1 >= n:
-            break
+        pivots[k] = pivot
+        diagonal = torch.sqrt(pivot)
+        factor[k, k] = diagonal
+        rows = rows_below[k]
+        if rows.numel() == 0:
+            continue
 
-        column = factor[k + 1 :, k] / factor[k, k]
-        factor[k + 1 :, k] = column
+        column = factor[rows, k] / diagonal
+        factor[rows, k] = column
 
+        block = (rows.unsqueeze(1), rows.unsqueeze(0))
         update = torch.outer(column, column)
-        update.masked_fill_(not_sparsity_mask[k + 1 :, k + 1 :], 0)
-        factor[k + 1 :, k + 1 :] -= update
+        update.masked_fill_(~sparsity_mask[block], 0)
+        factor[block] -= update
 
+    _raise_on_breakdown(pivots)
     return factor
+
+
+def _raise_on_breakdown(pivots: torch.Tensor) -> None:
+    """Raise ``ValueError`` at the first non-positive IC(0) pivot, in one host read.
+
+    A non-positive pivot makes ``sqrt`` return ``nan`` (or ``0``) and the
+    elimination simply carries on with garbage, so the check can wait for the
+    end of the loop instead of synchronizing with the device at every pivot.
+    The first offending index and its value are unaffected: every pivot before
+    it was computed from valid data. A ``nan`` pivot (``nan`` input) is not
+    flagged, matching the earlier per-pivot test ``pivot <= 0``.
+    """
+    non_positive = pivots <= 0
+    if not bool(non_positive.any()):
+        return
+    k = int(non_positive.nonzero()[0])
+    raise ValueError(
+        f"IC(0) breakdown at pivot {k}: diagonal value {pivots[k].item()} is "
+        "non-positive, so no real factor L exists for this matrix "
+        "(Saad, Iterative Methods for Sparse Linear Systems, 2nd ed., "
+        "Sec. 10.3) - not every SPD matrix admits an IC(0) factorization."
+    )

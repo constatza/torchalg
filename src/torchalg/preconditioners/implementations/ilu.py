@@ -50,18 +50,16 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     sparse-textbook ILU(0) algorithm, not this dense implementation):
         - Storage: ``O(n^2)`` — the combined ``L``/``U`` factor is a dense
           ``(n, n)`` buffer, not a sparse structure sized by ``nnz(A)``.
-        - Setup: at least ``O(n^2)``, up to ``O(n^3)`` for a dense pattern —
-          ``_masked_factorization.dense_ilu0`` is a Python-level triple loop
-          (``i in range(1, n)``, ``k in range(i)``, ``j in range(k+1, n)``)
-          that always visits the full ``(i, k)`` grid to check the sparsity
-          mask (an ``O(n^2)`` floor regardless of how few entries are
-          actually nonzero), and does real elimination work in the inner
-          ``j`` loop for every mask hit, reaching the classical dense-LU
-          ``O(n^3)`` when the pattern is dense.
+        - Setup: ``O(sum_k nnz(L[:, k]) * nnz(U[k, :]))`` plus ``O(n^2)`` for
+          the pattern scan — ``_masked_factorization.dense_ilu0`` is a
+          right-looking elimination with one masked rank-1 update per pivot,
+          over the stored rows and columns only, with no host
+          synchronization per entry; a dense pattern reaches the classical
+          dense-LU ``O(n^3)``.
         - Application: ``O(n^2)`` — ``apply()`` runs two dense
-          ``torch.linalg.solve_triangular`` calls against the full
-          ``(n, n)`` ``L``/``U`` factors, not a sparse-structured solve
-          bounded by ``nnz``.
+          ``torch.linalg.solve_triangular`` calls directly on the packed
+          ``(n, n)`` factor (each reads only its own triangle), not a
+          sparse-structured solve bounded by ``nnz``.
 
     Example:
         >>> import torch
@@ -119,14 +117,13 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Preconditioned residual ``z = (LU)^{-1}r``.
         """
-        n = self._operator.shape[0]
-        unit_diagonal = torch.eye(n, dtype=self._operator.dtype, device=self._operator.device)
-        lower = torch.tril(self._operator, diagonal=-1) + unit_diagonal
-        upper = torch.triu(self._operator)
-
+        # ``solve_triangular`` reads only the triangle it is told about, and
+        # ``unitriangular=True`` ignores the diagonal, so the packed factor
+        # serves as both ``L`` (unit diagonal) and ``U`` without building
+        # ``tril``/``triu``/identity copies on every application.
         residual_matrix = residual if residual.ndim > 1 else residual.unsqueeze(-1)
         intermediate = torch.linalg.solve_triangular(
-            lower, residual_matrix, upper=False, unitriangular=True
+            self._operator, residual_matrix, upper=False, unitriangular=True
         )
-        solution = torch.linalg.solve_triangular(upper, intermediate, upper=True)
+        solution = torch.linalg.solve_triangular(self._operator, intermediate, upper=True)
         return solution if residual.ndim > 1 else solution.squeeze(-1)

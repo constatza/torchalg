@@ -61,13 +61,12 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           full ``(n, n)`` buffer; entries outside the sparsity mask are
           zeroed, not omitted, so this is a dense masked port (see the
           module docstring), not a true sparse structure.
-        - Setup: ``O(n^3)`` — ``dense_ic0`` is a vectorized right-looking
-          Cholesky: at step ``k`` it updates the whole trailing
-          ``(n-k, n-k)`` block with one masked outer product. Summed over
-          ``k = 0..n-1`` this is the standard dense-Cholesky FLOP count,
-          independent of how sparse the mask actually is (the mask decides
-          *which* entries of the trailing block survive, not how much of the
-          block gets touched).
+        - Setup: ``O(sum_k nnz(L[:, k])^2)`` plus ``O(n^2)`` for the
+          pattern scan — ``dense_ic0`` is a right-looking Cholesky that, at
+          step ``k``, updates only the block spanned by the stored rows of
+          column ``k`` with one masked outer product; a dense pattern reaches
+          the standard dense-Cholesky ``O(n^3)``. The positive-pivot check is
+          a single host read after the loop.
         - Application: ``O(n^2)`` — ``torch.cholesky_solve`` runs two dense
           triangular solves against the full ``(n, n)`` factor, not a
           sparse-structured solve bounded by ``nnz(L)``.
@@ -75,12 +74,11 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     Breakdown:
         IC(0) is not guaranteed to exist for every SPD matrix (it can
         require a square root of a non-positive diagonal value).
-        Construction raises ``ValueError`` as soon as elimination hits a
-        non-positive pivot, instead of letting ``nan``/``inf`` propagate
-        silently through ``apply()`` - a caller that wants to treat
-        breakdown as a soft failure (e.g. mark one preconditioner in a
-        sweep as broken rather than aborting) should catch ``ValueError``
-        around construction.
+        ``setup()`` raises ``ValueError`` naming the first non-positive
+        pivot, instead of letting ``nan``/``inf`` propagate silently through
+        ``apply()`` - a caller that wants to treat breakdown as a soft
+        failure (e.g. mark one preconditioner in a sweep as broken rather
+        than aborting) should catch ``ValueError`` around ``setup()``.
 
     Attributes:
         _operator (torch.Tensor): Lower triangular factor ``L``.
