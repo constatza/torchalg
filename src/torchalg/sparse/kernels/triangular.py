@@ -479,7 +479,7 @@ Unlisted device types get the level-scheduled ``PreparedTriangularSolve``. CPU u
 ``torch.triangular_solve`` on CSR (MKL): 0.28 ms against 14.7 ms per IC(0) apply at
 n = 10000, equal to rounding. GPUs are not listed: on gfx1030 with the rocm7.2 wheels the
 library solve faults on its second call, and a CUDA device must be measured with
-``benchmarks/tmp/compare_sparse_backends.py`` before it is added here. Callers never
+``benchmarks/throughput/sparse_backends.py`` before it is added here. Callers never
 branch on the device; they call ``prepare_triangular_solve``."""
 
 

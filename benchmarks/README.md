@@ -40,6 +40,18 @@ threads included) and assert only correctness, never time. Matrix cases come fro
 `cases.py` (seeded, file-free); timing goes through `harness.time_callable`
 (warm-up, CUDA synchronization, median).
 
+## Throughput studies
+
+`throughput/` holds standalone scripts behind the measurements in
+`docs/implementations/` (run with `uv run python -m benchmarks.throughput.<name>`):
+
+- `sparse_backends [--device cuda] [--rows ...]`: level-scheduled against library
+  triangular solves, int64 against int32 CSR indices, SpMM against an SpMV loop, COO and
+  gather SpMV, dense IC(0) apply.
+- `device_crossover`: CPU against GPU per operation as n grows (needs a GPU).
+- `time_to_solution`: setup, per-solve time, iterations and break-even count against
+  Jacobi for every CSR preconditioner.
+
 ## Running sparse-vs-dense experiments
 
 Install the benchmark dependency group, then invoke the modules from the
