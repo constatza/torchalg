@@ -298,6 +298,7 @@ class TestStageScopedGaussSeidelInCompatibleRelaxation:
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
         sparse_relaxation: GaussSeidelStage,
         monkeypatch: pytest.MonkeyPatch,
+        csr_gauss_seidel: None,
     ) -> None:
         calls: list[int] = []
         original = triangular_kernel.level_schedule

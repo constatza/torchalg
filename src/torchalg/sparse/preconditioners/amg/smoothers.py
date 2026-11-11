@@ -19,7 +19,7 @@ import torch
 
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
 
-from ._gauss_seidel import PreparedSymmetricGaussSeidel
+from ._gauss_seidel_format import SymmetricGaussSeidel, prepare_gauss_seidel
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 
 if TYPE_CHECKING:
@@ -132,16 +132,16 @@ class GaussSeidelSmoother:
     ``A``'s own entries; ``prepare`` builds the level schedules once.
     """
 
-    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+    def prepare(self, A: torch.Tensor) -> SymmetricGaussSeidel:
         """Build both level schedules and the strict-triangle split of ``A``.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
 
         Returns:
-            PreparedSymmetricGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
+            SymmetricGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
         """
-        return PreparedSymmetricGaussSeidel.build(A)
+        return prepare_gauss_seidel(A)
 
 
 class GaussSeidelStage:
@@ -150,7 +150,7 @@ class GaussSeidelStage:
     Setup algorithms (compatible relaxation, adaptive and bootstrap stages)
     relax the same level matrices many times, through callables and cycles that
     only receive the matrix. A stage owns one of these for its duration: the
-    first sweep on a matrix builds its ``PreparedSymmetricGaussSeidel`` and
+    first sweep on a matrix builds its ``SymmetricGaussSeidel`` and
     every later sweep on that same tensor object reuses it. The cache is keyed
     by tensor identity and holds the matrices alive, so it must not outlive the
     stage (and matrices must not be mutated in place within it); there is no
@@ -162,23 +162,25 @@ class GaussSeidelStage:
 
     def __init__(self) -> None:
         """Start with no prepared matrices."""
-        self._prepared: dict[int, PreparedSymmetricGaussSeidel] = {}
+        self._prepared: dict[int, tuple[torch.Tensor, SymmetricGaussSeidel]] = {}
 
-    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+    def prepare(self, A: torch.Tensor) -> SymmetricGaussSeidel:
         """Return the prepared Gauss-Seidel of ``A``, building it on first use.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
 
         Returns:
-            PreparedSymmetricGaussSeidel: Shared by every later call with this tensor.
+            SymmetricGaussSeidel: Shared by every later call with this tensor.
         """
         key = id(A)
-        prepared = self._prepared.get(key)
-        if prepared is None:
-            prepared = PreparedSymmetricGaussSeidel.build(A)
-            self._prepared[key] = prepared
-        return prepared
+        entry = self._prepared.get(key)
+        if entry is None:
+            # The matrix is stored beside its preparation so its id cannot be reused
+            # while the entry lives, whichever format the preparation chose.
+            entry = (A, prepare_gauss_seidel(A))
+            self._prepared[key] = entry
+        return entry[1]
 
 
 def resolve_jacobi_default(

@@ -85,8 +85,8 @@ def rhs_block(dense_matrix: torch.Tensor, test_seed: int) -> torch.Tensor:
 
 
 @pytest.fixture
-def count_level_schedules(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Counter list; ``len`` is the number of ``level_schedule`` calls made by Gauss-Seidel."""
+def count_level_schedules(monkeypatch: pytest.MonkeyPatch, csr_gauss_seidel: None) -> list[int]:
+    """Counter list; ``len`` is the number of ``level_schedule`` calls made by CSR Gauss-Seidel."""
     calls: list[int] = []
     original = triangular_kernel.level_schedule
 

@@ -20,6 +20,7 @@ from torchalg.multigrid import AMGPreconditioner, VCycle
 from torchalg.preconditioners.base import MatrixSetupPreconditioner
 from torchalg.sparse.kernels import triangular as triangular_kernel
 from torchalg.sparse.preconditioners.amg import _gauss_seidel
+from torchalg.sparse.preconditioners.amg._dense_gauss_seidel import DenseBackedSymmetricGaussSeidel
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner,
     adaptive_sa_hierarchy,
@@ -122,6 +123,7 @@ class TestGaussSeidelSolveWorkIsPrepared:
         poisson_1d_large_csr: torch.Tensor,
         poisson_1d_large_rhs: torch.Tensor,
         monkeypatch: pytest.MonkeyPatch,
+        csr_gauss_seidel: None,
     ) -> None:
         calls: list[int] = []
         original = triangular_kernel.level_schedule
@@ -146,17 +148,16 @@ class TestGaussSeidelSolveWorkIsPrepared:
 class TestSetupStagesPrepareEachMatrixOnce:
     @pytest.fixture
     def built_matrices(self, monkeypatch: pytest.MonkeyPatch) -> list[torch.Tensor]:
-        """Matrices handed to ``PreparedSymmetricGaussSeidel.build``, in call order."""
+        """Matrices handed to either Gauss-Seidel ``build`` (CSR or dense-backed), in call order."""
         matrices: list[torch.Tensor] = []
-        original = _gauss_seidel.PreparedSymmetricGaussSeidel.build.__func__  # type: ignore[attr-defined]
+        for cls in (_gauss_seidel.PreparedSymmetricGaussSeidel, DenseBackedSymmetricGaussSeidel):
+            original = cls.build.__func__  # type: ignore[attr-defined]
 
-        def recording(cls: type[_gauss_seidel.PreparedSymmetricGaussSeidel], matrix: torch.Tensor):
-            matrices.append(matrix)
-            return original(cls, matrix)
+            def recording(cls: type, matrix: torch.Tensor, original: Any = original):
+                matrices.append(matrix)
+                return original(cls, matrix)
 
-        monkeypatch.setattr(
-            _gauss_seidel.PreparedSymmetricGaussSeidel, "build", classmethod(recording)
-        )
+            monkeypatch.setattr(cls, "build", classmethod(recording))
         return matrices
 
     @pytest.fixture

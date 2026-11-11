@@ -319,3 +319,37 @@ def dense_relaxation(dense_symmetric_gauss_seidel: DenseSymmetricGaussSeidel) ->
 def sparse_relaxation() -> GaussSeidelStage:
     """Fresh stage-scoped sparse Gauss-Seidel relaxation callable."""
     return GaussSeidelStage()
+
+
+@pytest.fixture
+def zero_diagonal_csr(poisson_2d_dense: torch.Tensor) -> torch.Tensor:
+    """``poisson_2d_dense`` with one structurally zero diagonal entry, as sparse CSR.
+
+    Exercises the frozen-pivot row of the Gauss-Seidel sweeps.
+    """
+    matrix = poisson_2d_dense.clone()
+    matrix[4, 4] = 0.0
+    return matrix.to_sparse_csr()
+
+
+@pytest.fixture
+def gauss_seidel_block(poisson_2d_dense: torch.Tensor, test_seed: int) -> tuple[torch.Tensor, ...]:
+    """Seeded ``(rhs, x, rows)``: a 2-column block, an iterate, and an indexed row subset."""
+    generator = torch.Generator().manual_seed(test_seed)
+    n = poisson_2d_dense.shape[0]
+    rhs = torch.randn(n, 2, generator=generator, dtype=poisson_2d_dense.dtype)
+    x = torch.randn(n, 2, generator=generator, dtype=poisson_2d_dense.dtype)
+    rows = torch.tensor([0, 2, 3, 7])
+    return rhs, x, rows
+
+
+@pytest.fixture
+def csr_gauss_seidel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the level-scheduled CSR Gauss-Seidel, whatever the matrix size.
+
+    For tests that assert properties of the CSR path (schedules built once per matrix).
+    """
+    from torchalg.sparse.preconditioners.amg import _gauss_seidel_format
+
+    monkeypatch.setattr(_gauss_seidel_format, "DENSE_ALWAYS_MAX_N", 0)
+    monkeypatch.setattr(_gauss_seidel_format, "CSR_ALWAYS_MIN_N", 0)

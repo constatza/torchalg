@@ -41,12 +41,23 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   step for near-zero diagonals. `smooth` is `x + diag_inv * (rhs - A @ x)`
   with no clone; `smooth_from_zero` skips the first `A @ 0`. Both accept a
   vector `(n,)` or a block `(n, k)`.
-- `GaussSeidelSmoother.prepare(A)` returns a `PreparedSymmetricGaussSeidel`
-  holding both direction-specific level schedules, the per-entry row index and
-  the strict-triangle entries. `smooth` and `smooth_from_zero` (which skips the
-  first strict-upper matvec) reuse them; `smooth(..., rows=)` is PyAMG's indexed
-  sweep. `triangular_solve` receives the precomputed row index; its per-level
-  masking is unchanged.
+- `GaussSeidelSmoother.prepare(A)` returns a prepared symmetric Gauss-Seidel in
+  one of two formats with identical results (`_gauss_seidel_format.prepare_gauss_seidel`):
+  `PreparedSymmetricGaussSeidel` (level-scheduled CSR: both direction-specific
+  schedules, the per-entry row index, the strict-triangle entries) or
+  `DenseBackedSymmetricGaussSeidel` (`_dense_gauss_seidel.py`: the matrix densified
+  once into `D + L` and `D + U` solved with `solve_triangular`). A CSR sweep costs
+  about 0.06 ms per dependency level and is flat in `n`; a dense sweep costs about
+  `8e-7 ms * n^2` whatever the density. Rule (CPU, 6 threads): dense for
+  `n <= 1500`, CSR for `n >= 4000`, and in between dense when
+  `8e-7 * n^2 < 0.06 * levels` using the forward schedule's level count (the crossover
+  is `n ~ 2500` at 5 nonzeros per row and `n ~ 2750` at 23, so density acts only through
+  the level count). The constants are CPU estimates; CUDA is unmeasured and expected to
+  favour dense longer. Everything else in the sparse tree stays CSR: below `n ~ 200` dense
+  matvecs and Galerkin products save only microseconds per level. Both formats
+  support `smooth`, `smooth_from_zero` (which skips the first strict-upper matvec) and
+  `smooth(..., rows=)` (PyAMG's indexed sweep); a zero pivot freezes a row to the
+  sweep's target in both.
 - `_jacobi_omega.jacobi_omega` / `jacobi_spectral_radius` are pure and
   uncached. Setup code that needs rho (prolongation smoothing in
   coarsening and adaptive setup, the Jacobi smoother's `prepare`) calls them
@@ -54,10 +65,10 @@ matrix-dependent one-off computation and returns the object that sweeps, so
 - Setup algorithms that relax the same level matrices many times (compatible
   relaxation, test-vector relaxation, adaptive trial cycles, bootstrap
   improvement passes) own a `GaussSeidelStage` and a `TransferOperatorCache`
-  for the duration of one setup run. Each caches by tensor identity, holds
-  its matrices alive, and is created fresh per `adaptive_sa_hierarchy` call or
+  for the duration of one setup run. Each caches by tensor identity, stores
+  its matrices beside the prepared state so ids cannot be reused, and is created fresh per `adaptive_sa_hierarchy` call or
   per `BootstrapAMGPreconditioner.setup()`, so each distinct level matrix gets
-  its schedules built once and each prolongation is transposed once.
+  its Gauss-Seidel prepared once and each prolongation is transposed once.
   `_presets.gs_setup_cycle(stage)` builds the GS V(1,1) setup cycle over a
   stage's smoother.
 - `kernels.diagonal.sparse_diagonal` scatters masked values instead of

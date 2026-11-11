@@ -125,11 +125,17 @@ depends_on = ["torchalg.sparse.kernels.algebraic_distance", "torchalg.sparse.ker
 path = "torchalg.sparse.preconditioners.amg._gauss_seidel"
 depends_on = ["torchalg.sparse.kernels.triangular"]
 [[modules]]
+path = "torchalg.sparse.preconditioners.amg._dense_gauss_seidel"
+depends_on = []
+[[modules]]
+path = "torchalg.sparse.preconditioners.amg._gauss_seidel_format"
+depends_on = ["torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners.amg._dense_gauss_seidel", "torchalg.sparse.preconditioners.amg._gauss_seidel"]
+[[modules]]
 path = "torchalg.sparse.preconditioners.amg._jacobi_omega"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.rowscale", "torchalg.utils.spectral"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.smoothers"
-depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.preconditioners.amg._gauss_seidel", "torchalg.sparse.preconditioners.amg._jacobi_omega"]
+depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.preconditioners.amg._gauss_seidel_format", "torchalg.sparse.preconditioners.amg._jacobi_omega"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.transfer"
 depends_on = []
