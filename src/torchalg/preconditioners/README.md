@@ -201,6 +201,10 @@ aggregation, skipping prolongation smoothing and the Galerkin product) over
 a log-spaced coarse pass plus bisection of every disagreeing interval - and
 pays for a full `AggregationCoarsening.build_transfer` exactly once, at the
 winning `theta`, caching it as `_theta`/`_realized_coarse_dim` afterward.
+The probe thresholds one `(n, n)` ratio matrix (`strength_ratios`, built once per
+search) with `strong_at(ratios, theta)`, instead of rebuilding the ratios for every
+`theta`. A level whose aggregation assigns no node (every connection weak at the
+given `theta`) raises `ValueError` instead of producing an empty coarse level.
 Deliberately adaptive sampling, not a plain fixed grid (a plateau narrower
 than the grid spacing can sit between two agreeing samples and get missed
 entirely), bisection alone (assumes monotonicity, which doesn't hold), or a
@@ -209,7 +213,7 @@ higher-dimensional objectives — none of which describes a single cheap
 bounded scalar with a step-function response). `cache_candidates=True`
 additionally shares that one full build across sibling instances searching
 the same matrix object (e.g. several `target_coarse_dim` values in one
-comparison sweep) via a module-level `functools.lru_cache`; off by default
+comparison sweep) via `torchalg.utils.weak_cache.weak_memo` (entries live only as long as the matrix object); off by default
 since it's only a win when multiple instances against the same matrix are
 expected.
 
@@ -256,8 +260,9 @@ F-points with the largest absolute value of **that same vector's own**
 residual, not one combined across vectors - see `BAMGCoarsening._fit_vectors`.
 `test_vector_weights`'s `T = I` reduction is only paper-valid before any MGE
 enrichment - `BAMGCoarsening` now tracks the composite prolongation
-incrementally across levels (`_current_T`) and passes the resulting `T_l`
-into both `test_vector_weights` and `algebraic_distance`. `T_l = P_l^H P_l`
+incrementally across levels (`_composite`) and passes it to
+both `test_vector_weights` and `algebraic_distance`, which use `T_l = P_l^H P_l` only as
+`<T v, v> = ||P_l v||^2` (the Gram matrix is never formed). `T_l = P_l^H P_l`
 itself is confirmed directly against [STATUS14]; whether `omega_kappa` is
 actually meant to use this `T_l` is **not** confirmed (rests only on an
 unverifiable [BAMG11] attribution) - see `bootstrap.py`'s

@@ -17,8 +17,6 @@ other.
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 import torch
 
 from torchalg.sparse.kernels.galerkin import form_sparse_sparse
@@ -31,6 +29,7 @@ from torchalg.sparse.preconditioners.amg.aggregation import (
 )
 from torchalg.sparse.preconditioners.amg.transfer import SparseTransferOperator
 from torchalg.utils.theta_search import adaptive_theta_scan
+from torchalg.utils.weak_cache import weak_memo
 
 
 class AggregationCoarsening:
@@ -129,7 +128,7 @@ class AggregationCoarsening:
         return coarse_matrix, SparseTransferOperator(prolongation)
 
 
-@lru_cache(maxsize=1024)
+@weak_memo
 def _cached_aggregation_build_transfer(
     A: torch.Tensor, theta: float, omega: float | None
 ) -> tuple[torch.Tensor, SparseTransferOperator]:
@@ -186,7 +185,7 @@ class TargetDimensionCoarsening:
         cache_candidates (bool): If ``True``, the winning candidate's full
             `AggregationCoarsening.build_transfer` is memoized by
             `(A, theta, omega)` (object identity on `A`) via a shared
-            `functools.lru_cache`, so a sibling instance searching the same
+            `weak_memo` (entries die with the matrix), so a sibling instance searching the same
             matrix and landing on the same `theta` reuses the build instead
             of repeating it. Off by default - see the dense class's
             docstring for the same off-by-default rationale.

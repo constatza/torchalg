@@ -29,9 +29,17 @@ def sparse_piecewise_constant_prolongation(
 
     Returns:
         torch.Tensor: Sparse CSR indicator matrix, shape ``(n, n_coarse)``.
+
+    Raises:
+        ValueError: If no node is assigned to an aggregate (every node isolated).
     """
     n = aggregate.shape[0]
-    n_coarse = int(aggregate.max().item()) + 1
+    n_coarse = int(aggregate.max().item()) + 1 if aggregate.numel() else 0
+    if n_coarse == 0:
+        raise ValueError(
+            "aggregation produced no coarse node: the matrix has no strong connections "
+            "at this level (lower theta)"
+        )
     assigned = aggregate >= 0
     rows = torch.arange(n, device=aggregate.device)[assigned]
     cols = aggregate[assigned]

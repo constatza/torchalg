@@ -55,6 +55,8 @@ from torchalg.preconditioners.implementations.amg._aggregation import (
     piecewise_constant_prolongation,
     standard_aggregation,
     strength_of_connection,
+    strength_ratios,
+    strong_at,
 )
 from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
 from torchalg.preconditioners.ports import ExtraInputPredictorPort
@@ -189,6 +191,22 @@ class TestDenseTransferOperator:
 # ---------------------------------------------------------------------------
 
 
+class TestStrengthRatios:
+    """`strong_at(strength_ratios(A), theta)` is `strength_of_connection(A, theta)`."""
+
+    @pytest.mark.parametrize("theta", [0.0, 0.25, 0.5, 0.51, 0.99])
+    def test_thresholding_the_ratios_matches_strength_of_connection(
+        self, soft_inclusion_2d_stiffness: torch.Tensor, theta: float
+    ) -> None:
+        matrix = soft_inclusion_2d_stiffness.clone()
+        matrix[3, :] = 0.0  # a dead row: zero diagonal and no stored couplings
+        matrix[:, 3] = 0.0
+
+        ratios = strength_ratios(matrix)
+
+        assert torch.equal(strong_at(ratios, theta), strength_of_connection(matrix, theta))
+
+
 class TestStandardAggregation:
     """Cross-validated against the compiled PyAMG library's ``standard_aggregation``
     (``amg_core::standard_aggregation``, transliterated verbatim in
@@ -244,6 +262,16 @@ class TestStandardAggregation:
             prolongation[0], torch.zeros(1, dtype=torch_dtype)
         )  # isolated node: all-zero row, not a wrapped -1 index into the last column
         torch.testing.assert_close(prolongation[1], prolongation[2])
+
+    @pytest.mark.parametrize("n_nodes", [0, 3])
+    def test_no_assigned_node_raises_a_clear_error(
+        self, n_nodes: int, torch_dtype: torch.dtype
+    ) -> None:
+        """Every node isolated (or no node at all) has no coarse space: fail loudly, not in ``max()``."""
+        aggregate = torch.full((n_nodes,), -1, dtype=torch.long)
+
+        with pytest.raises(ValueError, match="no strong connections"):
+            piecewise_constant_prolongation(aggregate, dtype=torch_dtype)
 
     def test_uses_a_bounded_number_of_host_syncs_not_one_per_row(
         self, monkeypatch: pytest.MonkeyPatch
@@ -344,6 +372,28 @@ class TestTargetDimensionCoarsening:
     `greedy_aggregation`; the field-standard algorithm's neighbor-freeness
     safeguard changes the realized plateau — see `.claude/plan.md`.)
     """
+
+    def test_search_computes_the_theta_independent_ratios_once(
+        self, soft_inclusion_2d_stiffness: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every theta probe thresholds one shared ratio matrix instead of rebuilding it."""
+        from torchalg.preconditioners.implementations.amg import coarsening as coarsening_module
+
+        calls: list[int] = []
+        original = coarsening_module.strength_ratios
+
+        def counting(matrix: torch.Tensor) -> torch.Tensor:
+            calls.append(1)
+            return original(matrix)
+
+        monkeypatch.setattr(coarsening_module, "strength_ratios", counting)
+        coarsening = TargetDimensionCoarsening(
+            target_coarse_dim=40, theta_min=0.01, theta_max=0.9, step=0.05, omega=0.67
+        )
+
+        coarsening.build_transfer(soft_inclusion_2d_stiffness)
+
+        assert len(calls) == 1
 
     def test_returns_closest_achievable_coarse_dimension(self, poisson_1d: torch.Tensor) -> None:
         """Target within the connected plateau resolves to that plateau's realized dimension."""
@@ -1061,3 +1111,22 @@ def test_multigrid_hierarchy_is_frozen(poisson_1d: torch.Tensor) -> None:
     assert isinstance(hierarchy, MultigridHierarchy)
     with pytest.raises(AttributeError):
         hierarchy.levels = ()  # ty: ignore[invalid-assignment]
+
+
+def test_cached_candidates_do_not_keep_the_matrix_alive(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+) -> None:
+    """`cache_candidates=True` must not pin the searched matrix after the caller drops it."""
+    import gc
+    import weakref
+
+    from torchalg.preconditioners.implementations.amg.coarsening import (
+        _cached_aggregation_build_transfer,
+    )
+
+    matrix = poisson_1d_factory(20)
+    reference = weakref.ref(matrix)
+    _cached_aggregation_build_transfer(matrix, 0.1, None)
+    del matrix
+    gc.collect()
+    assert reference() is None

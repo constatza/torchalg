@@ -39,8 +39,9 @@ def jacobi_prolongation(
         torch.Tensor: Smoothed prolongator, same shape as ``tentative``.
     """
     scaled = scaled_by_inverse_diagonal(matrix)
-    scaled = (omega / spectral_radius(scaled)) * scaled
-    return tentative - scaled @ tentative
+    damping = omega / spectral_radius(scaled)
+    # Scale the (n, n_coarse) product, not the (n, n) matrix: same value, one fewer n^2 temporary.
+    return tentative - damping * (scaled @ tentative)
 
 
 def make_bridge(tentative: torch.Tensor, dofs_per_node: int) -> torch.Tensor:

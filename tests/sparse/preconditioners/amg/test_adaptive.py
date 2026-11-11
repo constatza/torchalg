@@ -15,6 +15,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
+from tests.support.matvec_counter import MatvecCounter
 from torchalg import pcg
 from torchalg.preconditioners.implementations.amg.adaptive import (
     AdaptiveSAPreconditioner as DenseAdaptiveSAPreconditioner,
@@ -22,10 +23,14 @@ from torchalg.preconditioners.implementations.amg.adaptive import (
 from torchalg.preconditioners.implementations.amg.adaptive import (
     adaptive_sa_hierarchy as dense_adaptive_sa_hierarchy,
 )
+from torchalg.sparse.preconditioners.amg import adaptive as adaptive_module
+from torchalg.sparse.preconditioners.amg._presets import gs_setup_cycle, seeded_draw
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner,
     adaptive_sa_hierarchy,
 )
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
+from torchalg.sparse.preconditioners.amg.transfer import TransferOperatorCache
 
 
 @pytest.fixture
@@ -194,3 +199,41 @@ class TestAdaptiveSAPreconditionerMatchesDense:
         preconditioner = AdaptiveSAPreconditioner(max_coarse=poisson_1d_dense.shape[0])
         with pytest.raises(ValueError, match="single level"):
             preconditioner.setup(sparse_matrix)
+
+
+class TestSolveMatvecs:
+    """The trial cycles reuse each residual instead of recomputing ``A x`` (dense twin: same count)."""
+
+    def test_one_fine_matvec_per_cycle_beyond_the_cycle_itself(
+        self, poisson_1d_large_csr: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cycles = 3
+        monkeypatch.setattr(adaptive_module, "_SOLVE_TOLERANCE", -1.0)
+        gauss_seidel = GaussSeidelStage()
+        params = adaptive_module._Params(
+            0.0,
+            4.0 / 3.0,
+            2,
+            3,
+            4,
+            seeded_draw(0),
+            gauss_seidel=gauss_seidel,
+            transfers=TransferOperatorCache(),
+            setup_cycle=gs_setup_cycle(gauss_seidel),
+        )
+        candidates = torch.ones(poisson_1d_large_csr.shape[0], 1, dtype=torch.float64)
+        levels = adaptive_module._smoothed_aggregation_levels(
+            poisson_1d_large_csr, candidates, params, None
+        )
+        start = torch.rand(
+            poisson_1d_large_csr.shape[0], generator=torch.Generator().manual_seed(2)
+        ).double()
+        hierarchy = params.setup_cycle.prepare(adaptive_module._hierarchy_of(levels, params))
+
+        with MatvecCounter(levels[0].A) as inside:
+            for _ in range(cycles):
+                params.setup_cycle.apply(hierarchy, start)
+        with MatvecCounter(levels[0].A) as total:
+            adaptive_module._solve(levels, start, cycles, params)
+
+        assert total.count - inside.count == cycles + 1

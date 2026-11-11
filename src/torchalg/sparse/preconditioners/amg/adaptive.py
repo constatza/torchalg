@@ -290,9 +290,11 @@ def _solve(levels: list[_Level], x: torch.Tensor, iterations: int, params: _Para
     cycle = params.setup_cycle
     hierarchy = cycle.prepare(_hierarchy_of(levels, params))
     matrix = levels[0].A
+    residual = matrix @ x
     for _ in range(iterations):
-        x = x - cycle.apply(hierarchy, matrix @ x)
-        if torch.linalg.norm(matrix @ x) < _SOLVE_TOLERANCE:
+        x = x - cycle.apply(hierarchy, residual)
+        residual = matrix @ x
+        if torch.linalg.norm(residual) < _SOLVE_TOLERANCE:
             break
     return x
 

@@ -233,9 +233,11 @@ def _solve(levels: list[_Level], x: torch.Tensor, iterations: int) -> torch.Tens
         return torch.zeros_like(x)
     hierarchy = GS_SETUP_CYCLE.prepare(_hierarchy_of(levels))
     matrix = levels[0].A
+    residual = matrix @ x
     for _ in range(iterations):
-        x = x - GS_SETUP_CYCLE.apply(hierarchy, matrix @ x)
-        if torch.linalg.norm(matrix @ x) < _SOLVE_TOLERANCE:
+        x = x - GS_SETUP_CYCLE.apply(hierarchy, residual)
+        residual = matrix @ x
+        if torch.linalg.norm(residual) < _SOLVE_TOLERANCE:
             break
     return x
 

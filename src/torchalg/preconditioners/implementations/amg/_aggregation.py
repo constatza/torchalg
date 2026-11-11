@@ -38,6 +38,40 @@ normalizing strength-of-connection ratios (protects against division by
 near-zero)."""
 
 
+def strength_ratios(matrix: torch.Tensor) -> torch.Tensor:
+    """Theta-independent strength ratios ``|a_ij| / sqrt(|a_ii| * |a_jj|)``.
+
+    Entries that can never be strong (zero entries and the diagonal) hold
+    ``-inf``, so ``strong_at`` needs a single comparison per ``theta``. A
+    search over many ``theta`` values computes this ``(n, n)`` matrix once.
+
+    Args:
+        matrix (torch.Tensor): Dense fine-grid matrix ``A``, shape ``(n, n)``.
+
+    Returns:
+        torch.Tensor: Ratios, shape ``(n, n)``, ``-inf`` where no connection exists.
+    """
+    diag = torch.diagonal(matrix).abs()
+    diag_safe = torch.where(diag > _NEAR_ZERO_DIAGONAL_TOL, diag, torch.ones_like(diag))
+    normalizer = torch.sqrt(diag_safe.unsqueeze(1) * diag_safe.unsqueeze(0))
+    ratios = (matrix.abs() / normalizer).masked_fill_(matrix == 0, -torch.inf)
+    ratios.fill_diagonal_(-torch.inf)
+    return ratios
+
+
+def strong_at(ratios: torch.Tensor, theta: float) -> torch.Tensor:
+    """Binary strength matrix: the connections whose ratio reaches ``theta``.
+
+    Args:
+        ratios (torch.Tensor): Output of ``strength_ratios``.
+        theta (float): Strength-of-connection threshold theta in (0, 1).
+
+    Returns:
+        torch.Tensor: Boolean strength matrix, shape ``(n, n)``.
+    """
+    return ratios >= theta
+
+
 def strength_of_connection(matrix: torch.Tensor, theta: float) -> torch.Tensor:
     """Build a binary strength-of-connection matrix.
 
@@ -54,13 +88,7 @@ def strength_of_connection(matrix: torch.Tensor, theta: float) -> torch.Tensor:
     Returns:
         torch.Tensor: Boolean strength matrix, shape ``(n, n)``.
     """
-    diag = torch.diagonal(matrix).abs()
-    diag_safe = torch.where(diag > _NEAR_ZERO_DIAGONAL_TOL, diag, torch.ones_like(diag))
-    normalizer = torch.sqrt(diag_safe.unsqueeze(1) * diag_safe.unsqueeze(0))
-    strengths = matrix.abs() / normalizer
-    strong = (strengths >= theta) & (matrix != 0)
-    strong.fill_diagonal_(False)
-    return strong
+    return strong_at(strength_ratios(matrix), theta)
 
 
 def standard_aggregation(strength: torch.Tensor) -> torch.Tensor:
@@ -199,9 +227,17 @@ def piecewise_constant_prolongation(
 
     Returns:
         torch.Tensor: Dense indicator matrix, shape ``(n, n_coarse)``.
+
+    Raises:
+        ValueError: If no node is assigned to an aggregate (every node isolated).
     """
     n = aggregate.shape[0]
-    n_coarse = int(aggregate.max().item()) + 1
+    n_coarse = int(aggregate.max().item()) + 1 if aggregate.numel() else 0
+    if n_coarse == 0:
+        raise ValueError(
+            "aggregation produced no coarse node: the matrix has no strong connections "
+            "at this level (lower theta)"
+        )
     prolongation = torch.zeros(n, n_coarse, dtype=dtype, device=aggregate.device)
     assigned = aggregate >= 0
     rows = torch.arange(n, device=aggregate.device)[assigned]

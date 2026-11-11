@@ -11,18 +11,20 @@ from CSR to dense. The step-by-step kernels live in ``_aggregation.py``.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import torch
 
 from torchalg.utils.theta_search import adaptive_theta_scan
+from torchalg.utils.weak_cache import weak_memo
 
 from ._aggregation import (
     piecewise_constant_prolongation,
     smoothed_prolongation,
     standard_aggregation,
     strength_of_connection,
+    strength_ratios,
+    strong_at,
 )
 from ._jacobi_omega import PROLONGATION_NOMINAL, jacobi_omega
 from .transfer import DenseTransferOperator, NeuralTransferOperator
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
     from ...ports import ExtraInputPredictorPort
 
 
-@lru_cache(maxsize=1024)
+@weak_memo
 def _cached_aggregation_build_transfer(
     A: torch.Tensor, theta: float, omega: float | None
 ) -> tuple[torch.Tensor, DenseTransferOperator]:
@@ -253,7 +255,7 @@ class TargetDimensionCoarsening:
         cache_candidates (bool): If ``True``, the winning candidate's full
             `AggregationCoarsening.build_transfer` is memoized by
             `(A, theta, omega)` (object identity on `A`) via a shared
-            `functools.lru_cache`, so a sibling instance searching the same
+            `weak_memo` (entries die with the matrix), so a sibling instance searching the same
             matrix and landing on the same `theta` reuses the build instead
             of repeating it. Off by default - opt in only when multiple
             instances against the same matrix are expected (e.g. several
@@ -393,9 +395,10 @@ class TargetDimensionCoarsening:
                 realized coarse dimension is closest to
                 ``target_coarse_dim``.
         """
+        ratios = strength_ratios(A)
 
         def realized_dimension(theta: float) -> int:
-            aggregate = standard_aggregation(strength_of_connection(A, theta))
+            aggregate = standard_aggregation(strong_at(ratios, theta))
             return int(aggregate.max().item()) + 1 if aggregate.numel() else 0
 
         samples = adaptive_theta_scan(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from torchalg.sparse.kernels.prolongation import (
@@ -25,6 +26,15 @@ class TestSparsePiecewiseConstantProlongation:
             dtype=torch_dtype,
         )
         torch.testing.assert_close(result, expected)
+
+    @pytest.mark.parametrize("n_nodes", [0, 3])
+    def test_no_assigned_node_raises_a_clear_error(
+        self, n_nodes: int, torch_dtype: torch.dtype
+    ) -> None:
+        aggregate = torch.full((n_nodes,), -1, dtype=torch.long)
+
+        with pytest.raises(ValueError, match="no strong connections"):
+            sparse_piecewise_constant_prolongation(aggregate, torch_dtype)
 
 
 class TestSparseInterpolationProlongation:
