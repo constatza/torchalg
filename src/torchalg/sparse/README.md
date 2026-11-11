@@ -17,17 +17,32 @@ PyTorch version, or matrix family changes materially.
 
 ## Triangular solve preparation
 
+`kernels.triangular.prepare_triangular_solve(matrix, direction)` returns one of two
+exact substitutions with the same `solve(target)` interface:
+
+- `LibraryTriangularSolve`: one `torch.triangular_solve` call on the CSR triangle
+  (MKL on CPU). Chosen when the device type is in `LIBRARY_SOLVE_DEVICE_TYPES`
+  (`{"cpu"}`) and no pivot is within `diagonal_tol` of zero, checked once at
+  setup. At n = 10000 (5-point Laplacian, 199 dependency levels) it takes
+  0.16-0.31 ms per IC(0) apply against 11.9 ms for the level-scheduled path,
+  equal to rounding. A target that requires grad falls back to the
+  level-scheduled solve, since the library call has no autograd.
+- `PreparedTriangularSolve`: level-scheduled substitution. It handles zero
+  pivots (row frozen to the target) and `active` masks, and is the path on GPUs
+  until their `SpSV` is measured (`benchmarks/tmp/compare_sparse_backends.py`).
+  It is launch-bound: about 13 eager ops per dependency level.
+
 Level scheduling is structural preprocessing. CPU scheduling uses a linear
 native-integer recurrence; accelerator scheduling uses reverse adjacency and
 wavefront traversal so each dependency edge is processed once without
 per-row device scalar reads.
 
 Sparse IC(0), ICholesky, and ILU preconditioners materialize their lower/upper
-solve factors and both direction-specific schedules during `setup()`. Their
-repeated `apply()` path performs only the two numerical triangular solves and
-accepts vector or matrix right-hand sides directly. The cached transpose or
-split factors add `O(nnz)` storage in exchange for removing structural work
-from every solver iteration.
+factors and prepare both substitutions during `setup()`. Their repeated
+`apply()` path performs only the two numerical triangular solves and accepts
+vector or matrix right-hand sides directly. The cached transpose or split
+factors add `O(nnz)` storage in exchange for removing structural work from
+every solver iteration.
 
 ## Prepared smoothers
 

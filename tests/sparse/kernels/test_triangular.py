@@ -8,9 +8,11 @@ import pytest
 import torch
 
 from torchalg.sparse.kernels.triangular import (
+    LibraryTriangularSolve,
     PreparedTriangularSolve,
     _device_dependency_schedule,
     level_schedule,
+    prepare_triangular_solve,
 )
 
 
@@ -304,3 +306,51 @@ class TestPreparedTriangularSolveReuse:
             prepared.solve(
                 torch.ones(n, dtype=poisson_1d_csr.dtype), active=torch.zeros(n, dtype=torch.bool)
             )
+
+
+@pytest.fixture
+def zero_pivot_csr(torch_dtype: torch.dtype) -> torch.Tensor:
+    """Lower-triangular CSR matrix whose first diagonal entry is zero."""
+    dense = torch.tensor([[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 1.0, 3.0]], dtype=torch_dtype)
+    return dense.to_sparse_csr()
+
+
+@pytest.fixture(params=[(), (3,)], ids=["vector", "block"])
+def poisson_2d_target(
+    request: pytest.FixtureRequest, poisson_2d_csr: torch.Tensor, test_seed: int
+) -> torch.Tensor:
+    """Seeded right-hand side ``(n,)`` or ``(n, 3)`` for ``poisson_2d_csr``."""
+    generator = torch.Generator().manual_seed(test_seed)
+    shape = (poisson_2d_csr.shape[0], *request.param)
+    return torch.randn(shape, dtype=poisson_2d_csr.dtype, generator=generator)
+
+
+class TestPrepareTriangularSolve:
+    """The library (``torch.triangular_solve``) path equals the level-scheduled oracle."""
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_cpu_selects_library_solve(
+        self, poisson_2d_csr: torch.Tensor, direction: Literal["forward", "backward"]
+    ) -> None:
+        assert isinstance(
+            prepare_triangular_solve(poisson_2d_csr, direction), LibraryTriangularSolve
+        )
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_library_solve_matches_level_scheduled(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_target: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        expected = PreparedTriangularSolve(poisson_2d_csr, direction).solve(poisson_2d_target)
+
+        actual = LibraryTriangularSolve(poisson_2d_csr, direction).solve(poisson_2d_target)
+
+        assert actual.shape == poisson_2d_target.shape
+        torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-14)
+
+    def test_zero_pivot_falls_back_to_level_scheduled(self, zero_pivot_csr: torch.Tensor) -> None:
+        solver = prepare_triangular_solve(zero_pivot_csr, "forward")
+
+        assert isinstance(solver, PreparedTriangularSolve)

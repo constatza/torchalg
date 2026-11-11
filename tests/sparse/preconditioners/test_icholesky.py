@@ -18,7 +18,7 @@ from torchalg.preconditioners.implementations import (
     ICholeskyPreconditioner as DenseICholeskyPreconditioner,
 )
 from torchalg.sparse.kernels import triangular as triangular_kernel
-from torchalg.sparse.kernels.triangular import PreparedTriangularSolve
+from torchalg.sparse.kernels.triangular import LibraryTriangularSolve, PreparedTriangularSolve
 from torchalg.sparse.preconditioners.ic0 import sparse_ic0
 from torchalg.sparse.preconditioners.icholesky import ICholeskyPreconditioner
 
@@ -91,13 +91,14 @@ class TestICholeskyPreconditionerShapes:
         residual = torch.ones(poisson_1d_csr.shape[0], 3, dtype=factor.dtype)
         precond = ICholeskyPreconditioner().setup(factor)
         calls: list[tuple[int, ...]] = []
-        original = PreparedTriangularSolve.solve
+        for solver_class in (PreparedTriangularSolve, LibraryTriangularSolve):
+            original = solver_class.solve
 
-        def counting(self: PreparedTriangularSolve, target: torch.Tensor, **kwargs: Any):
-            calls.append(tuple(target.shape))
-            return original(self, target, **kwargs)
+            def counting(self: Any, target: torch.Tensor, _original=original, **kwargs: Any):
+                calls.append(tuple(target.shape))
+                return _original(self, target, **kwargs)
 
-        monkeypatch.setattr(PreparedTriangularSolve, "solve", counting)
+            monkeypatch.setattr(solver_class, "solve", counting)
 
         precond.apply(residual)
 
@@ -150,7 +151,8 @@ class TestICholeskyPreconditionerShapes:
         residual = torch.ones(second_factor.shape[0], dtype=second_factor.dtype)
 
         assert precond._solve_cache is not first_cache
-        assert precond._solve_cache.backward_solve.diag.shape == (second_factor.shape[0],)
+        n = second_factor.shape[0]
+        assert sum(buffer.shape[0] == n for buffer in precond._solve_cache.buffers()) >= 2
         assert precond.apply(residual).shape == residual.shape
 
     def test_failed_setup_preserves_previous_complete_state(

@@ -90,7 +90,7 @@ path = "torchalg.sparse.kernels.galerkin"
 depends_on = []
 [[modules]]
 path = "torchalg.sparse.kernels.triangular"
-depends_on = []
+depends_on = ["torchalg.sparse.kernels.diagonal"]
 [[modules]]
 path = "torchalg.sparse.kernels.row_max"
 depends_on = ["torchalg.sparse.kernels.triangular"]

@@ -15,14 +15,22 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from torchalg.sparse.kernels.triangular import PreparedTriangularSolve
+from torchalg.sparse.kernels.triangular import (
+    LibraryTriangularSolve,
+    PreparedTriangularSolve,
+    prepare_triangular_solve,
+)
+
+TriangularSolver = LibraryTriangularSolve | PreparedTriangularSolve
 
 
 class SparseTriangularSolveCache(nn.Module):
     """Setup-owned prepared forward and backward solves for a triangular pair.
 
-    Each half is a ``PreparedTriangularSolve`` (schedule, diagonal and level-sorted
-    entries computed once); ``nn.Module.to()`` moves their non-persistent buffers, and
+    Each half comes from ``prepare_triangular_solve``: a ``LibraryTriangularSolve`` (one
+    ``torch.triangular_solve`` call, chosen on CPU when every pivot is nonzero) or a
+    ``PreparedTriangularSolve`` (level schedule, diagonal and level-sorted entries
+    computed once). ``nn.Module.to()`` moves their non-persistent buffers, and
     ``setup()`` rebuilds them from the canonical operator rather than serializing a
     second source of truth.
 
@@ -31,7 +39,7 @@ class SparseTriangularSolveCache(nn.Module):
         backward: Prepared solve against the upper factor.
     """
 
-    def __init__(self, forward: PreparedTriangularSolve, backward: PreparedTriangularSolve) -> None:
+    def __init__(self, forward: TriangularSolver, backward: TriangularSolver) -> None:
         """Register a complete, internally consistent solve cache."""
         super().__init__()
         self.forward_solve = forward
@@ -49,8 +57,8 @@ class SparseTriangularSolveCache(nn.Module):
             Complete reusable solve cache.
         """
         return cls(
-            PreparedTriangularSolve(lower, "forward"),
-            PreparedTriangularSolve(upper, "backward"),
+            prepare_triangular_solve(lower, "forward"),
+            prepare_triangular_solve(upper, "backward"),
         )
 
     def solve(self, residual: torch.Tensor) -> torch.Tensor:

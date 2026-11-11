@@ -19,6 +19,8 @@ from typing import Literal
 import torch
 from torch import nn
 
+from torchalg.sparse.kernels.diagonal import sparse_diagonal
+
 
 @dataclass(frozen=True, slots=True)
 class LevelSchedule:
@@ -382,3 +384,100 @@ class PreparedTriangularSolve(nn.Module):
             is_frozen = frozen[rows].unsqueeze(-1) if batched else frozen[rows]
             x[rows] = torch.where(is_frozen, freeze_value[rows], rhs / diag)
         return x
+
+
+LIBRARY_SOLVE_DEVICE_TYPES: frozenset[str] = frozenset({"cpu"})
+"""Device types whose ``torch.triangular_solve`` on CSR beats ``PreparedTriangularSolve``.
+
+On CPU the call dispatches to MKL's sparse triangular solve: 0.27 ms against 6 ms per
+substitution at n = 10000 (5-point Laplacian, 199 levels), equal to rounding. The
+level-scheduled solve is launch-bound (about 13 eager ops per dependency level), the
+library solve is one call. GPU backends (cuSPARSE / hipSPARSE ``SpSV``) are not listed
+until ``benchmarks/tmp/compare_sparse_backends.py`` measures them against the
+level-scheduled path on that device."""
+
+
+def _triangle(matrix: torch.Tensor, direction: Literal["forward", "backward"]) -> torch.Tensor:
+    """CSR copy of ``matrix`` keeping only its lower (forward) or upper (backward) half."""
+    row = _expand_row_index(matrix)
+    col = matrix.col_indices()
+    keep = col <= row if direction == "forward" else col >= row
+    counts = torch.zeros(matrix.shape[0] + 1, dtype=torch.int64, device=matrix.device)
+    counts[1:] = torch.bincount(row[keep], minlength=matrix.shape[0])
+    return torch.sparse_csr_tensor(
+        torch.cumsum(counts, 0),
+        col[keep],
+        matrix.values()[keep],
+        matrix.shape,
+    )
+
+
+class LibraryTriangularSolve(nn.Module):
+    """Triangular substitution through ``torch.triangular_solve`` on a CSR triangle.
+
+    Solves the same system as ``PreparedTriangularSolve`` (``direction`` selects the half
+    of ``matrix`` incl. the diagonal) with one library call per solve instead of a
+    level-scheduled loop. It has no zero-pivot freeze and no ``active`` masking, so build
+    it through ``prepare_triangular_solve``, which only picks it when every pivot is
+    nonzero. Gradients are not supported by the library call: a target that requires
+    grad is solved by a lazily built ``PreparedTriangularSolve`` instead.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
+        direction (Literal["forward", "backward"]): Which triangular half to solve.
+    """
+
+    def __init__(
+        self, matrix: torch.Tensor, direction: Literal["forward", "backward"] = "forward"
+    ) -> None:
+        """Extract and store the selected triangle."""
+        super().__init__()
+        _require_csr(matrix, "LibraryTriangularSolve")
+        self.triangle: torch.Tensor
+        self.register_buffer("triangle", _triangle(matrix, direction), persistent=False)
+        self._direction: Literal["forward", "backward"] = direction
+
+    def solve(self, target: torch.Tensor) -> torch.Tensor:
+        """Solve the triangular system for ``target`` (``(n,)`` or ``(n, k)``).
+
+        Args:
+            target (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+
+        Returns:
+            torch.Tensor: Solution, same shape as ``target``.
+        """
+        if target.requires_grad or self.triangle.requires_grad:
+            return PreparedTriangularSolve(self.triangle, self._direction).solve(target)
+        column = target if target.ndim == 2 else target.unsqueeze(-1)
+        solution = torch.triangular_solve(
+            column, self.triangle, upper=self._direction == "backward"
+        ).solution
+        return solution if target.ndim == 2 else solution.squeeze(-1)
+
+
+def prepare_triangular_solve(
+    matrix: torch.Tensor,
+    direction: Literal["forward", "backward"] = "forward",
+    diagonal_tol: float = 1e-14,
+) -> LibraryTriangularSolve | PreparedTriangularSolve:
+    """Prepare the fastest exact substitution available for ``matrix`` on its device.
+
+    Picks ``LibraryTriangularSolve`` when the device type is in
+    ``LIBRARY_SOLVE_DEVICE_TYPES`` and no pivot is within ``diagonal_tol`` of zero (one
+    host read at setup); otherwise the level-scheduled ``PreparedTriangularSolve``, which
+    also handles zero pivots (row frozen to the target) and ``active`` masks.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
+        direction (Literal["forward", "backward"]): Which triangular half to solve.
+        diagonal_tol (float): Diagonal magnitude below this counts as a zero pivot.
+
+    Returns:
+        LibraryTriangularSolve | PreparedTriangularSolve: An object with ``solve(target)``.
+    """
+    _require_csr(matrix, "prepare_triangular_solve")
+    if matrix.device.type in LIBRARY_SOLVE_DEVICE_TYPES and matrix.shape[0] > 0:
+        has_zero_pivot = bool((sparse_diagonal(matrix).abs() <= diagonal_tol).any())
+        if not has_zero_pivot:
+            return LibraryTriangularSolve(matrix, direction)
+    return PreparedTriangularSolve(matrix, direction, diagonal_tol)
