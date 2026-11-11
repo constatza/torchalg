@@ -28,14 +28,11 @@ Buffer/hierarchy design (see ``docs/plan.md``'s Stage 5 entry):
       like every other stateful preconditioner in this package.
     - The built ``MultigridHierarchy`` (a plain frozen-dataclass tree of
       tensors *derived* from that buffer) is kept as a plain, non-buffer
-      attribute, since it is a cache, not owned state - rebuilt by the next
-      explicit ``setup()`` call, not invalidated/lazily-rebuilt behind the
-      caller's back.
+      attribute, rebuilt only by an explicit ``setup()`` call.
     - ``_apply`` (the ``nn.Module`` hook that ``.to()``/``.cuda()``/
-      ``.double()`` etc. all funnel through) is overridden to also drop that
-      cache after the buffer moves, so a stale-device hierarchy can never be
-      reused - callers must call ``setup()`` again after moving a
-      preconditioner to rebuild the hierarchy on the now-moved ``A`` buffer.
+      ``.double()`` etc. all funnel through) is overridden to move that
+      hierarchy with the buffer (``utils.device.moved_to``), so a
+      preconditioner set up on the CPU stays ready after ``.to("cuda")``.
 """
 
 from __future__ import annotations
@@ -51,6 +48,7 @@ from torchalg.preconditioners.base import (
     PreconditionerContext,
     PreconditionerNotReadyError,
 )
+from torchalg.utils.device import moved_to
 
 from .hierarchy import MultigridHierarchy, build_hierarchy
 
@@ -151,23 +149,16 @@ class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
         self._hierarchy: MultigridHierarchy | None = None
 
     def _apply(self, fn: Callable, recurse: bool = True) -> Self:
-        """Drop the cached hierarchy only when the buffer's device/dtype actually changes.
+        """Move the prepared hierarchy with the matrix buffer on a real device/dtype change.
 
-        ``nn.Module.to()``/``.cuda()``/``.double()``/etc. all call this
-        internally, including internally from ``IterativeSolverBase
-        ._place_on_device`` on every ``solve()`` call (even when the
-        preconditioner is already on the resolved device - ``nn.Module.to()``
-        provides no cheap way to ask "would this actually move anything?"
-        up front). The cached hierarchy's tensors are derived from
-        ``_matrix`` but are not themselves buffers, so a real device/dtype
-        change after ``setup()`` would silently leave a stale-device
-        hierarchy in place if left unhandled - but invalidating
-        unconditionally on every ``_apply`` call would also wipe readiness
-        on every same-device ``solve()`` call, breaking the ordinary
-        "``setup()`` once, ``solve()`` many times" flow. Comparing
-        ``_matrix``'s device/dtype before and after distinguishes a real
-        move (invalidate; caller must call ``setup()`` again) from a no-op
-        one (readiness and the cached hierarchy are left untouched).
+        ``nn.Module.to()``/``.cuda()``/``.double()`` all call this, including
+        ``IterativeSolverBase._place_on_device`` on every ``solve()``. The hierarchy's
+        tensors are derived from ``_matrix`` but are not buffers, so they are moved here
+        with ``utils.device.moved_to`` (level matrices, transfers, prepared smoothers, the
+        coarse factorization) when ``_matrix``'s device or dtype actually changed, and
+        left untouched otherwise. Readiness is kept: setup on the CPU, then move and apply
+        on a GPU. A dtype change casts the prepared state (as ``nn.Module`` casts its
+        weights); it is not a re-setup in the new precision.
 
         Args:
             fn (Callable): Conversion function applied to each
@@ -179,9 +170,9 @@ class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
         """
         before_device, before_dtype = self._matrix.device, self._matrix.dtype
         result = super()._apply(fn, recurse=recurse)
-        if self._matrix.device != before_device or self._matrix.dtype != before_dtype:
-            self._hierarchy = None
-            self._is_ready = False
+        changed = self._matrix.device != before_device or self._matrix.dtype != before_dtype
+        if changed and self._hierarchy is not None:
+            self._hierarchy = moved_to(self._hierarchy, self._matrix.device, self._matrix.dtype)
         return result
 
     # BindableInputs structural implementation ---------------------------------

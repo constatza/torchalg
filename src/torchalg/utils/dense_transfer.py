@@ -14,10 +14,9 @@ the sparse tree.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import torch
 
-if TYPE_CHECKING:
-    import torch
+from torchalg.utils.device import moved_tensor
 
 
 class DenseTransferOperator:
@@ -60,3 +59,15 @@ class DenseTransferOperator:
             torch.Tensor: Coarse-grid vector of length n_coarse.
         """
         return self._R @ fine
+
+    def moved_to(self, device: torch.device, dtype: torch.dtype) -> DenseTransferOperator:
+        """Return this operator with its matrices on ``device`` (values cast to ``dtype``).
+
+        Args:
+            device (torch.device): Target device.
+            dtype (torch.dtype): Target floating dtype.
+
+        Returns:
+            DenseTransferOperator: The moved operator.
+        """
+        return DenseTransferOperator(moved_tensor(self._P, device, dtype))

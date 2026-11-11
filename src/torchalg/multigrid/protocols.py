@@ -45,6 +45,21 @@ class TransferOperator(Protocol):
         """
         ...
 
+    def moved_to(self, device: torch.device, dtype: torch.dtype) -> TransferOperator:
+        """Return this operator with its state on ``device`` (floating values in ``dtype``).
+
+        Lets a prepared hierarchy follow ``preconditioner.to(...)`` instead of being
+        rebuilt.
+
+        Args:
+            device (torch.device): Target device.
+            dtype (torch.dtype): Target floating dtype.
+
+        Returns:
+            TransferOperator: The moved operator.
+        """
+        ...
+
 
 class PreparedSmoother(Protocol):
     """A smoother bound to one level's matrix, with all matrix-dependent work done.

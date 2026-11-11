@@ -12,6 +12,7 @@ from __future__ import annotations
 import torch
 
 from torchalg.sparse.kernels.index_dtype import compact_csr_indices
+from torchalg.utils.device import moved_tensor
 
 
 class SparseTransferOperator:
@@ -66,6 +67,22 @@ class SparseTransferOperator:
             torch.Tensor: Dense coarse-grid vector of length n_coarse.
         """
         return _sparse_matvec(self._R, fine)
+
+    def moved_to(self, device: torch.device, dtype: torch.dtype) -> SparseTransferOperator:
+        """Return this operator with its matrices on ``device`` (values cast to ``dtype``).
+
+        Args:
+            device (torch.device): Target device.
+            dtype (torch.dtype): Target floating dtype.
+
+        Returns:
+            SparseTransferOperator: The moved operator.
+        """
+        moved = object.__new__(SparseTransferOperator)
+        # Move the stored pair; rebuilding would recompute the transpose.
+        moved._P = moved_tensor(self._P, device, dtype)
+        moved._R = moved_tensor(self._R, device, dtype)
+        return moved
 
 
 class TransferOperatorCache:

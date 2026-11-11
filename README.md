@@ -234,7 +234,10 @@ amg : True 3
 Preconditioners with tensor state (`JacobiPreconditioner`, `ILUPreconditioner`,
 `AMGPreconditioner`, ...) subclass `nn.Module` and register their state via
 `register_buffer`. PyTorch's own `.to(...)` moves and casts every buffer at
-once — no custom `torchalg` code involved:
+once. Multigrid preconditioners also move their prepared hierarchy (level
+matrices, transfers, smoothers, coarse factorization), so a preconditioner set up
+once stays ready after a move; the sparse IC(0)/ILU solvers re-select their
+triangular-solve implementation for the new device:
 
 ```python
 import torch
@@ -262,9 +265,10 @@ z = tensor([2.0000, 0.7500, 2.0000, 0.2500])
 
 ### Running on GPU
 
-No separate GPU code path. The solver core has no hardcoded device — it runs
-wherever `A`/`b`/`x0` already live. Move the preconditioner's buffers with
-`.to(device=...)`, and the whole solve runs on GPU:
+No separate GPU code path. `solve()` places `A`, `b`, `x0` and any `nn.Module`
+preconditioner on the GPU whenever one is available (pass `device=` to override).
+Setup can run on the CPU, where its sequential stages (aggregation, level
+schedules, matching) belong; the moved preconditioner then applies on the GPU:
 
 ```python
 import torch

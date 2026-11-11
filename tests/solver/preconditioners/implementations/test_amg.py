@@ -730,13 +730,11 @@ class TestAMGPreconditioner:
         assert precond._hierarchy is not None
         assert precond._hierarchy.levels[-1].transfer is None
 
-    def test_hierarchy_invalidated_after_device_dtype_move(self, poisson_1d: torch.Tensor) -> None:
-        """Moving the module via ``.to()`` must invalidate the cached hierarchy and readiness.
+    def test_move_keeps_the_prepared_hierarchy(self, poisson_1d: torch.Tensor) -> None:
+        """``.to()`` moves the prepared hierarchy with the matrix instead of dropping it.
 
-        Otherwise a stale-device/dtype hierarchy could be reused after
-        ``.to()`` - see ``amg.py``'s ``_apply`` override docstring for the
-        full design reasoning. A fresh ``setup()`` call is required before
-        the next ``apply()``.
+        Setup once, then move: the preconditioner stays ready, every level's prepared
+        state follows the new dtype, and the moved cycle reproduces the original one.
         """
         precond = AMGPreconditioner(
             poisson_1d,
@@ -744,15 +742,16 @@ class TestAMGPreconditioner:
             cycle=VCycle(smoother=JacobiSmoother()),
         )
         precond.setup(poisson_1d)
-        assert precond._hierarchy is not None
+        residual = torch.linspace(1.0, 2.0, poisson_1d.shape[0], dtype=poisson_1d.dtype)
+        expected = precond.apply(residual)
 
         moved = precond.to(dtype=torch.float32)
-        assert moved._hierarchy is None
-        with pytest.raises(PreconditionerNotReadyError):
-            moved.apply(torch.ones(poisson_1d.shape[0], dtype=torch.float32))
-        moved.setup(moved._matrix)
-        z = moved.apply(torch.ones(poisson_1d.shape[0], dtype=torch.float32))
+        z = moved.apply(residual.to(torch.float32))
+
+        assert moved._hierarchy is not None
+        assert all(level.matrix.dtype == torch.float32 for level in moved._hierarchy.levels)
         assert z.dtype == torch.float32
+        torch.testing.assert_close(z, expected.to(torch.float32), rtol=1e-4, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from torchalg.utils.dense_transfer import DenseTransferOperator
+from torchalg.utils.device import moved_tensor, moved_to
 
 if TYPE_CHECKING:
     import torch
@@ -87,3 +88,19 @@ class NeuralTransferOperator:
             torch.Tensor: Coarse-grid vector.
         """
         return self._restrictor.apply(fine, **self._bound)
+
+    def moved_to(self, device: torch.device, dtype: torch.dtype) -> NeuralTransferOperator:
+        """Return this operator with its matrices on ``device`` (values cast to ``dtype``).
+
+        Args:
+            device (torch.device): Target device.
+            dtype (torch.dtype): Target floating dtype.
+
+        Returns:
+            NeuralTransferOperator: The moved operator.
+        """
+        return NeuralTransferOperator(
+            moved_to(self._prolongator, device, dtype),
+            moved_to(self._restrictor, device, dtype),
+            **{name: moved_tensor(value, device, dtype) for name, value in self._bound.items()},
+        )

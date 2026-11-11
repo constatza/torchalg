@@ -13,11 +13,44 @@ the setup cycles are shared module-level instances used for many matrices).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import torch
 
+
+@dataclass(frozen=True, slots=True)
+class LUCoarseSolve:
+    """Pivoted LU factors of the coarsest matrix; solves by triangular substitution.
+
+    A frozen dataclass (not a closure) so ``utils.device.moved_to`` can move the factors
+    with the rest of a prepared hierarchy.
+    """
+
+    lu: torch.Tensor
+    pivots: torch.Tensor
+
+    def __call__(self, rhs: torch.Tensor) -> torch.Tensor:
+        """Solve for a vector or a matrix right-hand side."""
+        columns = rhs.unsqueeze(-1) if rhs.ndim == 1 else rhs
+        solution = torch.linalg.lu_solve(self.lu, self.pivots, columns)
+        return solution.squeeze(-1) if rhs.ndim == 1 else solution
+
+
+@dataclass(frozen=True, slots=True)
+class PseudoInverseCoarseSolve:
+    """Cached pseudo-inverse of the coarsest matrix; solves by one product."""
+
+    inverse: torch.Tensor
+
+    def __call__(self, rhs: torch.Tensor) -> torch.Tensor:
+        """Apply the cached minimum-norm least-squares inverse."""
+        return self.inverse @ rhs
+
+
 type CoarseSolve = Callable[[torch.Tensor], torch.Tensor]
-"""Maps a coarsest-level right-hand side to the solution; closes over the factorization."""
+"""Maps a coarsest-level right-hand side to the solution. The built-in factories return
+frozen dataclasses (``LUCoarseSolve``, ``PseudoInverseCoarseSolve``), which move with the
+hierarchy; a custom solve must be a dataclass of tensors or expose ``moved_to``."""
 
 type CoarseSolverFactory = Callable[[torch.Tensor], CoarseSolve]
 """Builds a ``CoarseSolve`` from a coarsest-level matrix (the one-off expensive step)."""
@@ -51,13 +84,7 @@ def lu_coarse_solver(matrix: torch.Tensor) -> CoarseSolve:
         raise torch.linalg.LinAlgError(
             "Coarsest-level matrix is singular; use a pinv coarse solver."
         )
-
-    def solve(rhs: torch.Tensor) -> torch.Tensor:
-        columns = rhs.unsqueeze(-1) if rhs.ndim == 1 else rhs
-        solution = torch.linalg.lu_solve(lu, pivots, columns)
-        return solution.squeeze(-1) if rhs.ndim == 1 else solution
-
-    return solve
+    return LUCoarseSolve(lu=lu, pivots=pivots)
 
 
 def pseudo_inverse_coarse_solver(matrix: torch.Tensor) -> CoarseSolve:
@@ -75,9 +102,4 @@ def pseudo_inverse_coarse_solver(matrix: torch.Tensor) -> CoarseSolve:
     Returns:
         CoarseSolve: Applies the cached pseudo-inverse.
     """
-    inverse = torch.linalg.pinv(matrix)
-
-    def solve(rhs: torch.Tensor) -> torch.Tensor:
-        return inverse @ rhs
-
-    return solve
+    return PseudoInverseCoarseSolve(inverse=torch.linalg.pinv(matrix))

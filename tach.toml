@@ -30,7 +30,7 @@ path = "torchalg.utils.pod_basis"
 depends_on = []
 [[modules]]
 path = "torchalg.utils.dense_transfer"
-depends_on = []
+depends_on = ["torchalg.utils.device"]
 [[modules]]
 path = "torchalg.utils.tentative"
 depends_on = []
@@ -45,7 +45,7 @@ path = "torchalg.utils.bootcmatch_aggregation"
 depends_on = []
 [[modules]]
 path = "torchalg.multigrid"
-depends_on = ["torchalg.preconditioners.base", "torchalg.utils.energy"]
+depends_on = ["torchalg.preconditioners.base", "torchalg.utils.device", "torchalg.utils.energy"]
 [[modules]]
 path = "torchalg.analysis"
 depends_on = []
@@ -141,7 +141,7 @@ path = "torchalg.sparse.preconditioners.amg.smoothers"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.index_dtype", "torchalg.sparse.preconditioners.amg._gauss_seidel_format", "torchalg.sparse.preconditioners.amg._jacobi_omega"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.transfer"
-depends_on = ["torchalg.sparse.kernels.index_dtype"]
+depends_on = ["torchalg.sparse.kernels.index_dtype", "torchalg.utils.device"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.aggregation"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.rowscale"]
@@ -171,7 +171,7 @@ path = "torchalg.sparse.preconditioners.amg.bootcmatch_coarsening"
 depends_on = ["torchalg.sparse.kernels.bootcmatch_matching", "torchalg.sparse.kernels.bootcmatch_weights", "torchalg.sparse.kernels.galerkin", "torchalg.sparse.kernels.prolongation", "torchalg.sparse.preconditioners.amg.transfer", "torchalg.utils.bootcmatch_aggregation"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.bootcmatch"
-depends_on = ["torchalg.multigrid", "torchalg.preconditioners.base", "torchalg.sparse.preconditioners.amg._presets", "torchalg.sparse.preconditioners.amg.bootcmatch_coarsening", "torchalg.sparse.preconditioners.amg.smoothers"]
+depends_on = ["torchalg.multigrid", "torchalg.preconditioners.base", "torchalg.sparse.preconditioners.amg._presets", "torchalg.sparse.preconditioners.amg.bootcmatch_coarsening", "torchalg.sparse.preconditioners.amg.smoothers", "torchalg.utils.device"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.bootstrap"
 depends_on = ["torchalg.multigrid", "torchalg.preconditioners.base", "torchalg.sparse.kernels.algebraic_distance", "torchalg.sparse.kernels.depth_neighborhood", "torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.galerkin", "torchalg.sparse.kernels.lsr_correction", "torchalg.sparse.kernels.prolongation", "torchalg.sparse.kernels.strength", "torchalg.sparse.preconditioners.amg._compatible_relaxation", "torchalg.sparse.preconditioners.amg._presets", "torchalg.sparse.preconditioners.amg.smoothers", "torchalg.sparse.preconditioners.amg.transfer", "torchalg.utils.ls_interpolation", "torchalg.utils.test_vector_weights"]
@@ -252,7 +252,7 @@ path = "torchalg.preconditioners.implementations.amg.bootcmatch_coarsening"
 depends_on = ["torchalg.preconditioners.implementations.amg._bootcmatch_matching", "torchalg.preconditioners.implementations.amg._bootcmatch_weights", "torchalg.utils.bootcmatch_aggregation", "torchalg.utils.dense_transfer"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg.bootcmatch"
-depends_on = ["torchalg.multigrid", "torchalg.preconditioners.base", "torchalg.preconditioners.implementations.amg", "torchalg.preconditioners.implementations.amg.bootcmatch_coarsening", "torchalg.preconditioners.implementations.amg.smoothers"]
+depends_on = ["torchalg.multigrid", "torchalg.preconditioners.base", "torchalg.preconditioners.implementations.amg", "torchalg.preconditioners.implementations.amg.bootcmatch_coarsening", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.utils.device"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg._compatible_relaxation"
 depends_on = ["torchalg.preconditioners.implementations.amg._graph"]
@@ -267,7 +267,7 @@ path = "torchalg.preconditioners.implementations.amg._jacobi_omega"
 depends_on = ["torchalg.utils.spectral"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg.transfer"
-depends_on = ["torchalg.utils.dense_transfer"]
+depends_on = ["torchalg.utils.dense_transfer", "torchalg.utils.device"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.amg.cycle"
 depends_on = ["torchalg.multigrid", "torchalg.preconditioners.implementations.amg.hierarchy"]

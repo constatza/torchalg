@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 
-from torchalg.multigrid import MultigridHierarchy, MultigridLevel, VCycle
+from torchalg.multigrid import MultigridHierarchy, VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
 from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
+from torchalg.utils.device import moved_to
 
 from ._presets import prebuilt_cycle, seeded_draw
 from .bootcmatch_coarsening import BootCMatchCoarsening
@@ -35,27 +36,6 @@ if TYPE_CHECKING:
     from torchalg.multigrid.protocols import MultigridSmoother
 
 __all__ = ["BootCMatchPreconditioner"]
-
-
-def _move_hierarchy(hierarchy: MultigridHierarchy, like: torch.Tensor) -> MultigridHierarchy:
-    """Move every level matrix in ``hierarchy`` to ``like``'s device/dtype.
-
-    Sparse-CSR sibling of the dense ``bootcmatch._move_hierarchy`` - same
-    rationale, ``.to()`` works identically for sparse CSR tensors.
-
-    Args:
-        hierarchy (MultigridHierarchy): Hierarchy to move.
-        like (torch.Tensor): Tensor whose device/dtype to match.
-
-    Returns:
-        MultigridHierarchy: A new hierarchy sharing ``like``'s device/dtype.
-    """
-    return MultigridHierarchy(
-        tuple(
-            MultigridLevel(matrix=level.matrix.to(like), transfer=level.transfer)
-            for level in hierarchy.levels
-        )
-    )
 
 
 class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
@@ -162,8 +142,8 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         """Re-bind the prepared hierarchies when the matrix buffer changes device/dtype.
 
         ``nn.Module.to()`` moves the ``_matrix`` buffer but not the hierarchies built from
-        it, so a real move re-casts every level matrix and re-prepares the coarse solve
-        once, here, instead of doing so inside every ``apply()``.
+        it, so a real move moves every prepared hierarchy (level matrices, transfers,
+        smoothers, coarse factorization) with ``utils.device.moved_to``, once, here.
 
         Args:
             fn (Callable): Conversion applied to each parameter/buffer.
@@ -175,9 +155,7 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         before = None if self._matrix is None else (self._matrix.device, self._matrix.dtype)
         result = super()._apply(fn, recurse=recurse)
         if before is not None and (self._matrix.device, self._matrix.dtype) != before:
-            self._hierarchies = tuple(
-                self._cycle.prepare(_move_hierarchy(h, self._matrix)) for h in self._hierarchies
-            )
+            self._hierarchies = moved_to(self._hierarchies, self._matrix.device, self._matrix.dtype)
         return result
 
     @property
