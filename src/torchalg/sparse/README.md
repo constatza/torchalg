@@ -24,26 +24,26 @@ implementations; callers never branch on the device, and `solve` never consults
 it. Both implementations expose `solve(target)` with results equal to rounding:
 
 - `LibraryTriangularSolve`: one `torch.triangular_solve` call on the CSR triangle
-  (MKL). Registered for `"cpu"`, used when no pivot is within `diagonal_tol` of
-  zero (checked once at setup). At n = 10000 (5-point Laplacian, 199 dependency
+  (MKL on CPU, cuSPARSE `SpSV` on CUDA). Registered for `"cpu"` and `"cuda"`,
+  used when no pivot is within `diagonal_tol` of zero (checked once at setup). At n = 10000 (5-point Laplacian, 199 dependency
   levels) an IC(0) apply takes 0.28 ms against 14.7 ms level-scheduled. A target
   that requires grad falls back to the level-scheduled solve, since the library
   call has no autograd.
 - `PreparedTriangularSolve`: level-scheduled substitution, the default for every
   unregistered device type. It handles zero pivots (row frozen to the target)
   and `active` masks. It is launch-bound (about 13 eager ops per dependency
-  level). GPUs are unregistered until measured: on gfx1030 with the rocm7.2
-  wheels the library solve faults on its second call.
+  level). ROCm reports as `"cuda"` and is unsupported: its library solve faults
+  on the second call (gfx1030, rocm7.2).
 
 `SparseTriangularSolveCache` keeps the factor pair as its canonical state and
 re-resolves both halves through the registry when `.to()` moves it to another
 device type, so a preconditioner set up on the CPU and moved to a GPU uses the
 GPU's implementation.
 
-Level scheduling is structural preprocessing. CPU scheduling uses a linear
-native-integer recurrence; accelerator scheduling uses reverse adjacency and
-wavefront traversal so each dependency edge is processed once without
-per-row device scalar reads.
+Level scheduling is structural preprocessing, dispatched the same way through
+`LEVEL_SCHEDULER_BY_DEVICE`: CPU uses a linear native-integer recurrence; every
+other device the default wavefront traversal with reverse adjacency, so each
+dependency edge is processed once without per-row device scalar reads.
 
 Sparse IC(0), ICholesky, and ILU preconditioners materialize their lower/upper
 factors and prepare both substitutions during `setup()`. Their repeated

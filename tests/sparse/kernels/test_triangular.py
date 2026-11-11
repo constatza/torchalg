@@ -361,6 +361,23 @@ class TestPrepareTriangularSolve:
 
         assert isinstance(solver, PreparedTriangularSolve)
 
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_unregistered_device_type_schedules_by_wavefront(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import torchalg.sparse.kernels.triangular as kernel
+
+        expected = level_schedule(poisson_2d_csr, direction=direction)
+        monkeypatch.setattr(kernel, "LEVEL_SCHEDULER_BY_DEVICE", {})
+
+        actual = level_schedule(poisson_2d_csr, direction=direction)
+
+        assert torch.equal(actual.level_sizes, expected.level_sizes)
+        assert torch.equal(torch.sort(actual.row_order).values, torch.arange(len(actual.row_order)))
+
     def test_zero_pivot_falls_back_to_level_scheduled(self, zero_pivot_csr: torch.Tensor) -> None:
         solver = prepare_triangular_solve(zero_pivot_csr, "forward")
 

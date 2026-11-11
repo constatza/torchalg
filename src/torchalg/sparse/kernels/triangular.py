@@ -220,14 +220,46 @@ def level_schedule(
 
     dep_row = row_index[is_strict_dependency]
     dep_col = col[is_strict_dependency]
-    if matrix.device.type != "cpu":
-        return _device_dependency_schedule(dep_row, dep_col, n)
+    scheduler = LEVEL_SCHEDULER_BY_DEVICE.get(matrix.device.type, _wavefront_schedule)
+    return scheduler(dep_row, dep_col, n, direction)
 
+
+def _recurrence_schedule(
+    dep_row: torch.Tensor,
+    dep_col: torch.Tensor,
+    n: int,
+    direction: Literal["forward", "backward"],
+) -> LevelSchedule:
     level = _cpu_dependency_levels(dep_row, dep_col, n, direction)
     num_levels = int(level.max()) + 1
     order = torch.argsort(level, stable=True)
     level_sizes = torch.bincount(level[order], minlength=num_levels)
     return LevelSchedule(row_order=order, level_sizes=level_sizes)
+
+
+def _wavefront_schedule(
+    dep_row: torch.Tensor,
+    dep_col: torch.Tensor,
+    n: int,
+    direction: Literal["forward", "backward"],
+) -> LevelSchedule:
+    del direction  # the wavefront reads the dependency edges, not the direction
+    return _device_dependency_schedule(dep_row, dep_col, n)
+
+
+type LevelScheduler = Callable[
+    [torch.Tensor, torch.Tensor, int, Literal["forward", "backward"]], LevelSchedule
+]
+"""Builds a schedule from the strict dependency edges ``(dep_row, dep_col)``."""
+
+LEVEL_SCHEDULER_BY_DEVICE: Mapping[str, LevelScheduler] = MappingProxyType(
+    {"cpu": _recurrence_schedule}
+)
+"""Device type to level-schedule builder; unlisted devices get the wavefront traversal.
+
+CPU walks the rows once with native integers (a host recurrence is cheapest there); an
+accelerator processes one wavefront per level with reverse adjacency, so no per-row
+device scalar is read back."""
 
 
 class PreparedTriangularSolve(nn.Module):
@@ -471,16 +503,17 @@ def _library_unless_zero_pivot(
 
 
 TRIANGULAR_SOLVER_BY_DEVICE: Mapping[str, TriangularSolverFactory] = MappingProxyType(
-    {"cpu": _library_unless_zero_pivot}
+    {"cpu": _library_unless_zero_pivot, "cuda": _library_unless_zero_pivot}
 )
 """The one place that maps a device type to its triangular-solve implementation.
 
-Unlisted device types get the level-scheduled ``PreparedTriangularSolve``. CPU uses
-``torch.triangular_solve`` on CSR (MKL): 0.28 ms against 14.7 ms per IC(0) apply at
-n = 10000, equal to rounding. GPUs are not listed: on gfx1030 with the rocm7.2 wheels the
-library solve faults on its second call, and a CUDA device must be measured with
-``benchmarks/throughput/sparse_backends.py`` before it is added here. Callers never
-branch on the device; they call ``prepare_triangular_solve``."""
+Unlisted device types get the level-scheduled ``PreparedTriangularSolve``. Both listed
+types use ``torch.triangular_solve`` on CSR: MKL on CPU (0.28 ms against 14.7 ms per
+IC(0) apply at n = 10000, equal to rounding) and cuSPARSE ``SpSV`` on CUDA, which runs the
+whole substitution in one call instead of about 13 launches per dependency level. ROCm
+also reports as ``"cuda"`` and is unsupported: its library solve faults on the second
+call (gfx1030, rocm7.2). Callers never branch on the device; they call
+``prepare_triangular_solve``."""
 
 
 def prepare_triangular_solve(
