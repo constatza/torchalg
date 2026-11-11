@@ -51,9 +51,8 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     participates in ``.to(device=..., dtype=...)`` propagation.
 
     Mathematical background:
-        Preconditioner ``M = L @ L.T``. Solve ``M z = r`` via
-        ``torch.cholesky_solve`` (equivalent to the two triangular solves:
-        forward ``L y = r``, backward ``L.T z = y``).
+        Preconditioner ``M = L @ L.T``. Solve ``M z = r`` with two
+        triangular solves: forward ``L y = r``, backward ``L.T z = y``.
 
     Complexity (derived from this class's actual dense implementation, not
     the sparse-textbook IC(0) algorithm):
@@ -67,8 +66,8 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           column ``k`` with one masked outer product; a dense pattern reaches
           the standard dense-Cholesky ``O(n^3)``. The positive-pivot check is
           a single host read after the loop.
-        - Application: ``O(n^2)`` — ``torch.cholesky_solve`` runs two dense
-          triangular solves against the full ``(n, n)`` factor, not a
+        - Application: ``O(n^2)`` — two dense ``solve_triangular`` calls
+          (triangular solves) against the full ``(n, n)`` factor, not a
           sparse-structured solve bounded by ``nnz(L)``.
 
     Breakdown:
@@ -154,7 +153,7 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         residual: torch.Tensor,
         context: PreconditionerContext | None = None,
     ) -> torch.Tensor:
-        """Solve ``(L @ L.T) z = r`` via ``torch.cholesky_solve``.
+        """Solve ``(L @ L.T) z = r`` by two triangular solves.
 
         Args:
             residual (torch.Tensor): Residual vector(s) ``r``, shape

@@ -30,9 +30,9 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
 
     Mathematical Properties:
         - ``M = L @ L.T``.
-        - ``z = M^{-1}r = (L @ L.T)^{-1}r``, solved via
-          ``torch.cholesky_solve`` (replaces the reference's
-          ``scipy.linalg.cho_solve`` outright - no scipy involved).
+        - ``z = M^{-1}r = (L @ L.T)^{-1}r``, solved by
+          forward then backward ``torch.linalg.solve_triangular`` (replaces
+          the reference's ``scipy.linalg.cho_solve`` - no scipy involved).
 
     Complexity:
         - Storage: ``O(n^2)`` — ``L`` is stored exactly as supplied, a dense
@@ -40,8 +40,8 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           even if the caller's ``L`` happens to be sparse in practice).
         - Setup: none — ``_compute_operator`` returns the supplied ``L``
           unchanged.
-        - Application: ``O(n^2)`` — ``torch.cholesky_solve`` runs two dense
-          triangular solves against the full ``(n, n)`` factor, same as
+        - Application: ``O(n^2)`` — two dense ``solve_triangular`` calls
+          (triangular solves) against the full ``(n, n)`` factor, same as
           ``IC0Preconditioner``'s application cost (see its complexity note),
           since both share ``_triangular.cholesky_factor_solve``.
 
@@ -91,7 +91,7 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         residual: torch.Tensor,
         context: PreconditionerContext | None = None,
     ) -> torch.Tensor:
-        """Solve ``(L @ L.T) z = r`` via ``torch.cholesky_solve``.
+        """Solve ``(L @ L.T) z = r`` by two triangular solves.
 
         Args:
             residual (torch.Tensor): Residual vector(s) ``r``, shape
