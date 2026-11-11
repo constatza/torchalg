@@ -13,7 +13,9 @@ never one derived from the other by reversal.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal
 
 import torch
@@ -386,17 +388,6 @@ class PreparedTriangularSolve(nn.Module):
         return x
 
 
-LIBRARY_SOLVE_DEVICE_TYPES: frozenset[str] = frozenset({"cpu"})
-"""Device types whose ``torch.triangular_solve`` on CSR beats ``PreparedTriangularSolve``.
-
-On CPU the call dispatches to MKL's sparse triangular solve: 0.27 ms against 6 ms per
-substitution at n = 10000 (5-point Laplacian, 199 levels), equal to rounding. The
-level-scheduled solve is launch-bound (about 13 eager ops per dependency level), the
-library solve is one call. GPU backends (cuSPARSE / hipSPARSE ``SpSV``) are not listed
-until ``benchmarks/tmp/compare_sparse_backends.py`` measures them against the
-level-scheduled path on that device."""
-
-
 def _triangle(matrix: torch.Tensor, direction: Literal["forward", "backward"]) -> torch.Tensor:
     """CSR copy of ``matrix`` keeping only its lower (forward) or upper (backward) half."""
     row = _expand_row_index(matrix)
@@ -455,17 +446,52 @@ class LibraryTriangularSolve(nn.Module):
         return solution if target.ndim == 2 else solution.squeeze(-1)
 
 
+TriangularSolver = LibraryTriangularSolve | PreparedTriangularSolve
+"""Any prepared substitution: both expose ``solve(target)`` with identical results."""
+
+TriangularSolverFactory = Callable[
+    [torch.Tensor, Literal["forward", "backward"], float], TriangularSolver
+]
+"""Builds a prepared substitution for ``(matrix, direction, diagonal_tol)``."""
+
+
+def _level_scheduled(
+    matrix: torch.Tensor, direction: Literal["forward", "backward"], diagonal_tol: float
+) -> TriangularSolver:
+    return PreparedTriangularSolve(matrix, direction, diagonal_tol)
+
+
+def _library_unless_zero_pivot(
+    matrix: torch.Tensor, direction: Literal["forward", "backward"], diagonal_tol: float
+) -> TriangularSolver:
+    # One host read at setup; the library call has no zero-pivot freeze.
+    if matrix.shape[0] == 0 or bool((sparse_diagonal(matrix).abs() <= diagonal_tol).any()):
+        return _level_scheduled(matrix, direction, diagonal_tol)
+    return LibraryTriangularSolve(matrix, direction)
+
+
+TRIANGULAR_SOLVER_BY_DEVICE: Mapping[str, TriangularSolverFactory] = MappingProxyType(
+    {"cpu": _library_unless_zero_pivot}
+)
+"""The one place that maps a device type to its triangular-solve implementation.
+
+Unlisted device types get the level-scheduled ``PreparedTriangularSolve``. CPU uses
+``torch.triangular_solve`` on CSR (MKL): 0.28 ms against 14.7 ms per IC(0) apply at
+n = 10000, equal to rounding. GPUs are not listed: on gfx1030 with the rocm7.2 wheels the
+library solve faults on its second call, and a CUDA device must be measured with
+``benchmarks/tmp/compare_sparse_backends.py`` before it is added here. Callers never
+branch on the device; they call ``prepare_triangular_solve``."""
+
+
 def prepare_triangular_solve(
     matrix: torch.Tensor,
     direction: Literal["forward", "backward"] = "forward",
     diagonal_tol: float = 1e-14,
-) -> LibraryTriangularSolve | PreparedTriangularSolve:
-    """Prepare the fastest exact substitution available for ``matrix`` on its device.
+) -> TriangularSolver:
+    """Prepare the substitution registered for ``matrix``'s device type.
 
-    Picks ``LibraryTriangularSolve`` when the device type is in
-    ``LIBRARY_SOLVE_DEVICE_TYPES`` and no pivot is within ``diagonal_tol`` of zero (one
-    host read at setup); otherwise the level-scheduled ``PreparedTriangularSolve``, which
-    also handles zero pivots (row frozen to the target) and ``active`` masks.
+    Resolved once, at setup (or when a holder moves to another device); ``solve`` itself
+    never consults the device. See ``TRIANGULAR_SOLVER_BY_DEVICE``.
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
@@ -473,11 +499,8 @@ def prepare_triangular_solve(
         diagonal_tol (float): Diagonal magnitude below this counts as a zero pivot.
 
     Returns:
-        LibraryTriangularSolve | PreparedTriangularSolve: An object with ``solve(target)``.
+        TriangularSolver: An object with ``solve(target)``.
     """
     _require_csr(matrix, "prepare_triangular_solve")
-    if matrix.device.type in LIBRARY_SOLVE_DEVICE_TYPES and matrix.shape[0] > 0:
-        has_zero_pivot = bool((sparse_diagonal(matrix).abs() <= diagonal_tol).any())
-        if not has_zero_pivot:
-            return LibraryTriangularSolve(matrix, direction)
-    return PreparedTriangularSolve(matrix, direction, diagonal_tol)
+    factory = TRIANGULAR_SOLVER_BY_DEVICE.get(matrix.device.type, _level_scheduled)
+    return factory(matrix, direction, diagonal_tol)

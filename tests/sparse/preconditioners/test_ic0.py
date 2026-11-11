@@ -9,6 +9,7 @@ import torch
 
 from torchalg.preconditioners.implementations import IC0Preconditioner as DenseIC0Preconditioner
 from torchalg.preconditioners.implementations._masked_factorization import dense_ic0
+from torchalg.sparse.kernels.triangular import PreparedTriangularSolve
 from torchalg.sparse.preconditioners.ic0 import (
     IC0Preconditioner,
     _build_lookup,
@@ -253,3 +254,23 @@ class TestIC0PreconditionerSparseDenseParity:
         sparse_precond = IC0Preconditioner().setup(poisson_2d_dense.to_sparse_csr())
 
         torch.testing.assert_close(sparse_precond.apply(residual), dense_precond.apply(residual))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_moving_to_gpu_re_resolves_the_triangular_backend(poisson_2d_csr: torch.Tensor) -> None:
+    """A CPU-built cache moved to the GPU uses the GPU's registered solver, not the CPU's.
+
+    The CPU library solve faults on ROCm on its second call, so the cache must not carry
+    the setup device's choice across a move.
+    """
+    residual = torch.linspace(1.0, 2.0, poisson_2d_csr.shape[0], dtype=poisson_2d_csr.dtype)
+    precond = IC0Preconditioner().setup(poisson_2d_csr)
+    expected = precond.apply(residual)
+
+    moved = precond.to("cuda")
+    first = moved.apply(residual.cuda())
+    second = moved.apply(residual.cuda())
+
+    assert isinstance(moved._solve_cache.forward_solve, PreparedTriangularSolve)
+    torch.testing.assert_close(first.cpu(), expected)
+    torch.testing.assert_close(second.cpu(), expected)

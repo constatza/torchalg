@@ -12,38 +12,38 @@ two numerical triangular solves.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Self
+
 import torch
 from torch import nn
 
-from torchalg.sparse.kernels.triangular import (
-    LibraryTriangularSolve,
-    PreparedTriangularSolve,
-    prepare_triangular_solve,
-)
-
-TriangularSolver = LibraryTriangularSolve | PreparedTriangularSolve
+from torchalg.sparse.kernels.triangular import TriangularSolver, prepare_triangular_solve
 
 
 class SparseTriangularSolveCache(nn.Module):
     """Setup-owned prepared forward and backward solves for a triangular pair.
 
-    Each half comes from ``prepare_triangular_solve``: a ``LibraryTriangularSolve`` (one
-    ``torch.triangular_solve`` call, chosen on CPU when every pivot is nonzero) or a
-    ``PreparedTriangularSolve`` (level schedule, diagonal and level-sorted entries
-    computed once). ``nn.Module.to()`` moves their non-persistent buffers, and
-    ``setup()`` rebuilds them from the canonical operator rather than serializing a
-    second source of truth.
+    Each half comes from ``prepare_triangular_solve``, which picks the implementation
+    registered for the factors' device type (``TRIANGULAR_SOLVER_BY_DEVICE``). The
+    factors are kept as the canonical state; when ``.to()`` moves the cache to another
+    device type, both halves are re-resolved for the new device instead of carrying the
+    old device's implementation along (the CPU library solve faults on ROCm). ``apply``
+    never branches on the device.
 
     Args:
-        forward: Prepared solve against the lower factor.
-        backward: Prepared solve against the upper factor.
+        lower: Explicit sparse CSR lower factor.
+        upper: Explicit sparse CSR upper factor.
     """
 
-    def __init__(self, forward: TriangularSolver, backward: TriangularSolver) -> None:
-        """Register a complete, internally consistent solve cache."""
+    def __init__(self, lower: torch.Tensor, upper: torch.Tensor) -> None:
+        """Prepare both substitutions for a fixed lower/upper factor pair."""
         super().__init__()
-        self.forward_solve = forward
-        self.backward_solve = backward
+        self.lower: torch.Tensor
+        self.upper: torch.Tensor
+        self.register_buffer("lower", lower, persistent=False)
+        self.register_buffer("upper", upper, persistent=False)
+        self._resolve_solvers()
 
     @classmethod
     def build(cls, lower: torch.Tensor, upper: torch.Tensor) -> SparseTriangularSolveCache:
@@ -56,10 +56,18 @@ class SparseTriangularSolveCache(nn.Module):
         Returns:
             Complete reusable solve cache.
         """
-        return cls(
-            prepare_triangular_solve(lower, "forward"),
-            prepare_triangular_solve(upper, "backward"),
-        )
+        return cls(lower, upper)
+
+    def _resolve_solvers(self) -> None:
+        self.forward_solve: TriangularSolver = prepare_triangular_solve(self.lower, "forward")
+        self.backward_solve: TriangularSolver = prepare_triangular_solve(self.upper, "backward")
+
+    def _apply(self, fn: Callable[[torch.Tensor], torch.Tensor], recurse: bool = True) -> Self:
+        device_type = self.lower.device.type
+        super()._apply(fn, recurse)
+        if self.lower.device.type != device_type:
+            self._resolve_solvers()
+        return self
 
     def solve(self, residual: torch.Tensor) -> torch.Tensor:
         """Apply the cached lower/upper triangular solve pair.

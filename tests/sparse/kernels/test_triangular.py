@@ -350,6 +350,17 @@ class TestPrepareTriangularSolve:
         assert actual.shape == poisson_2d_target.shape
         torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-14)
 
+    def test_unregistered_device_type_uses_level_scheduled(
+        self, poisson_2d_csr: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torchalg.sparse.kernels.triangular as kernel
+
+        monkeypatch.setattr(kernel, "TRIANGULAR_SOLVER_BY_DEVICE", {})
+
+        solver = prepare_triangular_solve(poisson_2d_csr, "forward")
+
+        assert isinstance(solver, PreparedTriangularSolve)
+
     def test_zero_pivot_falls_back_to_level_scheduled(self, zero_pivot_csr: torch.Tensor) -> None:
         solver = prepare_triangular_solve(zero_pivot_csr, "forward")
 
