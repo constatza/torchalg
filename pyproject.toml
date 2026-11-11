@@ -36,6 +36,7 @@ ignore = ["RUF022"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D"]
+"benchmarks/**/*.py" = ["D102", "D103"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -67,10 +68,11 @@ python-platform = "all"
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+python_files = ["test_*.py", "bench_*.py"]
 addopts = ["-m", "not benchmark"]
 markers = [
     "slow: tests that take >5 seconds (deselect with '-m \"not slow\"')",
-    "benchmark: numerical algorithm benchmarks and exactness tests",
+    "benchmark: numerical algorithm benchmarks and exactness tests; performance suites under benchmarks/ (run with -m benchmark)",
     "integration: integration tests that test full workflows",
 ]
 

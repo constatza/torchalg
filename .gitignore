@@ -48,3 +48,6 @@ GEMINI.md
 # Generated benchmark artefacts
 /artifacts/benchmarks/
 /benchmarks/**/results/
+
+# Variant-comparison scratch space (see benchmarks/README.md)
+benchmarks/tmp/
