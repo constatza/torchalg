@@ -263,7 +263,6 @@ class TestPOD2GPreconditioner:
     def test_uses_configured_smoother(
         self,
         poisson_1d: torch.Tensor,
-        poisson_rhs: torch.Tensor,
         poisson_snapshots: torch.Tensor,
         raising_smoother: MultigridSmoother,
     ) -> None:
@@ -274,9 +273,8 @@ class TestPOD2GPreconditioner:
             rank=10,
             smoother=raising_smoother,
         )
-        precond.setup(poisson_1d)
         with pytest.raises(RuntimeError, match="configured smoother used"):
-            precond.apply(poisson_rhs)
+            precond.setup(poisson_1d)
 
     def test_requires_flexible_cg_false(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor

@@ -1,4 +1,4 @@
-"""Spectral damping rules for weighted Jacobi, sharing one ``rho(D^-1 A)`` estimate per level.
+"""Spectral damping rules for weighted Jacobi, built on a pure ``rho(D^-1 A)`` estimate.
 
 Two roles use the same operator ``D^-1 A`` with different nominal damping,
 divided by its spectral radius ``rho`` (PyAMG's rules):
@@ -7,13 +7,14 @@ divided by its spectral radius ``rho`` (PyAMG's rules):
 - **prolongation smoothing** (smoothing the interpolation once, at setup,
   Vanek, Mandel & Brezina 1996): ``omega = (4/3) / rho``.
 
-``rho`` is estimated with the restarted-Arnoldi routine of ``_spectral.py``,
-started from a fixed seed so it is deterministic, and cached per matrix
-object, so the smoother and the prolongator smoothing of the same level - and
-every ``apply`` - share a single estimate. Matrices are treated as immutable:
-the entry lives only as long as that exact tensor object. An explicit float
-always overrides the rule. Unlike a fixed 0.67, the rule keeps the iteration
-convergent when ``rho`` is well above 2 (``omega`` must stay below ``2 / rho``).
+``rho`` is estimated with the restarted-Arnoldi routine of ``utils/spectral.py``,
+started from a fixed seed so it is deterministic. The estimate is a pure,
+uncached function: it holds no global state, so each setup stage that needs it
+(prolongator smoothing at coarsening time, ``JacobiSmoother.prepare`` when the
+cycle is prepared) computes it once for itself, and ``apply`` never estimates.
+An explicit float always overrides the rule. Unlike a fixed 0.67, the rule keeps
+the iteration convergent when ``rho`` is well above 2 (``omega`` must stay below
+``2 / rho``).
 
 References:
     - PyAMG 5.3.0, ``relaxation/smoothing.py`` (``rho_D_inv_A``) and
@@ -22,8 +23,6 @@ References:
 """
 
 from __future__ import annotations
-
-import weakref
 
 import torch
 
@@ -36,7 +35,6 @@ PROLONGATION_NOMINAL = 4.0 / 3.0
 """Nominal Jacobi damping for prolongator smoothing: ``omega = (4/3) / rho``."""
 
 _SEED = 0
-_cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], torch.Tensor]] = {}
 
 
 def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
@@ -71,7 +69,7 @@ def _seeded_draw(size: int) -> torch.Tensor:
 
 
 def jacobi_spectral_radius(matrix: torch.Tensor) -> torch.Tensor:
-    """Cached, deterministic Arnoldi estimate of ``rho(D^-1 A)``.
+    """Deterministic Arnoldi estimate of ``rho(D^-1 A)`` (a fresh estimate on every call).
 
     Args:
         matrix (torch.Tensor): Square matrix ``A``.
@@ -79,13 +77,7 @@ def jacobi_spectral_radius(matrix: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: Estimated spectral radius of ``D^-1 A``, 0-d.
     """
-    key = id(matrix)
-    entry = _cache.get(key)
-    if entry is not None and entry[0]() is matrix:
-        return entry[1]
-    rho = approximate_spectral_radius(scaled_by_inverse_diagonal(matrix), _seeded_draw)
-    _cache[key] = (weakref.ref(matrix, lambda _: _cache.pop(key, None)), rho)
-    return rho
+    return approximate_spectral_radius(scaled_by_inverse_diagonal(matrix), _seeded_draw)
 
 
 def jacobi_omega(

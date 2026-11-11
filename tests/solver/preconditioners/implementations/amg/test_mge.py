@@ -112,7 +112,7 @@ def test_refine_eigenpair_leaves_an_exact_eigenpair_unchanged(
     eigenvalue = 2.0
     eigenvector = torch.tensor([1.0, 0.0], dtype=torch_dtype)  # exact eigenpair of (A, T)
 
-    relaxation = GaussSeidelSmoother().smooth
+    relaxation = GaussSeidelSmoother()
     refreshed_value, refreshed_vector = refine_eigenpair(
         A, T, eigenvalue, eigenvector, relaxation, sweeps=3
     )
@@ -138,7 +138,7 @@ def test_refine_eigenpair_stays_bounded_when_the_shifted_matrix_is_indefinite(
     T = torch.eye(3, dtype=torch_dtype)
     eigenvector = torch.tensor([1.0, 1.0, 1.0], dtype=torch_dtype)
 
-    relaxation = GaussSeidelSmoother().smooth
+    relaxation = GaussSeidelSmoother()
     _, refreshed_vector = refine_eigenpair(
         A, T, eigenvalue=100.0, eigenvector=eigenvector, relaxation=relaxation, sweeps=8
     )
@@ -166,7 +166,7 @@ def test_multigrid_eigensolver_enriches_every_level_except_coarsest(
     from torchalg.preconditioners.implementations.amg.transfer import DenseTransferOperator
 
     matrix = poisson_1d_factory(16)
-    relaxation = GaussSeidelSmoother().smooth
+    relaxation = GaussSeidelSmoother()
     setup = BootstrapSetup(
         coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
             vectors, relaxation, caliber=3, draw=draw

@@ -243,9 +243,6 @@ if TYPE_CHECKING:
 
     from .protocols import MultigridSmoother
 
-_Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
-"""Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
-
 _LSR_TARGET_FRACTION = 0.2
 """Fraction of F-points corrected by LSR - [STATUS14] Table 1's caption gives
 this practical 20%/largest-residual schedule; [STATUS14] Sec. 3's own text
@@ -303,8 +300,8 @@ class BAMGCoarsening:
     Args:
         test_vectors (torch.Tensor): Test vectors for this level, shape
             ``(n, k)``.
-        relaxation (_Relaxation): Relaxation callable used by CR,
-            ``(A, rhs, x, steps) -> x``.
+        relaxation (MultigridSmoother): Smoother CR binds to the level matrix
+            once per coarsening (e.g. ``GaussSeidelSmoother()``).
         nu (int): CR sweeps per stage (Sec. 2.1 default ``5``).
         delta (float): CR stopping tolerance (Sec. 2.1 default ``0.7``).
         theta_ad (float): Algebraic-distance strength threshold (Sec. 2.2
@@ -324,7 +321,7 @@ class BAMGCoarsening:
     def __init__(
         self,
         test_vectors: torch.Tensor,
-        relaxation: _Relaxation,
+        relaxation: MultigridSmoother,
         *,
         nu: int = 5,
         delta: float = 0.7,
@@ -340,7 +337,7 @@ class BAMGCoarsening:
 
         Args:
             test_vectors (torch.Tensor): Test vectors for this level.
-            relaxation (_Relaxation): Relaxation callable used by CR.
+            relaxation (MultigridSmoother): Smoother CR binds to the level matrix.
             nu (int): CR sweeps per stage.
             delta (float): CR stopping tolerance.
             theta_ad (float): Algebraic-distance strength threshold.
@@ -868,7 +865,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
                 draw=draw,
             ),
             transfer_operator_factory=DenseTransferOperator,
-            relaxation=GaussSeidelSmoother().smooth,
+            relaxation=GaussSeidelSmoother(),
             setup_cycle=GS_SETUP_CYCLE,
             eta=eta,
             k_r=k_r,

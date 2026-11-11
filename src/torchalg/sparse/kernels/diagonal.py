@@ -1,8 +1,8 @@
 """Diagonal extraction for sparse CSR matrices.
 
-``torch.diagonal`` has no sparse-CSR overload, so
-``JacobiSmoother.smooth()`` (``preconditioners.implementations.amg.smoothers``)
-needs this to dispatch on ``A.is_sparse_csr`` instead - see ``docs/plan.md``.
+``torch.diagonal`` has no sparse-CSR overload, so the sparse smoothers,
+strength-of-connection and prolongation kernels read the diagonal through this
+function.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ def sparse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     ``benchmarks.sparse_dense.operations``' COO
     ``extract_inv_diag``): no Python loop, no ``(n, n)`` dense intermediate.
     A row with no stored diagonal entry (structural zero) reads back as
-    ``0.0``, matching ``torch.diagonal``'s dense behavior.
+    ``0.0``, matching ``torch.diagonal``'s dense behavior. The scatter masks
+    off-diagonal values to zero instead of boolean-indexing them out, so the
+    call never synchronizes with the device (boolean indexing and
+    ``repeat_interleave`` without ``output_size`` both read a count back).
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
@@ -39,9 +42,10 @@ def sparse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     values = matrix.values()
 
     row_nnz = crow[1:] - crow[:-1]
-    row_index = torch.repeat_interleave(torch.arange(n, device=matrix.device), row_nnz)
-    on_diagonal = row_index == col
-
-    diag = torch.zeros(n, dtype=matrix.dtype, device=matrix.device)
-    diag[row_index[on_diagonal]] = values[on_diagonal]
-    return diag
+    row_index = torch.repeat_interleave(
+        torch.arange(n, device=matrix.device), row_nnz, output_size=col.numel()
+    )
+    diagonal_values = torch.where(row_index == col, values, torch.zeros_like(values))
+    return torch.zeros(n, dtype=matrix.dtype, device=matrix.device).scatter_add(
+        0, row_index, diagonal_values
+    )

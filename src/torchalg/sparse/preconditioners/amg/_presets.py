@@ -10,8 +10,9 @@ a ``torchalg.multigrid.AMGPreconditioner`` whose ``_make_hierarchy`` is
 overridden, so the engine never asks a ``CoarseningStrategy`` for a level.
 That shape needs the same shared seeded randomness, setup-cycle wiring,
 solve-cycle wiring, and placeholder ``CoarseningStrategy`` - built here from
-this package's own sparse ``GaussSeidelSmoother``/``dense_pseudo_inverse_
-solve`` instead of the dense ``GaussSeidelSmoother``/``pseudo_inverse_solve``.
+this package's own sparse ``GaussSeidelStage``/``dense_pseudo_inverse_
+coarse_solver`` instead of the dense ``GaussSeidelSmoother``/
+``pseudo_inverse_coarse_solver``.
 
 No hierarchy-construction formula lives here, only wiring shared by the
 sparse presets that need it.
@@ -26,29 +27,43 @@ import torch
 from torchalg.multigrid import VCycle
 from torchalg.multigrid.protocols import MultigridSmoother
 
-from .coarse_solve import dense_pseudo_inverse_solve
-from .smoothers import GaussSeidelSmoother
+from .coarse_solve import dense_pseudo_inverse_coarse_solver
+from .smoothers import GaussSeidelStage
 from .transfer import SparseTransferOperator
 
-GS_SETUP_CYCLE = VCycle(
-    GaussSeidelSmoother(), n_pre=1, n_post=1, coarse_solver=dense_pseudo_inverse_solve
-)
-"""GS V(1,1) cycle used only inside sparse adaptive-SA hierarchy setup.
 
-Mirrors the dense ``_presets.GS_SETUP_CYCLE``'s rationale: PyAMG's adaptive
-candidate construction requires the algorithm-specific GS relaxation.
-Public solve-time cycles are built separately so changing their smoother
-cannot perturb setup. ``dense_pseudo_inverse_solve`` instead of the dense
-``pseudo_inverse_solve`` since the coarsest-level matrix here is still
-sparse CSR until that one deliberate densification.
-"""
+def gs_setup_cycle(stage: GaussSeidelStage) -> VCycle:
+    """GS V(1,1) cycle used only inside sparse hierarchy setup, bound to one stage.
+
+    PyAMG's adaptive candidate construction requires the algorithm-specific
+    GS relaxation. The cycle's smoother is the setup stage's own
+    ``GaussSeidelStage``, so preparing the many sub-hierarchies a stage cycles
+    through builds each level matrix's level schedules once; a cycle built from
+    a fresh stage per setup run therefore never shares prepared state across
+    runs. Public solve-time cycles are built separately (``prebuilt_cycle``) so
+    changing their smoother cannot perturb setup. ``dense_pseudo_inverse_coarse_solver``
+    because the coarsest-level matrix here is still sparse CSR until that one
+    deliberate densification.
+
+    Args:
+        stage (GaussSeidelStage): The stage's Gauss-Seidel preparation cache.
+
+    Returns:
+        VCycle: GS V(1,1) with a densifying pseudo-inverse coarse solve.
+    """
+    return VCycle(
+        stage,
+        n_pre=1,
+        n_post=1,
+        coarse_solver_factory=dense_pseudo_inverse_coarse_solver,
+    )
 
 
 def prebuilt_cycle(smoother: MultigridSmoother, n_pre: int = 1, n_post: int = 1) -> VCycle:
     """Build the solve-time cycle for a sparse prebuilt-hierarchy preset, V(1,1) by default.
 
     Sparse-CSR sibling of the dense ``_presets.prebuilt_cycle`` - same
-    default and rationale, ``dense_pseudo_inverse_solve`` coarse solver.
+    default and rationale, ``dense_pseudo_inverse_coarse_solver`` coarse solver.
 
     Args:
         smoother (MultigridSmoother): Solve-time smoothing strategy.
@@ -59,7 +74,12 @@ def prebuilt_cycle(smoother: MultigridSmoother, n_pre: int = 1, n_post: int = 1)
         VCycle: Symmetric-step cycle with a densifying pseudo-inverse
             coarse solve.
     """
-    return VCycle(smoother, n_pre=n_pre, n_post=n_post, coarse_solver=dense_pseudo_inverse_solve)
+    return VCycle(
+        smoother,
+        n_pre=n_pre,
+        n_post=n_post,
+        coarse_solver_factory=dense_pseudo_inverse_coarse_solver,
+    )
 
 
 def seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:

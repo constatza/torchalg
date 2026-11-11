@@ -4,14 +4,16 @@ Dense-as-oracle, this project's standing rule: every function is checked
 against its dense sibling
 (``preconditioners.implementations.amg._compatible_relaxation``) given the
 same matrix (one dense, one its sparse CSR twin), the same coarse
-mask/priority/seeded draw, and the sparse ``GaussSeidelSmoother`` in place of
-the dense one (already parity-tested elsewhere,
-``tests/solver/preconditioners/implementations/amg/test_smoothers.py``).
+mask/priority/seeded draw, and the sparse ``GaussSeidelStage`` relaxation in
+place of a dense symmetric Gauss-Seidel oracle built from ``solve_triangular``
+(``tests/sparse/conftest.py``), so the comparison does not depend on the dense
+smoother classes.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import torch
@@ -28,16 +30,17 @@ from torchalg.preconditioners.implementations.amg._compatible_relaxation import 
 from torchalg.preconditioners.implementations.amg._compatible_relaxation import (
     hcr_operator as dense_hcr_operator,
 )
-from torchalg.preconditioners.implementations.amg.smoothers import (
-    GaussSeidelSmoother as DenseGaussSeidelSmoother,
-)
+from torchalg.sparse.kernels import triangular as triangular_kernel
 from torchalg.sparse.preconditioners.amg._compatible_relaxation import (
     _independent_set_of,
     compatible_relaxation_coarsening,
     cr_rate,
     hcr_operator,
 )
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelSmoother
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
+
+if TYPE_CHECKING:
+    from tests.sparse.conftest import DenseRelaxation
 
 
 @pytest.fixture
@@ -87,6 +90,8 @@ def skip_one_guidance_graph_5() -> torch.Tensor:
 class TestHcrOperator:
     def test_matches_dense(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         two_of_eight_coarse_mask: torch.Tensor,
         ones_vector_8: torch.Tensor,
@@ -97,14 +102,14 @@ class TestHcrOperator:
         expected = dense_hcr_operator(
             dense,
             two_of_eight_coarse_mask,
-            DenseGaussSeidelSmoother().smooth,
+            dense_relaxation.prepare(dense),
             sweeps=3,
             start=ones_vector_8,
         )
         actual = hcr_operator(
             sparse,
             two_of_eight_coarse_mask,
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation.prepare(sparse),
             sweeps=3,
             start=ones_vector_8,
         )
@@ -112,6 +117,7 @@ class TestHcrOperator:
 
     def test_zeros_coarse_entries(
         self,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         two_of_eight_coarse_mask: torch.Tensor,
         ones_vector_8: torch.Tensor,
@@ -121,7 +127,7 @@ class TestHcrOperator:
         result = hcr_operator(
             sparse,
             two_of_eight_coarse_mask,
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation.prepare(sparse),
             sweeps=3,
             start=ones_vector_8,
         )
@@ -131,6 +137,8 @@ class TestHcrOperator:
 class TestCrRate:
     def test_matches_dense(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -142,18 +150,23 @@ class TestCrRate:
         rho_expected, e_expected = dense_cr_rate(
             dense,
             coarse_mask,
-            DenseGaussSeidelSmoother().smooth,
+            dense_relaxation.prepare(dense),
             sweeps=5,
             draw=seeded_draw_factory(0),
         )
         rho_actual, e_actual = cr_rate(
-            sparse, coarse_mask, GaussSeidelSmoother().smooth, sweeps=5, draw=seeded_draw_factory(0)
+            sparse,
+            coarse_mask,
+            sparse_relaxation.prepare(sparse),
+            sweeps=5,
+            draw=seeded_draw_factory(0),
         )
         assert rho_actual == pytest.approx(rho_expected)
         torch.testing.assert_close(e_actual, e_expected)
 
     def test_bounded_in_zero_one(
         self,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -162,7 +175,11 @@ class TestCrRate:
         coarse_mask[::2] = True
 
         rho, _ = cr_rate(
-            sparse, coarse_mask, GaussSeidelSmoother().smooth, sweeps=5, draw=seeded_draw_factory(0)
+            sparse,
+            coarse_mask,
+            sparse_relaxation.prepare(sparse),
+            sweeps=5,
+            draw=seeded_draw_factory(0),
         )
         assert 0.0 <= rho < 1.0
 
@@ -207,6 +224,8 @@ class TestIndependentSetOf:
 class TestCompatibleRelaxationCoarsening:
     def test_matches_dense(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -214,27 +233,29 @@ class TestCompatibleRelaxationCoarsening:
         sparse = dense.to_sparse_csr()
 
         expected = dense_compatible_relaxation_coarsening(
-            dense, DenseGaussSeidelSmoother().smooth, nu=5, delta=0.7, draw=seeded_draw_factory(1)
+            dense, dense_relaxation, nu=5, delta=0.7, draw=seeded_draw_factory(1)
         )
         actual = compatible_relaxation_coarsening(
-            sparse, GaussSeidelSmoother().smooth, nu=5, delta=0.7, draw=seeded_draw_factory(1)
+            sparse, sparse_relaxation, nu=5, delta=0.7, draw=seeded_draw_factory(1)
         )
         assert torch.equal(actual, expected)
 
     def test_terminates_and_grows_c(
         self,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
         sparse = poisson_1d_factory(16).to_sparse_csr()
         coarse_mask = compatible_relaxation_coarsening(
-            sparse, GaussSeidelSmoother().smooth, nu=5, delta=0.7, draw=seeded_draw_factory(1)
+            sparse, sparse_relaxation, nu=5, delta=0.7, draw=seeded_draw_factory(1)
         )
         assert coarse_mask.dtype == torch.bool
         assert 0 < coarse_mask.sum() < 16
 
     def test_preserves_initial_coarse(
         self,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         two_of_eight_coarse_mask: torch.Tensor,
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
@@ -242,7 +263,7 @@ class TestCompatibleRelaxationCoarsening:
         sparse = poisson_1d_factory(8).to_sparse_csr()
         coarse_mask = compatible_relaxation_coarsening(
             sparse,
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation,
             nu=5,
             delta=0.7,
             initial_coarse=two_of_eight_coarse_mask,
@@ -252,6 +273,7 @@ class TestCompatibleRelaxationCoarsening:
 
     def test_raises_when_max_iterations_exhausted(
         self,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -259,9 +281,34 @@ class TestCompatibleRelaxationCoarsening:
         with pytest.raises(RuntimeError, match="did not converge"):
             compatible_relaxation_coarsening(
                 sparse,
-                GaussSeidelSmoother().smooth,
+                sparse_relaxation,
                 nu=5,
                 delta=0.0,
                 draw=seeded_draw_factory(1),
                 max_iterations=1,
             )
+
+
+class TestStageScopedGaussSeidelInCompatibleRelaxation:
+    """One stage prepares the level matrix once, however many CR sweeps run."""
+
+    def test_schedules_built_once_across_the_whole_coarsening(
+        self,
+        poisson_1d_factory: Callable[[int], torch.Tensor],
+        seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+        sparse_relaxation: GaussSeidelStage,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[int] = []
+        original = triangular_kernel.level_schedule
+
+        def counting(*args: Any, **kwargs: Any):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(triangular_kernel, "level_schedule", counting)
+        sparse = poisson_1d_factory(16).to_sparse_csr()
+        compatible_relaxation_coarsening(
+            sparse, sparse_relaxation, nu=5, delta=0.7, draw=seeded_draw_factory(1)
+        )
+        assert len(calls) == 2  # forward + backward, for the one matrix

@@ -12,10 +12,12 @@ never one derived from the other by reversal.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import Literal
 
 import torch
+from torch import nn
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +174,9 @@ def _expand_row_index(matrix: torch.Tensor) -> torch.Tensor:
     n = matrix.shape[0]
     crow = matrix.crow_indices()
     row_nnz = crow[1:] - crow[:-1]
-    return torch.repeat_interleave(torch.arange(n, device=matrix.device), row_nnz)
+    return torch.repeat_interleave(
+        torch.arange(n, device=matrix.device), row_nnz, output_size=matrix.col_indices().numel()
+    )
 
 
 def level_schedule(
@@ -222,107 +226,159 @@ def level_schedule(
     return LevelSchedule(row_order=order, level_sizes=level_sizes)
 
 
-def triangular_solve(
-    matrix: torch.Tensor,
-    schedule: LevelSchedule,
-    target: torch.Tensor,
-    *,
-    direction: Literal["forward", "backward"] = "forward",
-    diagonal_tol: float = 1e-14,
-    active: torch.Tensor | None = None,
-    current: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Solve the triangular system selected by ``direction`` against ``matrix``.
+class PreparedTriangularSolve(nn.Module):
+    """Level-scheduled triangular substitution bound to one sparse CSR matrix.
 
-    ``matrix`` is always the full sparse CSR matrix - never pre-masked -
-    internally restricted here to the half ``direction`` selects: forward is
-    ``col <= row`` (lower, incl. diagonal), backward is ``col >= row``
-    (upper, incl. diagonal). Rows with a structurally-zero diagonal freeze to
-    ``target``'s value rather than dividing.
+    Everything that depends only on the matrix is computed once, at construction: the
+    level schedule, the diagonal and its zero-pivot mask, and the strictly-off-diagonal
+    entries of the selected triangle sorted by level with their within-level row
+    position. ``solve`` then runs one gather, one segment-sum and one divide per level -
+    O(nnz + n) work in total, no host synchronization, no mask over all stored entries per
+    level (the previous per-call implementation was O(levels * nnz)).
 
-    ``active``/``current`` add PyAMG's ``gauss_seidel_indexed`` masking:
-    rows where ``active`` is ``False`` are excluded from this solve and
-    instead frozen to their ``current`` value - distinct from the
-    zero-diagonal freeze, which keeps using ``target`` (see
-    ``_relaxation.py``'s dense ``_prepare_sweep``/``_apply_sweep`` for the
-    semantics this mirrors: a frozen row's own equation becomes the
-    identity, but it still couples into other rows' equations via its
-    frozen value).
+    ``matrix`` is always the full CSR matrix, restricted here to the half ``direction``
+    selects: forward is ``col <= row`` (lower, incl. diagonal), backward is ``col >= row``
+    (upper, incl. diagonal). Rows with a structurally-zero diagonal freeze to ``target``.
+
+    The derived tensors are non-persistent buffers, so ``.to()`` moves them with the module.
+    The values are captured at construction: gradients flow through that construction to
+    ``matrix.values()``, so for differentiable use build and solve inside one forward pass.
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
-        schedule (LevelSchedule): Matching ``direction``'s level schedule.
-        target (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
         direction (Literal["forward", "backward"]): Which triangular half to solve.
         diagonal_tol (float): Diagonal magnitude below this is treated as zero.
-        active (torch.Tensor | None): Boolean mask of rows allowed to
-            change, shape ``(n,)``. ``None`` (default) updates every row.
-        current (torch.Tensor | None): Current iterate, shape matching
-            ``target``, required whenever ``active`` excludes at least one
-            row - its values are what those rows freeze to.
-
-    Returns:
-        torch.Tensor: Solution, same shape as ``target``.
+        schedule (LevelSchedule | None): Matching ``direction``'s schedule if the caller
+            already built it; computed here when ``None``.
+        row_index (torch.Tensor | None): Per-stored-entry row index of ``matrix`` if the
+            caller already built it; computed here when ``None``.
 
     Raises:
-        ValueError: If ``matrix`` is not sparse CSR, or if ``active``
-            excludes a row but ``current`` is not given.
+        ValueError: If ``matrix`` is not sparse CSR.
     """
-    _require_csr(matrix, "triangular_solve")
 
-    n = matrix.shape[0]
-    row_index = _expand_row_index(matrix)
-    col = matrix.col_indices()
-    values = matrix.values()
+    def __init__(
+        self,
+        matrix: torch.Tensor,
+        direction: Literal["forward", "backward"] = "forward",
+        diagonal_tol: float = 1e-14,
+        *,
+        schedule: LevelSchedule | None = None,
+        row_index: torch.Tensor | None = None,
+    ) -> None:
+        """Precompute the schedule, diagonal and level-sorted off-diagonal entries."""
+        super().__init__()
+        _require_csr(matrix, "PreparedTriangularSolve")
+        n = matrix.shape[0]
+        device = matrix.device
+        if schedule is None:
+            schedule = level_schedule(matrix, direction=direction)
+        if row_index is None:
+            row_index = _expand_row_index(matrix)
+        col = matrix.col_indices()
+        values = matrix.values()
 
-    is_diag = col == row_index
-    diag = torch.zeros(n, dtype=matrix.dtype, device=matrix.device)
-    diag = diag.scatter_add(0, row_index[is_diag], values[is_diag])
-    frozen_diagonal = diag.abs() <= diagonal_tol
+        is_diag = col == row_index
+        diag = torch.zeros(n, dtype=matrix.dtype, device=device)
+        diag = diag.scatter_add(0, row_index[is_diag], values[is_diag])
 
-    inactive = torch.zeros(n, dtype=torch.bool, device=matrix.device) if active is None else ~active
-    if bool(inactive.any()) and current is None:
-        raise ValueError("current is required when active excludes at least one row")
-    batched = target.ndim == 2
-    inactive_bc = inactive.unsqueeze(-1) if batched else inactive
-    freeze_value = target if current is None else torch.where(inactive_bc, current, target)
-    frozen = frozen_diagonal | inactive
+        in_triangle = col < row_index if direction == "forward" else col > row_index
+        entry_row = row_index[in_triangle]
+        entry_col = col[in_triangle]
+        entry_val = values[in_triangle]
 
-    is_offdiag_in_triangle = col < row_index if direction == "forward" else col > row_index
-    offdiag_row = row_index[is_offdiag_in_triangle]
-    offdiag_col = col[is_offdiag_in_triangle]
-    offdiag_val = values[is_offdiag_in_triangle]
+        level_sizes = schedule.level_sizes
+        num_levels = len(level_sizes)
+        level_start = torch.cumsum(level_sizes, 0) - level_sizes
+        row_to_level = torch.empty(n, dtype=torch.int64, device=device)
+        row_to_level[schedule.row_order] = torch.repeat_interleave(
+            torch.arange(num_levels, device=device), level_sizes
+        )
+        rank = torch.empty(n, dtype=torch.int64, device=device)
+        rank[schedule.row_order] = torch.arange(n, device=device)
+        entry_level = row_to_level[entry_row]
+        by_level = torch.argsort(entry_level, stable=True)
+        entry_counts = torch.bincount(entry_level, minlength=num_levels)
 
-    num_levels = len(schedule.level_sizes)
-    row_to_level = torch.empty(n, dtype=torch.int64, device=matrix.device)
-    row_to_level[schedule.row_order] = torch.repeat_interleave(
-        torch.arange(num_levels, device=matrix.device), schedule.level_sizes
-    )
-    entry_level = row_to_level[offdiag_row]
+        self.row_order: torch.Tensor
+        self.diag: torch.Tensor
+        self.frozen_diagonal: torch.Tensor
+        self.entry_local_row: torch.Tensor
+        self.entry_col: torch.Tensor
+        self.entry_val: torch.Tensor
+        local_row = rank[entry_row] - level_start[entry_level]
+        self.register_buffer("row_order", schedule.row_order, persistent=False)
+        self.register_buffer("diag", diag, persistent=False)
+        self.register_buffer("frozen_diagonal", diag.abs() <= diagonal_tol, persistent=False)
+        self.register_buffer("entry_local_row", local_row[by_level], persistent=False)
+        self.register_buffer("entry_col", entry_col[by_level], persistent=False)
+        self.register_buffer("entry_val", entry_val[by_level], persistent=False)
+        # One host transfer at build time buys sync-free slicing in every solve.
+        self._level_sizes: tuple[int, ...] = tuple(level_sizes.tolist())
+        counts = entry_counts.tolist()
+        self._entry_bounds: tuple[int, ...] = (0, *itertools.accumulate(counts))
 
-    x = torch.zeros_like(target)
-    level_start = 0
-    for level_idx in range(num_levels):
-        level_size = int(schedule.level_sizes[level_idx])
-        rows = schedule.row_order[level_start : level_start + level_size]
-        level_start += level_size
+    def solve(
+        self,
+        target: torch.Tensor,
+        *,
+        active: torch.Tensor | None = None,
+        current: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Solve the triangular system for ``target``.
 
-        mask = entry_level == level_idx
-        if batched:
-            k = target.shape[1]
-            masked_row = offdiag_row[mask]
-            contribution = torch.zeros(n, k, dtype=target.dtype, device=target.device).scatter_add(
-                0,
-                masked_row.unsqueeze(-1).expand(-1, k),
-                offdiag_val[mask].unsqueeze(-1) * x[offdiag_col[mask]],
-            )
-            solved = (target[rows] - contribution[rows]) / diag[rows].unsqueeze(-1)
-            x[rows] = torch.where(frozen[rows].unsqueeze(-1), freeze_value[rows], solved)
+        ``active``/``current`` add PyAMG's ``gauss_seidel_indexed`` masking: rows where
+        ``active`` is ``False`` are excluded from this solve and instead frozen to their
+        ``current`` value - distinct from the zero-diagonal freeze, which keeps using
+        ``target``. A frozen row's own equation becomes the identity, but it still couples
+        into other rows' equations through its frozen value.
+
+        Args:
+            target (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            active (torch.Tensor | None): Boolean mask of rows allowed to change, shape
+                ``(n,)``. ``None`` (default) updates every row.
+            current (torch.Tensor | None): Current iterate, shape matching ``target``,
+                required whenever ``active`` excludes at least one row.
+
+        Returns:
+            torch.Tensor: Solution, same shape as ``target``.
+
+        Raises:
+            ValueError: If ``active`` excludes a row but ``current`` is not given.
+        """
+        batched = target.ndim == 2
+        if active is None:
+            frozen = self.frozen_diagonal
+            freeze_value = target
         else:
-            contribution = torch.zeros(n, dtype=target.dtype, device=target.device).scatter_add(
-                0, offdiag_row[mask], offdiag_val[mask] * x[offdiag_col[mask]]
-            )
-            solved = (target[rows] - contribution[rows]) / diag[rows]
-            x[rows] = torch.where(frozen[rows], freeze_value[rows], solved)
+            inactive = ~active
+            if current is None:
+                if bool(inactive.any()):
+                    raise ValueError("current is required when active excludes at least one row")
+                freeze_value = target
+            else:
+                freeze_value = torch.where(
+                    inactive.unsqueeze(-1) if batched else inactive, current, target
+                )
+            frozen = self.frozen_diagonal | inactive
 
-    return x
+        x = torch.zeros_like(target)
+        row_start = 0
+        for level, size in enumerate(self._level_sizes):
+            rows = self.row_order[row_start : row_start + size]
+            row_start += size
+            entries = slice(self._entry_bounds[level], self._entry_bounds[level + 1])
+            rhs = target[rows]
+            if entries.stop > entries.start:
+                weights = self.entry_val[entries]
+                gathered = x[self.entry_col[entries]]
+                if batched:
+                    weights = weights.unsqueeze(-1)
+                contribution = torch.zeros_like(rhs).index_add_(
+                    0, self.entry_local_row[entries], weights * gathered
+                )
+                rhs = rhs - contribution
+            diag = self.diag[rows].unsqueeze(-1) if batched else self.diag[rows]
+            is_frozen = frozen[rows].unsqueeze(-1) if batched else frozen[rows]
+            x[rows] = torch.where(is_frozen, freeze_value[rows], rhs / diag)
+        return x

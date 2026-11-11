@@ -8,9 +8,9 @@ import pytest
 import torch
 
 from torchalg.sparse.kernels.triangular import (
+    PreparedTriangularSolve,
     _device_dependency_schedule,
     level_schedule,
-    triangular_solve,
 )
 
 
@@ -40,8 +40,7 @@ class TestLevelScheduleAndTriangularSolve:
         torch.manual_seed(42)
         target = torch.randn(poisson_1d_dense.shape[0], dtype=poisson_1d_dense.dtype)
 
-        schedule = level_schedule(poisson_1d_csr, direction=direction)
-        actual = triangular_solve(poisson_1d_csr, schedule, target, direction=direction)
+        actual = PreparedTriangularSolve(poisson_1d_csr, direction).solve(target)
 
         triangle = (
             torch.tril(poisson_1d_dense) if direction == "forward" else torch.triu(poisson_1d_dense)
@@ -62,8 +61,7 @@ class TestLevelScheduleAndTriangularSolve:
         torch.manual_seed(42)
         target = torch.randn(poisson_2d_dense.shape[0], dtype=poisson_2d_dense.dtype)
 
-        schedule = level_schedule(poisson_2d_csr, direction=direction)
-        actual = triangular_solve(poisson_2d_csr, schedule, target, direction=direction)
+        actual = PreparedTriangularSolve(poisson_2d_csr, direction).solve(target)
 
         triangle = (
             torch.tril(poisson_2d_dense) if direction == "forward" else torch.triu(poisson_2d_dense)
@@ -77,9 +75,8 @@ class TestLevelScheduleAndTriangularSolve:
         """Dense (strided) input is rejected by both functions, not silently misread."""
         with pytest.raises(ValueError, match="sparse CSR"):
             level_schedule(poisson_1d_dense)
-        schedule = level_schedule(poisson_1d_dense.to_sparse_csr())
         with pytest.raises(ValueError, match="sparse CSR"):
-            triangular_solve(poisson_1d_dense, schedule, torch.zeros(poisson_1d_dense.shape[0]))
+            PreparedTriangularSolve(poisson_1d_dense, "forward")
 
     @pytest.mark.parametrize("direction", ["forward", "backward"])
     def test_diagonal_matrix_has_one_level(
@@ -155,8 +152,7 @@ class TestLevelScheduleAndTriangularSolve:
         matrix = dense.to_sparse_csr()
         target = torch.tensor([5.0, 1.0, 1.0], dtype=torch_dtype)
 
-        schedule = level_schedule(matrix, direction="forward")
-        actual = triangular_solve(matrix, schedule, target, direction="forward")
+        actual = PreparedTriangularSolve(matrix, "forward").solve(target)
 
         assert actual[0] == target[0]
 
@@ -197,7 +193,7 @@ class TestLevelScheduleAndTriangularSolve:
 
         torch.manual_seed(42)
         target = torch.randn(n, dtype=torch_dtype)
-        actual = triangular_solve(matrix, backward_schedule, target, direction="backward")
+        actual = PreparedTriangularSolve(matrix, "backward").solve(target)
         expected = torch.linalg.solve_triangular(
             torch.triu(dense), target.unsqueeze(1), upper=True
         ).squeeze(1)
@@ -217,8 +213,7 @@ class TestLevelScheduleAndTriangularSolve:
         )
         target = torch.tensor([4.0, 5.0], dtype=torch_dtype, requires_grad=True)
 
-        schedule = level_schedule(matrix, direction="forward")
-        result = triangular_solve(matrix, schedule, target, direction="forward")
+        result = PreparedTriangularSolve(matrix, "forward").solve(target)
         result.sum().backward()
 
         assert values.grad is not None
@@ -240,11 +235,72 @@ class TestTriangularSolveBatchedColumns:
         k = 3
         target = torch.randn(n, k, dtype=poisson_1d_csr.dtype)
 
-        schedule = level_schedule(poisson_1d_csr, direction=direction)
-        batched = triangular_solve(poisson_1d_csr, schedule, target, direction=direction)
+        batched = PreparedTriangularSolve(poisson_1d_csr, direction).solve(target)
 
         for col in range(k):
-            expected = triangular_solve(
-                poisson_1d_csr, schedule, target[:, col], direction=direction
-            )
+            expected = PreparedTriangularSolve(poisson_1d_csr, direction).solve(target[:, col])
             torch.testing.assert_close(batched[:, col], expected)
+
+
+class TestPreparedTriangularSolveReuse:
+    """All matrix-only structure is built at construction, never per solve."""
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_solve_does_not_rebuild_structure(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import torchalg.sparse.kernels.triangular as kernel
+
+        prepared = PreparedTriangularSolve(poisson_2d_csr, direction)
+        target = torch.ones(poisson_2d_csr.shape[0], dtype=poisson_2d_csr.dtype)
+        first = prepared.solve(target)
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            raise AssertionError("structure must be built at construction")
+
+        monkeypatch.setattr(kernel, "level_schedule", forbidden)
+        monkeypatch.setattr(kernel, "_expand_row_index", forbidden)
+
+        torch.testing.assert_close(prepared.solve(target), first)
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_precomputed_schedule_and_row_index_are_accepted(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        from torchalg.sparse.kernels.triangular import _expand_row_index
+
+        target = torch.linspace(1.0, 2.0, poisson_2d_csr.shape[0], dtype=poisson_2d_csr.dtype)
+        reference = PreparedTriangularSolve(poisson_2d_csr, direction).solve(target)
+        shared = PreparedTriangularSolve(
+            poisson_2d_csr,
+            direction,
+            schedule=level_schedule(poisson_2d_csr, direction=direction),
+            row_index=_expand_row_index(poisson_2d_csr),
+        )
+
+        torch.testing.assert_close(shared.solve(target), reference)
+
+    def test_inactive_rows_freeze_to_current_value(self, poisson_1d_csr: torch.Tensor) -> None:
+        n = poisson_1d_csr.shape[0]
+        prepared = PreparedTriangularSolve(poisson_1d_csr, "forward")
+        target = torch.ones(n, dtype=poisson_1d_csr.dtype)
+        current = torch.full((n,), 7.0, dtype=poisson_1d_csr.dtype)
+        active = torch.arange(n) % 2 == 0
+
+        result = prepared.solve(target, active=active, current=current)
+
+        assert torch.equal(result[~active], current[~active])
+
+    def test_inactive_rows_without_current_are_rejected(self, poisson_1d_csr: torch.Tensor) -> None:
+        n = poisson_1d_csr.shape[0]
+        prepared = PreparedTriangularSolve(poisson_1d_csr, "forward")
+
+        with pytest.raises(ValueError, match="current is required"):
+            prepared.solve(
+                torch.ones(n, dtype=poisson_1d_csr.dtype), active=torch.zeros(n, dtype=torch.bool)
+            )

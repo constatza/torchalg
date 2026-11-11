@@ -24,18 +24,20 @@ class SparseTransferOperator:
     """
 
     def __init__(self, P: torch.Tensor) -> None:
-        """Store the sparse prolongation matrix and its transpose.
+        """Store the sparse prolongation matrix and build its transpose once.
+
+        ``P`` is kept by reference (an operator never mutates it, and a
+        hierarchy never mutates a built ``P`` in place); only an inference
+        tensor is copied, because ``P.t()`` fails on one with "Cannot set
+        version_counter for inference tensor" and the operator must persist
+        past the inference-mode block that built it.
 
         Args:
             P (torch.Tensor): Sparse CSR prolongation matrix (n_fine x
                 n_coarse).
         """
-        # Regression: lazy Bootstrap/adaptive sparse hierarchies built during
-        # PCG's default inference-mode execution failed at ``P.t()`` with
-        # "Cannot set version_counter for inference tensor". Cache ordinary
-        # tensors for the persistent transfer operator state.
         with torch.inference_mode(False):
-            self._P = P.clone()
+            self._P = P.clone() if P.is_inference() else P
             self._R = self._P.t().to_sparse_csr()
 
     def prolongate(self, coarse: torch.Tensor) -> torch.Tensor:
@@ -60,6 +62,40 @@ class SparseTransferOperator:
             torch.Tensor: Dense coarse-grid vector of length n_coarse.
         """
         return _sparse_matvec(self._R, fine)
+
+
+class TransferOperatorCache:
+    """Builds one ``SparseTransferOperator`` per prolongation tensor, for one setup stage.
+
+    Setup algorithms rebuild sub-hierarchies over the same prolongations many
+    times (adaptive ``_solve`` per candidate, bootstrap improvement passes);
+    wrapping each ``P`` through this cache transposes it once per stage
+    instead of once per sub-hierarchy. Keyed by tensor identity and holding
+    the prolongations alive, so it must not outlive the stage and a cached
+    ``P`` must not be mutated in place. Callable as the
+    ``prolongation -> TransferOperator`` factory ``BootstrapSetup`` expects.
+    """
+
+    def __init__(self) -> None:
+        """Start with no operators."""
+        self._operators: dict[int, tuple[torch.Tensor, SparseTransferOperator]] = {}
+
+    def __call__(self, P: torch.Tensor) -> SparseTransferOperator:
+        """Return the operator of ``P``, building it on first use.
+
+        Args:
+            P (torch.Tensor): Sparse CSR prolongation matrix.
+
+        Returns:
+            SparseTransferOperator: Shared by every later call with this tensor.
+        """
+        key = id(P)
+        entry = self._operators.get(key)
+        if entry is None:
+            # ``P`` is stored beside its operator so its id cannot be recycled.
+            entry = (P, SparseTransferOperator(P))
+            self._operators[key] = entry
+        return entry[1]
 
 
 def _sparse_matvec(matrix: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:

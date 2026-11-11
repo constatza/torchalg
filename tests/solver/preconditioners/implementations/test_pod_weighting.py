@@ -124,12 +124,9 @@ class TestApplyJacobiDamping:
         """Batched damping must match calling ``JacobiSmoother.smooth`` per row with rhs=0."""
         omega, steps = 0.67, 5
         damped = apply_jacobi_damping(poisson_snapshots, poisson_1d, omega=omega, steps=steps)
-        smoother = JacobiSmoother(omega=omega)
+        prepared = JacobiSmoother(omega=omega).prepare(poisson_1d)
         expected = torch.stack(
-            [
-                smoother.smooth(poisson_1d, torch.zeros_like(row), row, steps=steps)
-                for row in poisson_snapshots
-            ]
+            [prepared.smooth(torch.zeros_like(row), row, steps=steps) for row in poisson_snapshots]
         )
         torch.testing.assert_close(damped, expected, atol=1e-6, rtol=1e-6)
 

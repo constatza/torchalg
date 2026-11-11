@@ -18,13 +18,15 @@ from collections.abc import Callable
 
 import torch
 
-from .cycle import VCycle, pseudo_inverse_solve
+from torchalg.multigrid.coarse_solve import pseudo_inverse_coarse_solver
+
+from .cycle import VCycle
 from .protocols import MultigridSmoother
 from .smoothers import GaussSeidelSmoother
 from .transfer import DenseTransferOperator
 
 GS_SETUP_CYCLE = VCycle(
-    GaussSeidelSmoother(), n_pre=1, n_post=1, coarse_solver=pseudo_inverse_solve
+    GaussSeidelSmoother(), n_pre=1, n_post=1, coarse_solver_factory=pseudo_inverse_coarse_solver
 )
 """GS V(1,1) cycle used only inside adaptive/bootstrap hierarchy setup.
 
@@ -50,7 +52,12 @@ def prebuilt_cycle(smoother: MultigridSmoother, n_pre: int = 1, n_post: int = 1)
     Returns:
         VCycle: Symmetric-step cycle with a pseudo-inverse coarse solve.
     """
-    return VCycle(smoother, n_pre=n_pre, n_post=n_post, coarse_solver=pseudo_inverse_solve)
+    return VCycle(
+        smoother,
+        n_pre=n_pre,
+        n_post=n_post,
+        coarse_solver_factory=pseudo_inverse_coarse_solver,
+    )
 
 
 def seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:

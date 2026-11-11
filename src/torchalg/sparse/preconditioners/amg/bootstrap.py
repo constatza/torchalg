@@ -120,7 +120,10 @@ from torchalg.sparse.kernels.galerkin import form_sparse_sparse
 from torchalg.sparse.kernels.lsr_correction import _NEAR_ZERO_DIAGONAL_TOL
 from torchalg.sparse.kernels.prolongation import sparse_interpolation_prolongation
 from torchalg.sparse.kernels.strength import sparse_strength_graph
-from torchalg.sparse.preconditioners.amg.transfer import SparseTransferOperator
+from torchalg.sparse.preconditioners.amg.transfer import (
+    SparseTransferOperator,
+    TransferOperatorCache,
+)
 from torchalg.utils.ls_interpolation import (
     batched_ls_interpolation_rows,
     batched_select_interpolatory_set,
@@ -128,17 +131,14 @@ from torchalg.utils.ls_interpolation import (
 from torchalg.utils.test_vector_weights import test_vector_weights
 
 from ._compatible_relaxation import compatible_relaxation_coarsening
-from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
-from .smoothers import GaussSeidelSmoother, resolve_jacobi_default
+from ._presets import PrebuiltCoarsening, gs_setup_cycle, prebuilt_cycle, seeded_draw
+from .smoothers import GaussSeidelStage, resolve_jacobi_default
 
 if TYPE_CHECKING:
     from typing import Self
 
     from torchalg.multigrid.hierarchy import MultigridHierarchy
     from torchalg.multigrid.protocols import MultigridSmoother
-
-_Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
-"""Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
 
 _LSR_TARGET_FRACTION = 0.2
 """Matches the dense sibling's value - see its docstring."""
@@ -209,9 +209,8 @@ class BAMGCoarsening:
     Args:
         test_vectors (torch.Tensor): Test vectors for this level, shape
             ``(n, k)``.
-        relaxation (_Relaxation): Relaxation callable used by CR,
-            ``(A, rhs, x, steps) -> x`` (e.g. the sparse
-            ``GaussSeidelSmoother().smooth``).
+        relaxation (MultigridSmoother): Smoother CR binds to the level matrix
+            once per coarsening (e.g. the sparse ``GaussSeidelSmoother()``).
         nu (int): CR sweeps per stage (Sec. 2.1 default ``5``).
         delta (float): CR stopping tolerance (Sec. 2.1 default ``0.7``).
         theta_ad (float): Algebraic-distance strength threshold (Sec. 2.2
@@ -231,7 +230,7 @@ class BAMGCoarsening:
     def __init__(
         self,
         test_vectors: torch.Tensor,
-        relaxation: _Relaxation,
+        relaxation: MultigridSmoother,
         *,
         nu: int = 5,
         delta: float = 0.7,
@@ -247,7 +246,7 @@ class BAMGCoarsening:
 
         Args:
             test_vectors (torch.Tensor): Test vectors for this level.
-            relaxation (_Relaxation): Relaxation callable used by CR.
+            relaxation (MultigridSmoother): Smoother CR binds to the level matrix.
             nu (int): CR sweeps per stage.
             delta (float): CR stopping tolerance.
             theta_ad (float): Algebraic-distance strength threshold.
@@ -678,8 +677,13 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     ``setup()`` (the shared, format-agnostic outer loop promoted to
     ``torchalg.multigrid.bootstrap_setup`` this session - see that module's
     docstring), injecting this module's own ``BAMGCoarsening``,
-    ``SparseTransferOperator``, the sparse ``GaussSeidelSmoother``, and this
-    package's ``_presets.GS_SETUP_CYCLE`` in place of the dense equivalents.
+    ``SparseTransferOperator``, the sparse Gauss-Seidel and this package's
+    ``_presets.gs_setup_cycle`` in place of the dense equivalents. Every
+    ``setup()`` builds a fresh ``BootstrapSetup`` around its own
+    ``GaussSeidelStage`` and ``TransferOperatorCache``, so the level
+    schedules of each level matrix and the transpose of each prolongation are
+    built once per setup run, however many compatible-relaxation sweeps,
+    test-vector relaxations and improvement cycles revisit them.
     Kept as a subclass (not converted to a factory function like
     ``vcycle_amg``/``wcycle_amg``): it overrides ``_make_hierarchy`` with
     genuinely different hierarchy-construction logic (the prebuilt-levels
@@ -750,27 +754,32 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         n_post: int = 1,
     ) -> None:
         """Store setup hyperparameters; ``setup()`` runs the sparse Bootstrap AMG algorithm."""
-        self._bootstrap_setup = BootstrapSetup(
-            coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
-                vectors,
-                relaxation,
-                nu=nu,
-                delta=delta,
-                theta_ad=theta_ad,
-                caliber=caliber,
-                gamma=gamma,
-                use_lsr=use_lsr,
-                draw=draw,
-            ),
-            transfer_operator_factory=SparseTransferOperator,
-            relaxation=GaussSeidelSmoother().smooth,
-            setup_cycle=GS_SETUP_CYCLE,
-            eta=eta,
-            k_r=k_r,
-            n_bootstrap_cycles=n_bootstrap_cycles,
-            max_levels=max_levels,
-            max_coarse=max_coarse,
-        )
+
+        def new_bootstrap_setup() -> BootstrapSetup:
+            stage = GaussSeidelStage()
+            return BootstrapSetup(
+                coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
+                    vectors,
+                    relaxation,
+                    nu=nu,
+                    delta=delta,
+                    theta_ad=theta_ad,
+                    caliber=caliber,
+                    gamma=gamma,
+                    use_lsr=use_lsr,
+                    draw=draw,
+                ),
+                transfer_operator_factory=TransferOperatorCache(),
+                relaxation=stage,
+                setup_cycle=gs_setup_cycle(stage),
+                eta=eta,
+                k_r=k_r,
+                n_bootstrap_cycles=n_bootstrap_cycles,
+                max_levels=max_levels,
+                max_coarse=max_coarse,
+            )
+
+        self._new_bootstrap_setup = new_bootstrap_setup
         self._run_draw = draw if draw is not None else seeded_draw(seed)
         self._seed_vectors = seed_vectors
         self._test_vector_draw = test_vector_draw
@@ -802,7 +811,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             ValueError: If the setup produced a single level (nothing to
                 coarsen).
         """
-        result = self._bootstrap_setup.run(
+        result = self._new_bootstrap_setup().run(
             matrix,
             self._run_draw,
             seed_vectors=self._seed_vectors,

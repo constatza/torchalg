@@ -22,7 +22,9 @@ def apply_jacobi_damping(
 
     Reuses ``JacobiSmoother`` (``rhs=0``, so ``smooth`` reduces to the pure
     error-propagation map ``v <- v - omega * D^{-1} A v``) rather than
-    reimplementing the Jacobi iteration - this is what
+    reimplementing the Jacobi iteration: the smoother is prepared once for
+    ``matrix`` (the spectral radius, if ``omega`` is ``None``, is estimated
+    there) and all vectors are damped together as the columns of one block. This is what
     ``smoother_persistence_scales`` (weighting) calls, and what any
     snapshot-generation strategy that only needs the final "algebraically
     smooth" probe vector should call. A strategy that needs to select an
@@ -35,16 +37,16 @@ def apply_jacobi_damping(
         matrix (torch.Tensor): SPD system matrix A, shape (n_dofs, n_dofs).
         omega (float | torch.Tensor | None): Jacobi damping factor; ``None``
             (default) is the relaxation rule ``1 / rho(D^-1 A)`` (estimated
-            once for ``matrix``), matching ``JacobiSmoother``.
+            once, when the smoother is prepared for ``matrix``), matching
+            ``JacobiSmoother``.
         steps (int): Number of damping sweeps.
 
     Returns:
         torch.Tensor: Damped vectors, same shape as ``vectors``.
     """
-    smoother = JacobiSmoother(omega=omega)
-    return torch.stack(
-        [smoother.smooth(matrix, torch.zeros_like(row), row, steps=steps) for row in vectors]
-    )
+    prepared = JacobiSmoother(omega=omega).prepare(matrix)
+    columns = vectors.T
+    return prepared.smooth(torch.zeros_like(columns), columns, steps).T.contiguous()
 
 
 def apply_jacobi_damping_trajectory(
@@ -65,8 +67,8 @@ def apply_jacobi_damping_trajectory(
 
     Exactly ``steps`` sweeps are performed per vector, never more,
     regardless of how much of the returned trajectory a caller ultimately
-    keeps: this loops ``smoother.smooth(A, 0, x, steps=1)`` ``steps`` times
-    rather than reimplementing the sweep or over-running it.
+    keeps: this loops one prepared-smoother sweep ``steps`` times rather than
+    reimplementing the sweep or over-running it.
 
     Args:
         vectors (torch.Tensor): Batch of vectors to damp, shape
@@ -74,20 +76,18 @@ def apply_jacobi_damping_trajectory(
         matrix (torch.Tensor): SPD system matrix A, shape (n_dofs, n_dofs).
         omega (float | torch.Tensor | None): Jacobi damping factor; ``None``
             (default) is the relaxation rule ``1 / rho(D^-1 A)`` (estimated
-            once for ``matrix``), matching ``JacobiSmoother``.
+            once, when the smoother is prepared for ``matrix``), matching
+            ``JacobiSmoother``.
         steps (int): Number of damping sweeps to run.
 
     Returns:
         torch.Tensor: Trajectories, shape (n_vectors, steps + 1, n_dofs).
     """
-    smoother = JacobiSmoother(omega=omega)
-    trajectories = []
-    for row in vectors:
-        zero_rhs = torch.zeros_like(row)
-        x = row
-        history = [x]
-        for _ in range(steps):
-            x = smoother.smooth(matrix, zero_rhs, x, steps=1)
-            history.append(x)
-        trajectories.append(torch.stack(history))
-    return torch.stack(trajectories)
+    prepared = JacobiSmoother(omega=omega).prepare(matrix)
+    x = vectors.T
+    zero_rhs = torch.zeros_like(x)
+    history = [x]
+    for _ in range(steps):
+        x = prepared.smooth(zero_rhs, x, 1)
+        history.append(x)
+    return torch.stack(history).permute(2, 0, 1).contiguous()

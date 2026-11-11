@@ -17,8 +17,6 @@ References:
 
 from __future__ import annotations
 
-import weakref
-
 import torch
 
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
@@ -32,7 +30,6 @@ PROLONGATION_NOMINAL = 4.0 / 3.0
 """Nominal Jacobi damping for prolongator smoothing: ``omega = (4/3) / rho``."""
 
 _SEED = 0
-_cache: dict[int, tuple[weakref.ReferenceType[torch.Tensor], torch.Tensor]] = {}
 
 
 def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
@@ -63,7 +60,11 @@ def _seeded_draw(size: int) -> torch.Tensor:
 
 
 def jacobi_spectral_radius(matrix: torch.Tensor) -> torch.Tensor:
-    """Cached, deterministic Arnoldi estimate of ``rho(D^-1 A)``, sparse CSR input.
+    """Deterministic Arnoldi estimate of ``rho(D^-1 A)``, sparse CSR input.
+
+    Pure and uncached: the caller decides when to pay for it. Smoothers call it
+    once, in ``prepare``; coarsening calls it once per level at setup. Nothing
+    may call it from ``apply``.
 
     Args:
         matrix (torch.Tensor): Square sparse CSR matrix ``A``.
@@ -71,13 +72,7 @@ def jacobi_spectral_radius(matrix: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: Estimated spectral radius of ``D^-1 A``, 0-d.
     """
-    key = id(matrix)
-    entry = _cache.get(key)
-    if entry is not None and entry[0]() is matrix:
-        return entry[1]
-    rho = approximate_spectral_radius(scaled_by_inverse_diagonal(matrix), _seeded_draw)
-    _cache[key] = (weakref.ref(matrix, lambda _: _cache.pop(key, None)), rho)
-    return rho
+    return approximate_spectral_radius(scaled_by_inverse_diagonal(matrix), _seeded_draw)
 
 
 def jacobi_omega(

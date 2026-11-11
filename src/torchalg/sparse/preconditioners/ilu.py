@@ -334,4 +334,4 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Preconditioned residual ``z = (LU)^{-1}r``.
         """
-        return self._solve_cache.solve(self._lower, residual)
+        return self._solve_cache.solve(residual)

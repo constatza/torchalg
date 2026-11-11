@@ -14,6 +14,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
+from torchalg.multigrid.protocols import PreparedSmoother
 from torchalg.preconditioners.implementations.amg._compatible_relaxation import (
     _independent_set_of,
     compatible_relaxation_coarsening,
@@ -155,7 +156,7 @@ def test_hcr_operator_zeros_coarse_entries(
     result = hcr_operator(
         matrix,
         two_of_eight_coarse_mask,
-        GaussSeidelSmoother().smooth,
+        GaussSeidelSmoother().prepare(matrix),
         sweeps=3,
         start=ones_vector_8,
     )
@@ -169,7 +170,9 @@ def test_hcr_operator_default_start_is_random_and_still_zeroed(
 ) -> None:
     """Omitting ``start`` still yields a coarse-zeroed result (default random start)."""
     matrix = poisson_1d_factory(8)
-    result = hcr_operator(matrix, two_of_eight_coarse_mask, GaussSeidelSmoother().smooth, sweeps=2)
+    result = hcr_operator(
+        matrix, two_of_eight_coarse_mask, GaussSeidelSmoother().prepare(matrix), sweeps=2
+    )
     assert torch.allclose(result[two_of_eight_coarse_mask], torch.zeros(2, dtype=torch_dtype))
 
 
@@ -182,7 +185,11 @@ def test_hcr_operator_all_coarse_is_identically_zero(
     """An all-True coarse mask leaves nothing to relax: the result is all zero."""
     matrix = poisson_1d_factory(8)
     result = hcr_operator(
-        matrix, all_coarse_mask_8, GaussSeidelSmoother().smooth, sweeps=3, start=ones_vector_8
+        matrix,
+        all_coarse_mask_8,
+        GaussSeidelSmoother().prepare(matrix),
+        sweeps=3,
+        start=ones_vector_8,
     )
     assert torch.allclose(result, torch.zeros(8, dtype=torch_dtype))
 
@@ -197,7 +204,9 @@ def test_cr_rate_low_for_every_other_point(
     coarse_mask = alternating_coarse_mask_factory(16)
     draw = seeded_draw_factory(0)
 
-    rho, e = cr_rate(matrix, coarse_mask, GaussSeidelSmoother().smooth, sweeps=10, draw=draw)
+    rho, e = cr_rate(
+        matrix, coarse_mask, GaussSeidelSmoother().prepare(matrix), sweeps=10, draw=draw
+    )
 
     # The brief's own worked example asserts `rho < 0.5`; empirically (this seed, sweeps=10)
     # rho ~= 0.516, since `hcr_operator` zeros coarse entries only *after* each full symmetric
@@ -220,7 +229,7 @@ def test_cr_rate_high_for_empty_coarse_set(
     draw = seeded_draw_factory(0)
 
     rho, _ = cr_rate(
-        matrix, empty_coarse_mask_16, GaussSeidelSmoother().smooth, sweeps=2, draw=draw
+        matrix, empty_coarse_mask_16, GaussSeidelSmoother().prepare(matrix), sweeps=2, draw=draw
     )
 
     assert rho > 0.7
@@ -240,7 +249,9 @@ def test_cr_rate_bounded_in_zero_one_across_matrices_and_splits(
     for index, (matrix, coarse_mask) in enumerate(cr_rate_property_cases):
         draw = seeded_draw_factory(index)
 
-        rho, _ = cr_rate(matrix, coarse_mask, GaussSeidelSmoother().smooth, sweeps=5, draw=draw)
+        rho, _ = cr_rate(
+            matrix, coarse_mask, GaussSeidelSmoother().prepare(matrix), sweeps=5, draw=draw
+        )
 
         assert 0.0 <= rho < 1.0, f"rho_f={rho} out of [0, 1) for case {index}"
 
@@ -289,11 +300,11 @@ def test_compatible_relaxation_coarsening_with_explicit_matrix_graph_matches_def
     matrix_graph = matrix_graph_factory(matrix)
 
     default_mask = compatible_relaxation_coarsening(
-        matrix, GaussSeidelSmoother().smooth, nu=5, delta=0.7, draw=seeded_draw_factory(1)
+        matrix, GaussSeidelSmoother(), nu=5, delta=0.7, draw=seeded_draw_factory(1)
     )
     explicit_mask = compatible_relaxation_coarsening(
         matrix,
-        GaussSeidelSmoother().smooth,
+        GaussSeidelSmoother(),
         nu=5,
         delta=0.7,
         draw=seeded_draw_factory(1),
@@ -312,7 +323,7 @@ def test_compatible_relaxation_coarsening_terminates_and_grows_c(
     draw = seeded_draw_factory(1)
 
     coarse_mask = compatible_relaxation_coarsening(
-        matrix, GaussSeidelSmoother().smooth, nu=5, delta=0.7, draw=draw
+        matrix, GaussSeidelSmoother(), nu=5, delta=0.7, draw=draw
     )
 
     assert coarse_mask.dtype == torch.bool
@@ -330,7 +341,7 @@ def test_compatible_relaxation_coarsening_preserves_initial_coarse(
 
     coarse_mask = compatible_relaxation_coarsening(
         matrix,
-        GaussSeidelSmoother().smooth,
+        GaussSeidelSmoother(),
         nu=5,
         delta=0.7,
         initial_coarse=two_of_eight_coarse_mask,
@@ -351,9 +362,29 @@ def test_compatible_relaxation_coarsening_raises_when_max_iterations_exhausted(
     with pytest.raises(RuntimeError, match="did not converge"):
         compatible_relaxation_coarsening(
             matrix,
-            GaussSeidelSmoother().smooth,
+            GaussSeidelSmoother(),
             nu=5,
             delta=0.0,
             draw=draw,
             max_iterations=1,
         )
+
+
+def test_compatible_relaxation_coarsening_prepares_the_smoother_once_per_matrix(
+    poisson_1d_factory: Callable[[int], torch.Tensor],
+    seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+) -> None:
+    """Hundreds of CR sweeps share one prepared smoother instead of rebuilding factors each time."""
+    matrix = poisson_1d_factory(16)
+    prepared_for: list[int] = []
+
+    class CountingSmoother:
+        def prepare(self, A: torch.Tensor) -> PreparedSmoother:
+            prepared_for.append(A.shape[0])
+            return GaussSeidelSmoother().prepare(A)
+
+    compatible_relaxation_coarsening(
+        matrix, CountingSmoother(), nu=5, delta=0.7, draw=seeded_draw_factory(1)
+    )
+
+    assert prepared_for == [16]

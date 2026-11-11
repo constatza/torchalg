@@ -24,6 +24,11 @@ class TestSparseDiagonal:
         matrix = torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch_dtype).to_sparse_csr()
         torch.testing.assert_close(sparse_diagonal(matrix), torch.zeros(2, dtype=torch_dtype))
 
+    def test_mixed_present_and_absent_diagonal_entries(self, torch_dtype: torch.dtype) -> None:
+        """Rows with and without a stored diagonal entry read back independently."""
+        dense = torch.tensor([[2.0, 1.0, 0.0], [1.0, 0.0, 3.0], [0.0, 4.0, 5.0]], dtype=torch_dtype)
+        torch.testing.assert_close(sparse_diagonal(dense.to_sparse_csr()), torch.diagonal(dense))
+
     def test_rejects_non_csr_layout(self, poisson_1d_dense: torch.Tensor) -> None:
         """A dense (strided) tensor is rejected rather than silently misread."""
         with pytest.raises(ValueError, match="sparse CSR"):

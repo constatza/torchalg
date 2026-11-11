@@ -100,13 +100,12 @@ References:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import torch
 
 if TYPE_CHECKING:
-    _Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
+    from .protocols import MultigridSmoother
 
 _NEAR_ZERO_NORM_TOL = 1e-14
 """Below this ``T``-norm, a relaxed eigenvector is treated as a degenerate
@@ -191,7 +190,7 @@ def refine_eigenpair(
     T: torch.Tensor,
     eigenvalue: float,
     eigenvector: torch.Tensor,
-    relaxation: _Relaxation,
+    relaxation: MultigridSmoother,
     sweeps: int,
 ) -> tuple[float, torch.Tensor]:
     """Relax an interpolated eigenvector on the shifted homogeneous problem, refresh its Rayleigh quotient.
@@ -223,14 +222,15 @@ def refine_eigenpair(
             (inherited from the coarser level before relaxation).
         eigenvector (torch.Tensor): Interpolated eigenvector approximation
             ``w_l``, shape ``(n,)``.
-        relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x``.
+        relaxation (MultigridSmoother): Smoother, bound once to the shifted
+            matrix ``A_l - lambda_l T_l`` for all ``sweeps``.
         sweeps (int): Number of relaxation sweeps.
 
     Returns:
         tuple[float, torch.Tensor]: Refreshed ``(lambda_l, w_l)``.
     """
     shifted = matrix - eigenvalue * T
+    prepared = relaxation.prepare(shifted)
     zero_rhs = torch.zeros_like(eigenvector)
     relaxed = eigenvector
     for _ in range(sweeps):
@@ -239,7 +239,7 @@ def refine_eigenpair(
         # it indefinite), so unnormalized relaxation has no fixed point and
         # can overflow to inf/nan *within* a multi-sweep call before a
         # single post-hoc renormalization ever runs - measured directly.
-        candidate = relaxation(shifted, zero_rhs, relaxed, 1)
+        candidate = prepared.smooth(zero_rhs, relaxed, 1)
         t_norm = torch.sqrt(candidate @ (T @ candidate))
         if t_norm.abs() <= _NEAR_ZERO_NORM_TOL:
             break  # degenerate collapse (see _NEAR_ZERO_NORM_TOL) - keep the last valid iterate
@@ -252,7 +252,7 @@ def multigrid_eigensolver(
     levels: list[torch.Tensor] | tuple[torch.Tensor, ...],
     prolongations: list[torch.Tensor] | tuple[torch.Tensor, ...],
     k_e: int,
-    relaxation: _Relaxation,
+    relaxation: MultigridSmoother,
     sweeps: int,
 ) -> dict[int, torch.Tensor]:
     """[STATUS14] Sec. 4's MGE procedure: ``k_e`` eigenvector approximations for every level but the coarsest.
@@ -277,8 +277,8 @@ def multigrid_eigensolver(
             Prolongations, one per level except the coarsest.
         k_e (int): Number of eigenvector approximations to keep (clamped to
             each level's dimension where smaller).
-        relaxation (_Relaxation): Relaxation callable used to refine
-            interpolated eigenvectors, ``(A, rhs, x, steps) -> x``.
+        relaxation (MultigridSmoother): Smoother used to refine interpolated
+            eigenvectors.
         sweeps (int): Relaxation sweeps per level (reuses the caller's
             ``eta``; the transcribed algorithm does not specify a separate
             MGE-only sweep count).

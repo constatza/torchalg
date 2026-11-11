@@ -390,4 +390,4 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Preconditioned residual ``z = M^{-1}r``.
         """
-        return self._solve_cache.solve(self._operator, residual)
+        return self._solve_cache.solve(residual)

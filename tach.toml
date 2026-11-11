@@ -141,7 +141,7 @@ path = "torchalg.sparse.preconditioners.amg.coarsening"
 depends_on = ["torchalg.sparse.kernels.galerkin", "torchalg.sparse.kernels.prolongation", "torchalg.sparse.kernels.strength", "torchalg.sparse.preconditioners.amg.aggregation", "torchalg.sparse.preconditioners.amg._jacobi_omega", "torchalg.sparse.preconditioners.amg.transfer", "torchalg.utils.theta_search"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg.coarse_solve"
-depends_on = []
+depends_on = ["torchalg.multigrid"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg._node_strength"
 depends_on = ["torchalg.sparse.kernels.triangular"]

@@ -2,27 +2,28 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.smoothers``
 (see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor`` and
-dense ``torch`` ops replacing numpy. ``JacobiSmoother`` holds no precomputed
-tensor state - unlike ``JacobiPreconditioner`` (Stage 3), it is applied to a
-*different* matrix ``A`` on every call (one per hierarchy level), so there is
-nothing to cache in ``__init__``; only the scalar damping factor ``omega`` is
-stored. No ``nn.Module`` inheritance is needed here for the same reason
-``CoarseningStrategy``/``MultigridCycle`` implementations don't need it: no
-tensor buffers to move under ``.to(device/dtype)``.
+dense ``torch`` ops replacing numpy. A smoother object holds only configuration
+(the Jacobi damping override); ``prepare(A)`` binds it to one level matrix and does
+every matrix-dependent one-off computation there (diagonal inverse, spectral-radius
+damping, triangular factors), returning a ``PreparedSmoother`` that only sweeps.
+No ``nn.Module`` inheritance is needed for the same reason ``CoarseningStrategy``/
+``MultigridCycle`` implementations don't need it: no tensor buffers to move under
+``.to(device/dtype)``; the prepared state lives on the hierarchy level.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
 
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
-from ._relaxation import symmetric_gauss_seidel
+from ._relaxation import PreparedSymmetricGaussSeidel, prepare_symmetric_gauss_seidel
 
 if TYPE_CHECKING:
-    from .protocols import MultigridSmoother
+    from .protocols import MultigridSmoother, PreparedSmoother
 
 _NEAR_ZERO_DIAGONAL_TOL = 1e-14
 """Diagonal entries with magnitude below this are excluded from the Jacobi
@@ -46,25 +47,68 @@ class SmootherBase(ABC):
     """
 
     @abstractmethod
-    def smooth(
-        self,
-        A: torch.Tensor,
-        rhs: torch.Tensor,
-        x: torch.Tensor,
-        steps: int,
-    ) -> torch.Tensor:
-        """Apply ``steps`` smoothing iterations to the system Ax = rhs.
+    def prepare(self, A: torch.Tensor) -> PreparedSmoother:
+        """Bind the smoother to ``A``, doing all matrix-dependent work once.
 
         Args:
-            A (torch.Tensor): System matrix on this level (n x n).
-            rhs (torch.Tensor): Right-hand side vector (n,).
-            x (torch.Tensor): Current iterate (n,).
-            steps (int): Number of sweeps (fixed, not convergence-driven).
+            A (torch.Tensor): System matrix on this level (n x n), dense.
 
         Returns:
-            torch.Tensor: Updated iterate after ``steps`` sweeps, same shape
-                as ``x``.
+            PreparedSmoother: Smoother whose sweeps reuse the prepared state.
         """
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedJacobi:
+    """Weighted Jacobi bound to one matrix: ``x <- x + diag_inv * (rhs - A x)``.
+
+    Attributes:
+        matrix (torch.Tensor): The level matrix ``A``, shape ``(n, n)``.
+        diag_inv (torch.Tensor): ``omega / diag(A)``, zero where the diagonal is
+            near zero, shape ``(n,)``. The damping is already folded in.
+    """
+
+    matrix: torch.Tensor
+    diag_inv: torch.Tensor
+
+    def _scale_for(self, rhs: torch.Tensor) -> torch.Tensor:
+        return self.diag_inv.unsqueeze(-1) if rhs.ndim == 2 else self.diag_inv
+
+    def smooth(self, rhs: torch.Tensor, x: torch.Tensor, steps: int) -> torch.Tensor:
+        """Apply ``steps`` weighted Jacobi iterations from ``x``.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate (not modified), same shape as ``rhs``.
+            steps (int): Number of sweeps.
+
+        Returns:
+            torch.Tensor: Updated iterate after ``steps`` sweeps.
+        """
+        scale = self._scale_for(rhs)
+        for _ in range(steps):
+            x = x + scale * (rhs - self.matrix @ x)
+        return x
+
+    def smooth_from_zero(self, rhs: torch.Tensor, steps: int) -> torch.Tensor:
+        """Apply ``steps`` weighted Jacobi iterations from the zero iterate.
+
+        The first sweep is ``diag_inv * rhs`` (no ``A @ 0`` matvec).
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            steps (int): Number of sweeps.
+
+        Returns:
+            torch.Tensor: Iterate after smoothing, same shape as ``rhs``.
+        """
+        if steps == 0:
+            return torch.zeros_like(rhs)
+        scale = self._scale_for(rhs)
+        x = scale * rhs
+        for _ in range(steps - 1):
+            x = x + scale * (rhs - self.matrix @ x)
+        return x
 
 
 class JacobiSmoother(SmootherBase):
@@ -76,8 +120,8 @@ class JacobiSmoother(SmootherBase):
     Args:
         omega (float | torch.Tensor | None): Damping factor. ``None``
             (default) is the relaxation rule ``1 / rho(D^{-1}A)`` (PyAMG's),
-            estimated once per matrix and cached (see ``_jacobi_omega``); a
-            float or 0-d tensor fixes it (0.67 ~= 2/3 is ``4/(3 rho)`` for
+            estimated once per matrix inside ``prepare`` (see ``_jacobi_omega``);
+            a float or 0-d tensor fixes it (0.67 ~= 2/3 is ``4/(3 rho)`` for
             ``rho ~= 2``) - a tensor is accepted so callers holding an
             already-computed spectral-radius-derived value never have to
             round-trip it through Python before passing it back in.
@@ -91,30 +135,21 @@ class JacobiSmoother(SmootherBase):
     """
 
     def __init__(self, omega: float | torch.Tensor | None = None) -> None:
-        """Store the Jacobi damping factor.
+        """Store the Jacobi damping override.
 
         Args:
-            omega (float | None): Damping factor, or ``None`` for ``1 / rho``.
+            omega (float | torch.Tensor | None): Damping factor, or ``None`` for ``1 / rho``.
         """
         self._omega = omega
 
-    def smooth(
-        self,
-        A: torch.Tensor,
-        rhs: torch.Tensor,
-        x: torch.Tensor,
-        steps: int,
-    ) -> torch.Tensor:
-        """Apply ``steps`` weighted Jacobi iterations.
+    def prepare(self, A: torch.Tensor) -> PreparedJacobi:
+        """Resolve the damping and the damped diagonal inverse of ``A``, eagerly.
 
         Args:
             A (torch.Tensor): System matrix (n x n), dense.
-            rhs (torch.Tensor): Right-hand side vector (n,).
-            x (torch.Tensor): Current iterate (n,).
-            steps (int): Number of sweeps.
 
         Returns:
-            torch.Tensor: Updated iterate after ``steps`` sweeps.
+            PreparedJacobi: Jacobi sweeps bound to ``A``.
         """
         diag = torch.diagonal(A)
         omega = jacobi_omega(A, RELAXATION_NOMINAL, self._omega)
@@ -123,10 +158,7 @@ class JacobiSmoother(SmootherBase):
             omega / diag,
             torch.zeros_like(diag),
         )
-        x = x.clone()
-        for _ in range(steps):
-            x = x + diag_inv * (rhs - A @ x)
-        return x
+        return PreparedJacobi(matrix=A, diag_inv=diag_inv)
 
 
 class GaussSeidelSmoother(SmootherBase):
@@ -138,25 +170,16 @@ class GaussSeidelSmoother(SmootherBase):
     diagonal are left unchanged.
     """
 
-    def smooth(
-        self,
-        A: torch.Tensor,
-        rhs: torch.Tensor,
-        x: torch.Tensor,
-        steps: int,
-    ) -> torch.Tensor:
-        """Apply ``steps`` symmetric Gauss-Seidel iterations.
+    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+        """Build the forward and backward triangular systems of ``A`` once.
 
         Args:
             A (torch.Tensor): System matrix (n x n), dense.
-            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
-            x (torch.Tensor): Current iterate, shape ``(n,)`` or ``(n, k)``.
-            steps (int): Number of symmetric iterations.
 
         Returns:
-            torch.Tensor: Updated iterate, same shape as ``x``.
+            PreparedSymmetricGaussSeidel: Gauss-Seidel sweeps bound to ``A``.
         """
-        return symmetric_gauss_seidel(A, x, rhs, steps)
+        return prepare_symmetric_gauss_seidel(A)
 
 
 def resolve_jacobi_default(

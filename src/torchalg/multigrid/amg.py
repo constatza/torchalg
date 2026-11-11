@@ -272,7 +272,7 @@ class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
             Self: This preconditioner, now ready for ``apply()``.
         """
         self._matrix = matrix
-        self._hierarchy = self._make_hierarchy()
+        self._hierarchy = self._cycle.prepare(self._make_hierarchy())
         self._mark_ready()
         return self
 

@@ -9,7 +9,7 @@ sparse solve) computed it.
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from typing import Any
 
 import pytest
 import torch
@@ -17,6 +17,8 @@ import torch
 from torchalg.preconditioners.implementations import (
     ICholeskyPreconditioner as DenseICholeskyPreconditioner,
 )
+from torchalg.sparse.kernels import triangular as triangular_kernel
+from torchalg.sparse.kernels.triangular import PreparedTriangularSolve
 from torchalg.sparse.preconditioners.ic0 import sparse_ic0
 from torchalg.sparse.preconditioners.icholesky import ICholeskyPreconditioner
 
@@ -85,17 +87,21 @@ class TestICholeskyPreconditionerShapes:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A matrix RHS is solved as one batch, not recursively by column."""
-        import torchalg.sparse.preconditioners._triangular as triangular_module
-
         factor = sparse_ic0(poisson_1d_csr)
         residual = torch.ones(poisson_1d_csr.shape[0], 3, dtype=factor.dtype)
         precond = ICholeskyPreconditioner().setup(factor)
-        counting_triangular_solve = Mock(wraps=triangular_module.triangular_solve)
-        monkeypatch.setattr(triangular_module, "triangular_solve", counting_triangular_solve)
+        calls: list[tuple[int, ...]] = []
+        original = PreparedTriangularSolve.solve
+
+        def counting(self: PreparedTriangularSolve, target: torch.Tensor, **kwargs: Any):
+            calls.append(tuple(target.shape))
+            return original(self, target, **kwargs)
+
+        monkeypatch.setattr(PreparedTriangularSolve, "solve", counting)
 
         precond.apply(residual)
 
-        assert counting_triangular_solve.call_count == 2
+        assert calls == [tuple(residual.shape)] * 2
 
     def test_apply_reuses_setup_schedule(
         self,
@@ -103,16 +109,14 @@ class TestICholeskyPreconditionerShapes:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Repeated application performs no schedule construction."""
-        import torchalg.sparse.preconditioners._triangular as triangular_module
-
         factor = sparse_ic0(poisson_1d_csr)
         residual = torch.ones(poisson_1d_csr.shape[0], dtype=factor.dtype)
         precond = ICholeskyPreconditioner().setup(factor)
 
-        def unexpected_schedule(*args: object, **kwargs: object) -> None:
+        def unexpected_schedule(*args: Any, **kwargs: Any) -> None:
             raise AssertionError("level_schedule must only run during setup")
 
-        monkeypatch.setattr(triangular_module, "level_schedule", unexpected_schedule)
+        monkeypatch.setattr(triangular_kernel, "level_schedule", unexpected_schedule)
 
         precond.apply(residual)
         precond.apply(residual)
@@ -146,7 +150,7 @@ class TestICholeskyPreconditionerShapes:
         residual = torch.ones(second_factor.shape[0], dtype=second_factor.dtype)
 
         assert precond._solve_cache is not first_cache
-        assert precond._solve_cache.upper.shape == second_factor.shape
+        assert precond._solve_cache.backward_solve.diag.shape == (second_factor.shape[0],)
         assert precond.apply(residual).shape == residual.shape
 
     def test_failed_setup_preserves_previous_complete_state(

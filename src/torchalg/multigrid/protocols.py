@@ -46,29 +46,59 @@ class TransferOperator(Protocol):
         ...
 
 
-class MultigridSmoother(Protocol):
-    """Damps high-frequency error on one grid level.
+class PreparedSmoother(Protocol):
+    """A smoother bound to one level's matrix, with all matrix-dependent work done.
 
-    OCP hook: implement to add Gauss-Seidel, polynomial, or other smoothers.
+    Built once per level by ``MultigridSmoother.prepare`` (diagonal inverse, spectral-radius
+    damping, triangular factors, level schedules, ...); every call afterwards only does
+    sweeps.
     """
 
-    def smooth(
-        self,
-        A: torch.Tensor,
-        rhs: torch.Tensor,
-        x: torch.Tensor,
-        steps: int,
-    ) -> torch.Tensor:
-        """Apply ``steps`` smoothing iterations to the system Ax = rhs.
+    def smooth(self, rhs: torch.Tensor, x: torch.Tensor, steps: int) -> torch.Tensor:
+        """Apply ``steps`` smoothing iterations to ``A x = rhs`` from the iterate ``x``.
 
         Args:
-            A (torch.Tensor): System matrix on this level.
             rhs (torch.Tensor): Right-hand side vector.
-            x (torch.Tensor): Current iterate.
+            x (torch.Tensor): Current iterate (not modified).
             steps (int): Number of smoothing steps.
 
         Returns:
             torch.Tensor: Updated iterate after smoothing.
+        """
+        ...
+
+    def smooth_from_zero(self, rhs: torch.Tensor, steps: int) -> torch.Tensor:
+        """Apply ``steps`` smoothing iterations from the zero initial guess.
+
+        Equivalent to ``smooth(rhs, zeros_like(rhs), steps)`` but free to skip the
+        residual matvec of the first sweep (``A @ 0``).
+
+        Args:
+            rhs (torch.Tensor): Right-hand side vector (or block of columns).
+            steps (int): Number of smoothing steps.
+
+        Returns:
+            torch.Tensor: Iterate after smoothing.
+        """
+        ...
+
+
+class MultigridSmoother(Protocol):
+    """Damps high-frequency error on one grid level.
+
+    OCP hook: implement to add Gauss-Seidel, polynomial, or other smoothers. A smoother
+    object holds only configuration (damping override, ...); the per-matrix state lives in
+    the ``PreparedSmoother`` it returns, so one smoother serves many matrices.
+    """
+
+    def prepare(self, A: torch.Tensor) -> PreparedSmoother:
+        """Do every matrix-dependent one-off computation for ``A``.
+
+        Args:
+            A (torch.Tensor): System matrix on this level (dense or sparse CSR).
+
+        Returns:
+            PreparedSmoother: Smoother bound to ``A``.
         """
         ...
 
@@ -104,6 +134,20 @@ class MultigridCycle(Protocol):
 
     OCP hook: implement to add W-cycle, F-cycle, or custom cycles.
     """
+
+    def prepare(self, hierarchy: MultigridHierarchy) -> MultigridHierarchy:
+        """Do the one-off, hierarchy-dependent work ``apply`` needs (e.g. factor the coarse level).
+
+        Idempotent. Must not store state on the cycle: one cycle instance serves many
+        hierarchies.
+
+        Args:
+            hierarchy (MultigridHierarchy): Freshly built hierarchy.
+
+        Returns:
+            MultigridHierarchy: Hierarchy that ``apply`` accepts.
+        """
+        ...
 
     def apply(self, hierarchy: MultigridHierarchy, rhs: torch.Tensor) -> torch.Tensor:
         """Compute an approximate solution to the system on the finest grid.

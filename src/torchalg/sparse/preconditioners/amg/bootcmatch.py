@@ -158,6 +158,28 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         self._mark_ready()
         return self
 
+    def _apply(self, fn: Callable, recurse: bool = True) -> Self:
+        """Re-bind the prepared hierarchies when the matrix buffer changes device/dtype.
+
+        ``nn.Module.to()`` moves the ``_matrix`` buffer but not the hierarchies built from
+        it, so a real move re-casts every level matrix and re-prepares the coarse solve
+        once, here, instead of doing so inside every ``apply()``.
+
+        Args:
+            fn (Callable): Conversion applied to each parameter/buffer.
+            recurse (bool): Whether to recurse into submodules.
+
+        Returns:
+            Self: This module.
+        """
+        before = None if self._matrix is None else (self._matrix.device, self._matrix.dtype)
+        result = super()._apply(fn, recurse=recurse)
+        if before is not None and (self._matrix.device, self._matrix.dtype) != before:
+            self._hierarchies = tuple(
+                self._cycle.prepare(_move_hierarchy(h, self._matrix)) for h in self._hierarchies
+            )
+        return result
+
     @property
     def hierarchies(self) -> tuple[MultigridHierarchy, ...]:
         """The composite's hierarchies, in application order.
@@ -195,8 +217,7 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         """
         x = torch.zeros_like(residual)
         for hierarchy in self._hierarchies:
-            moved = _move_hierarchy(hierarchy, self._matrix)
-            x = x + self._cycle.apply(moved, residual - self._matrix @ x)
+            x = x + self._cycle.apply(hierarchy, residual - self._matrix @ x)
         return x
 
     def __str__(self) -> str:

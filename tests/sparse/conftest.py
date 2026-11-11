@@ -7,7 +7,8 @@ as the canonical sparse-capable SPD matrix source.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import Protocol
 
 import pytest
 import torch
@@ -16,9 +17,8 @@ from torchalg.sparse.device_policy import (
     ITERATIVE_CUDA_CROSSOVER_N,
     PARALLEL_KERNEL_CUDA_CROSSOVER_N,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
+from torchalg.utils.spectral import approximate_spectral_radius
 
 
 @pytest.fixture
@@ -175,3 +175,147 @@ def poisson_2d_csr(poisson_2d_dense: torch.Tensor) -> torch.Tensor:
         torch.Tensor: Sparse CSR twin of ``poisson_2d_dense``.
     """
     return poisson_2d_dense.to_sparse_csr()
+
+
+class DenseJacobiSweeps(Protocol):
+    """Dense weighted-Jacobi oracle: ``steps`` sweeps of ``x + omega D^-1 (rhs - A x)``."""
+
+    def __call__(
+        self,
+        matrix: torch.Tensor,
+        rhs: torch.Tensor,
+        x: torch.Tensor,
+        steps: int,
+        omega: float | None = None,
+    ) -> torch.Tensor: ...
+
+
+class DenseSymmetricGaussSeidel(Protocol):
+    """Dense symmetric Gauss-Seidel oracle built from ``solve_triangular`` directly."""
+
+    def __call__(
+        self,
+        matrix: torch.Tensor,
+        x: torch.Tensor,
+        rhs: torch.Tensor,
+        iterations: int,
+        rows: torch.Tensor | None = None,
+    ) -> torch.Tensor: ...
+
+
+_ORACLE_SEED = 0
+_DIAGONAL_TOL = 1e-14
+
+
+@pytest.fixture
+def dense_jacobi_sweeps() -> DenseJacobiSweeps:
+    """Dense weighted-Jacobi reference from first principles.
+
+    ``omega=None`` is the relaxation rule ``1 / rho(D^-1 A)`` with ``rho``
+    from the shared Arnoldi estimate on the dense scaled matrix and the
+    fixed-seed start vector the sparse tree uses. Independent of any dense
+    smoother class so the oracle stays valid while that API changes.
+    """
+
+    def _sweeps(
+        matrix: torch.Tensor,
+        rhs: torch.Tensor,
+        x: torch.Tensor,
+        steps: int,
+        omega: float | None = None,
+    ) -> torch.Tensor:
+        diagonal = torch.diagonal(matrix)
+        if omega is None:
+            generator = torch.Generator().manual_seed(_ORACLE_SEED)
+
+            def draw(size: int) -> torch.Tensor:
+                return torch.rand(size, generator=generator, dtype=torch.float64)
+
+            rho = approximate_spectral_radius(matrix / diagonal.unsqueeze(1), draw)
+            omega = float(1.0 / rho)
+        inverse = omega / diagonal
+        column = (slice(None),) + (None,) * (rhs.ndim - 1)
+        for _ in range(steps):
+            x = x + inverse[column] * (rhs - matrix @ x)
+        return x
+
+    return _sweeps
+
+
+@pytest.fixture
+def dense_symmetric_gauss_seidel() -> DenseSymmetricGaussSeidel:
+    """Dense symmetric Gauss-Seidel reference using ``solve_triangular`` directly.
+
+    A forward sweep solves ``(D + L) x = rhs - U x_old`` and a backward sweep
+    ``(D + U) x = rhs - L x_old``. Rows outside ``rows`` (or with a zero
+    diagonal) become identity equations frozen to their current (respectively
+    target) value, matching the indexed Gauss-Seidel semantics.
+    """
+
+    def _sweeps(
+        matrix: torch.Tensor,
+        x: torch.Tensor,
+        rhs: torch.Tensor,
+        iterations: int,
+        rows: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        n = matrix.shape[0]
+        inactive = torch.zeros(n, dtype=torch.bool)
+        if rows is not None:
+            inactive = torch.ones(n, dtype=torch.bool)
+            inactive[rows] = False
+        frozen = inactive | (torch.diagonal(matrix).abs() <= _DIAGONAL_TOL)
+        identity = torch.eye(n, dtype=matrix.dtype)
+        column = (slice(None),) + (None,) * (rhs.ndim - 1)
+
+        def sweep(triangle: torch.Tensor, strict: torch.Tensor, upper: bool) -> torch.Tensor:
+            target = rhs - strict @ x
+            freeze = torch.where(inactive[column], x, target)
+            system = torch.where(frozen.unsqueeze(1), identity, triangle)
+            rhs_frozen = torch.where(frozen[column], freeze, target)
+            vector = rhs_frozen if rhs.ndim == 2 else rhs_frozen.unsqueeze(1)
+            solved = torch.linalg.solve_triangular(system, vector, upper=upper)
+            return solved if rhs.ndim == 2 else solved.squeeze(1)
+
+        for _ in range(iterations):
+            x = sweep(torch.tril(matrix), torch.triu(matrix, 1), upper=False)
+            x = sweep(torch.triu(matrix), torch.tril(matrix, -1), upper=True)
+        return x
+
+    return _sweeps
+
+
+class _PreparedDenseOracle:
+    """Dense Gauss-Seidel oracle bound to one matrix (the ``PreparedSmoother`` shape)."""
+
+    def __init__(self, matrix: torch.Tensor, sweeps: DenseSymmetricGaussSeidel) -> None:
+        self._matrix = matrix
+        self._sweeps = sweeps
+
+    def smooth(self, rhs: torch.Tensor, x: torch.Tensor, steps: int) -> torch.Tensor:
+        return self._sweeps(self._matrix, x, rhs, steps)
+
+    def smooth_from_zero(self, rhs: torch.Tensor, steps: int) -> torch.Tensor:
+        return self._sweeps(self._matrix, torch.zeros_like(rhs), rhs, steps)
+
+
+class DenseRelaxation:
+    """Dense ``MultigridSmoother`` backed by the ``solve_triangular`` oracle."""
+
+    def __init__(self, sweeps: DenseSymmetricGaussSeidel) -> None:
+        self._sweeps = sweeps
+
+    def prepare(self, A: torch.Tensor) -> _PreparedDenseOracle:
+        return _PreparedDenseOracle(A, self._sweeps)
+
+
+@pytest.fixture
+def dense_relaxation(dense_symmetric_gauss_seidel: DenseSymmetricGaussSeidel) -> DenseRelaxation:
+    """Dense Gauss-Seidel smoother (``prepare`` -> prepared sweeps) from the oracle."""
+    return DenseRelaxation(dense_symmetric_gauss_seidel)
+
+
+@pytest.fixture
+def sparse_relaxation() -> GaussSeidelStage:
+    """Fresh stage-scoped sparse Gauss-Seidel relaxation callable."""
+    return GaussSeidelStage()

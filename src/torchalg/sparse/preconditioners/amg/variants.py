@@ -13,7 +13,7 @@ class, since ``torchalg.multigrid.AMGPreconditioner`` is already
 format-agnostic.
 
 The one sparse-specific wiring detail relative to the dense presets: the
-cycle's ``coarse_solver`` is ``dense_coarse_solve`` (``coarse_solve.py``)
+cycle's ``coarse_solver_factory`` is ``dense_lu_coarse_solver`` (``coarse_solve.py``)
 instead of the bare ``torch.linalg.solve`` default, since the coarsest-level
 matrix in a sparse hierarchy is still sparse CSR and ``torch.linalg.solve``
 has no sparse-CSR direct-solve path.
@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from torchalg.multigrid import AMGPreconditioner, VCycle, WCycle
 
-from .coarse_solve import dense_coarse_solve
+from .coarse_solve import dense_lu_coarse_solver
 from .coarsening import AggregationCoarsening
 from .smoothers import resolve_jacobi_default
 
@@ -51,7 +51,7 @@ def vcycle_amg(
     ``torchalg.preconditioners.implementations.amg.variants.vcycle_amg``.
     Every non-coarsest hierarchy level stays sparse CSR throughout setup and
     solve; only the coarsest-level direct solve densifies
-    (``dense_coarse_solve``).
+    (``dense_lu_coarse_solver``).
 
     Args:
         matrix (torch.Tensor): System matrix A (n x n), SPD, sparse CSR.
@@ -79,7 +79,7 @@ def vcycle_amg(
             resolve_jacobi_default(smoother, smoother_omega),
             n_pre=n_pre,
             n_post=n_post,
-            coarse_solver=dense_coarse_solve,
+            coarse_solver_factory=dense_lu_coarse_solver,
         ),
         n_levels=n_levels,
         linear=True,
@@ -128,7 +128,7 @@ def wcycle_amg(
             resolve_jacobi_default(smoother, smoother_omega),
             n_pre=n_pre,
             n_post=n_post,
-            coarse_solver=dense_coarse_solve,
+            coarse_solver_factory=dense_lu_coarse_solver,
         ),
         n_levels=n_levels,
         linear=True,

@@ -38,7 +38,9 @@ from torchalg.preconditioners.implementations.amg._prolongation import (
     jacobi_prolongation,
     make_bridge,
 )
-from torchalg.preconditioners.implementations.amg._relaxation import symmetric_gauss_seidel
+from torchalg.preconditioners.implementations.amg._relaxation import (
+    prepare_symmetric_gauss_seidel,
+)
 from torchalg.preconditioners.implementations.amg.adaptive import adaptive_sa_hierarchy
 from torchalg.preconditioners.implementations.amg.smoothers import JacobiSmoother
 from torchalg.utils.spectral import approximate_spectral_radius
@@ -105,7 +107,7 @@ class TestSymmetricGaussSeidel:
         pyamg_gauss_seidel(
             to_csr(aniso_matrix), expected, b.numpy(), iterations=iterations, sweep="symmetric"
         )
-        ours = symmetric_gauss_seidel(aniso_matrix, x, b, iterations)
+        ours = prepare_symmetric_gauss_seidel(aniso_matrix).smooth(b, x, iterations)
         np.testing.assert_allclose(ours.numpy(), expected, atol=ATOL)
 
     def test_zero_diagonal_rows_are_skipped_like_pyamg(
@@ -114,7 +116,7 @@ class TestSymmetricGaussSeidel:
         x, b = random_pair
         expected = x.numpy().copy()
         pyamg_gauss_seidel(to_csr(matrix_with_dead_row), expected, b.numpy(), sweep="symmetric")
-        ours = symmetric_gauss_seidel(matrix_with_dead_row, x, b, 1)
+        ours = prepare_symmetric_gauss_seidel(matrix_with_dead_row).smooth(b, x, 1)
         np.testing.assert_allclose(ours.numpy(), expected, atol=ATOL)
         assert ours[5] == x[5]
 
@@ -127,7 +129,7 @@ class TestSymmetricGaussSeidel:
         pyamg_gauss_seidel_indexed(
             to_csr(aniso_matrix), expected, b.numpy(), rows.numpy(), iterations=2, sweep="symmetric"
         )
-        ours = symmetric_gauss_seidel(aniso_matrix, x, b, 2, rows=rows)
+        ours = prepare_symmetric_gauss_seidel(aniso_matrix, rows=rows).smooth(b, x, 2)
         np.testing.assert_allclose(ours.numpy(), expected, atol=ATOL)
 
 
@@ -279,7 +281,8 @@ class TestAdaptiveSolverAgainstPyAMG:
         smoother = ("jacobi", {"omega": SOLVE_OMEGA, "iterations": 1, "withrho": False})
         change_smoothers(reference, smoother, smoother)
         oracle = reference.aspreconditioner(cycle="V").matvec(residual.numpy())
-        ours = prebuilt_cycle(JacobiSmoother(SOLVE_OMEGA)).apply(result.hierarchy, residual)
+        cycle = prebuilt_cycle(JacobiSmoother(SOLVE_OMEGA))
+        ours = cycle.apply(cycle.prepare(result.hierarchy), residual)
         np.testing.assert_allclose(ours.numpy(), oracle, atol=1e-8)
 
     def test_aggregation_matches_pyamg_on_sorted_graph(self, aniso_matrix: torch.Tensor) -> None:

@@ -2,44 +2,48 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.cycle``
 (see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor`` and
-``numpy.linalg.solve`` replaced by ``torch.linalg.solve`` for the coarsest
-direct solve. Both cycles are format-agnostic: every op here is either
+``numpy.linalg.solve`` replaced by a prepared (factor-once) coarsest direct solve. Both cycles are format-agnostic: every op here is either
 ``matrix @ x`` (works identically for dense or sparse CSR) or delegated to
-the injected ``MultigridSmoother``/``TransferOperator``/``coarse_solver``,
+the injected ``MultigridSmoother``/``TransferOperator``/coarse-solver factory,
 so a sparse ``CoarseningStrategy`` keeps every non-coarsest level sparse CSR
 throughout the cycle - only the coarsest-level solve is format-committing
-(``torch.linalg.solve`` by default; see
-``torchalg.sparse.preconditioners.amg.coarse_solve.dense_coarse_solve`` for
-the sparse-aware adapter).
+(``lu_coarse_solver`` by default; see
+``torchalg.sparse.preconditioners.amg.coarse_solve`` for the sparse-aware
+adapters). Smoothers and the coarse solve are prepared once per hierarchy by
+``cycle.prepare``; ``apply`` does no matrix-dependent one-off work.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import torch
 
-from .hierarchy import MultigridHierarchy
+from .coarse_solve import (
+    CoarseSolve,
+    CoarseSolverFactory,
+    HierarchyNotPreparedError,
+    lu_coarse_solver,
+)
+from .hierarchy import MultigridHierarchy, MultigridLevel, prepare_hierarchy
 
 if TYPE_CHECKING:
-    from .protocols import MultigridSmoother
+    from .protocols import MultigridSmoother, PreparedSmoother
 
 
-def pseudo_inverse_solve(matrix: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
-    """Coarsest-level solve ``pinv(A) @ rhs``, valid for singular coarse matrices.
+_NOT_PREPARED = "Call cycle.prepare(hierarchy) after building a hierarchy and apply the result."
 
-    PyAMG's default coarse solver (``'pinv'``); needed when dropped candidates
-    leave zero rows/columns in the coarse matrix.
 
-    Args:
-        matrix (torch.Tensor): Coarsest-level matrix.
-        rhs (torch.Tensor): Right-hand side.
+def _coarse_solve_of(level: MultigridLevel) -> CoarseSolve:
+    if level.coarse_solve is None:
+        raise HierarchyNotPreparedError(_NOT_PREPARED)
+    return level.coarse_solve
 
-    Returns:
-        torch.Tensor: Minimum-norm least-squares solution.
-    """
-    return torch.linalg.pinv(matrix) @ rhs
+
+def _smoother_of(level: MultigridLevel) -> PreparedSmoother:
+    if level.smoother is None:
+        raise HierarchyNotPreparedError(_NOT_PREPARED)
+    return level.smoother
 
 
 class VCycle:
@@ -53,8 +57,8 @@ class VCycle:
             coarse-grid correction.
         n_pre (int): Pre-smoothing steps.
         n_post (int): Post-smoothing steps.
-        coarse_solver (Callable[[torch.Tensor, torch.Tensor], torch.Tensor]):
-            Solve on the coarsest level; ``torch.linalg.solve`` by default.
+        coarse_solver_factory (CoarseSolverFactory): Builds the coarsest-level
+            solve once per hierarchy (``prepare``); ``lu_coarse_solver`` by default.
 
     References:
         - Briggs, W. L., Henson, V. E., & McCormick, S. F. (2000).
@@ -68,7 +72,7 @@ class VCycle:
         smoother: MultigridSmoother,
         n_pre: int = 2,
         n_post: int = 2,
-        coarse_solver: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = torch.linalg.solve,
+        coarse_solver_factory: CoarseSolverFactory = lu_coarse_solver,
     ) -> None:
         """Store the smoother, pre/post-smoothing step counts and coarse solver.
 
@@ -77,13 +81,29 @@ class VCycle:
                 the coarse-grid correction.
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
-            coarse_solver (Callable[[torch.Tensor, torch.Tensor], torch.Tensor]):
-                Solve on the coarsest level.
+            coarse_solver_factory (CoarseSolverFactory): Builds the coarsest-level
+                solve once per hierarchy.
         """
         self._smoother = smoother
         self._n_pre = n_pre
         self._n_post = n_post
-        self._coarse_solver = coarse_solver
+        self._coarse_solver_factory = coarse_solver_factory
+
+    def prepare(self, hierarchy: MultigridHierarchy) -> MultigridHierarchy:
+        """Prepare every level once and return the prepared hierarchy.
+
+        Binds the smoother to each non-coarsest level (diagonal inverse, spectral-radius
+        damping, triangular factors, ...) and factorizes the coarsest level. Idempotent.
+        The prepared state lives on the returned hierarchy, not on this cycle, so one cycle
+        instance can serve many matrices.
+
+        Args:
+            hierarchy (MultigridHierarchy): Hierarchy from ``build_hierarchy``.
+
+        Returns:
+            MultigridHierarchy: Hierarchy that ``apply`` accepts.
+        """
+        return prepare_hierarchy(hierarchy, self._smoother, self._coarse_solver_factory)
 
     def apply(self, hierarchy: MultigridHierarchy, rhs: torch.Tensor) -> torch.Tensor:
         """Compute one V-cycle starting from the finest level.
@@ -107,12 +127,14 @@ class VCycle:
         level = hierarchy.levels[level_idx]
         matrix = level.matrix
 
-        # Coarsest level: direct dense solve.
+        # Coarsest level: prepared direct solve.
         if level.transfer is None:
-            return self._coarse_solver(matrix, rhs)
+            return _coarse_solve_of(level)(rhs)
 
-        # Pre-smooth.
-        x = self._smoother.smooth(matrix, rhs, torch.zeros_like(rhs), self._n_pre)
+        smoother = _smoother_of(level)
+
+        # Pre-smooth from the zero initial guess (skips the A @ 0 matvec).
+        x = smoother.smooth_from_zero(rhs, self._n_pre)
 
         # Restrict residual to coarse grid.
         r_fine = rhs - matrix @ x
@@ -125,7 +147,7 @@ class VCycle:
         x = x + level.transfer.prolongate(e_coarse)
 
         # Post-smooth.
-        return self._smoother.smooth(matrix, rhs, x, self._n_post)
+        return smoother.smooth(rhs, x, self._n_post)
 
 
 class WCycle:
@@ -142,9 +164,9 @@ class WCycle:
             coarse-grid corrections.
         n_pre (int): Pre-smoothing steps.
         n_post (int): Post-smoothing steps.
-        coarse_solver (Callable[[torch.Tensor, torch.Tensor], torch.Tensor]):
-            Solve on the coarsest level; ``torch.linalg.solve`` by default
-            (matches ``VCycle``'s equivalent parameter).
+        coarse_solver_factory (CoarseSolverFactory): Builds the coarsest-level
+            solve once per hierarchy (``prepare``); ``lu_coarse_solver`` by
+            default (matches ``VCycle``'s equivalent parameter).
 
     References:
         - Briggs, W. L., Henson, V. E., & McCormick, S. F. (2000).
@@ -161,7 +183,7 @@ class WCycle:
         smoother: MultigridSmoother,
         n_pre: int = 2,
         n_post: int = 2,
-        coarse_solver: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = torch.linalg.solve,
+        coarse_solver_factory: CoarseSolverFactory = lu_coarse_solver,
     ) -> None:
         """Store the smoother, pre/post-smoothing step counts and coarse solver.
 
@@ -170,13 +192,29 @@ class WCycle:
                 the coarse-grid corrections.
             n_pre (int): Pre-smoothing steps.
             n_post (int): Post-smoothing steps.
-            coarse_solver (Callable[[torch.Tensor, torch.Tensor], torch.Tensor]):
-                Solve on the coarsest level.
+            coarse_solver_factory (CoarseSolverFactory): Builds the coarsest-level
+                solve once per hierarchy.
         """
         self._smoother = smoother
         self._n_pre = n_pre
         self._n_post = n_post
-        self._coarse_solver = coarse_solver
+        self._coarse_solver_factory = coarse_solver_factory
+
+    def prepare(self, hierarchy: MultigridHierarchy) -> MultigridHierarchy:
+        """Prepare every level once and return the prepared hierarchy.
+
+        Binds the smoother to each non-coarsest level (diagonal inverse, spectral-radius
+        damping, triangular factors, ...) and factorizes the coarsest level. Idempotent.
+        The prepared state lives on the returned hierarchy, not on this cycle, so one cycle
+        instance can serve many matrices.
+
+        Args:
+            hierarchy (MultigridHierarchy): Hierarchy from ``build_hierarchy``.
+
+        Returns:
+            MultigridHierarchy: Hierarchy that ``apply`` accepts.
+        """
+        return prepare_hierarchy(hierarchy, self._smoother, self._coarse_solver_factory)
 
     def apply(self, hierarchy: MultigridHierarchy, rhs: torch.Tensor) -> torch.Tensor:
         """Compute one W-cycle starting from the finest level.
@@ -200,12 +238,14 @@ class WCycle:
         level = hierarchy.levels[level_idx]
         matrix = level.matrix
 
-        # Coarsest level: direct solve (coarse_solver may densify first).
+        # Coarsest level: prepared direct solve.
         if level.transfer is None:
-            return self._coarse_solver(matrix, rhs)
+            return _coarse_solve_of(level)(rhs)
 
-        # Pre-smooth from zero initial guess.
-        x = self._smoother.smooth(matrix, rhs, torch.zeros_like(rhs), self._n_pre)
+        smoother = _smoother_of(level)
+
+        # Pre-smooth from the zero initial guess (skips the A @ 0 matvec).
+        x = smoother.smooth_from_zero(rhs, self._n_pre)
 
         # gamma = 2: two coarse-grid corrections, recomputing residual each time.
         for _ in range(2):
@@ -215,4 +255,4 @@ class WCycle:
             x = x + level.transfer.prolongate(e_coarse)
 
         # Post-smooth.
-        return self._smoother.smooth(matrix, rhs, x, self._n_post)
+        return smoother.smooth(rhs, x, self._n_post)

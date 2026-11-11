@@ -4,7 +4,7 @@ Sparse-CSR sibling of
 ``preconditioners.implementations.amg._presets`` - same shared wiring
 (setup cycle, solve-time cycle factory, seeded draw, placeholder
 coarsening), built from this package's own sparse-native
-``GaussSeidelSmoother``/``dense_pseudo_inverse_solve`` instead of the dense
+``GaussSeidelStage``/``dense_pseudo_inverse_coarse_solver`` instead of the dense
 versions.
 """
 
@@ -14,13 +14,13 @@ import torch
 
 from torchalg.multigrid import VCycle
 from torchalg.sparse.preconditioners.amg._presets import (
-    GS_SETUP_CYCLE,
     PrebuiltCoarsening,
+    gs_setup_cycle,
     prebuilt_cycle,
     seeded_draw,
 )
-from torchalg.sparse.preconditioners.amg.coarse_solve import dense_pseudo_inverse_solve
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelSmoother
+from torchalg.sparse.preconditioners.amg.coarse_solve import dense_pseudo_inverse_coarse_solver
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelSmoother, GaussSeidelStage
 
 
 class TestSeededDraw:
@@ -36,10 +36,20 @@ class TestSeededDraw:
 
 
 class TestGSSetupCycle:
-    def test_is_a_vcycle_with_sparse_gauss_seidel(self) -> None:
-        assert isinstance(GS_SETUP_CYCLE, VCycle)
-        assert isinstance(GS_SETUP_CYCLE._smoother, GaussSeidelSmoother)
-        assert GS_SETUP_CYCLE._coarse_solver is dense_pseudo_inverse_solve
+    def test_is_a_vcycle_smoothing_through_the_given_stage(self) -> None:
+        stage = GaussSeidelStage()
+        cycle = gs_setup_cycle(stage)
+        assert isinstance(cycle, VCycle)
+        assert cycle._smoother is stage
+        assert cycle._n_pre == 1
+        assert cycle._n_post == 1
+        assert cycle._coarse_solver_factory is dense_pseudo_inverse_coarse_solver
+
+    def test_cycles_of_distinct_stages_do_not_share_state(self) -> None:
+        assert (
+            gs_setup_cycle(GaussSeidelStage())._smoother
+            is not gs_setup_cycle(GaussSeidelStage())._smoother
+        )
 
 
 class TestPrebuiltCycle:
@@ -50,7 +60,7 @@ class TestPrebuiltCycle:
         assert cycle._smoother is smoother
         assert cycle._n_pre == 2
         assert cycle._n_post == 3
-        assert cycle._coarse_solver is dense_pseudo_inverse_solve
+        assert cycle._coarse_solver_factory is dense_pseudo_inverse_coarse_solver
 
 
 class TestPrebuiltCoarsening:

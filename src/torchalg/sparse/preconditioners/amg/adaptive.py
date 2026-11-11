@@ -19,11 +19,14 @@ swapped for its sparse sibling:
   prolongation``'s ``P = T - (omega / rho) D^-1 A T`` formula.
 - ``make_bridge`` -> ``sparse_make_bridge`` (``._prolongation``).
 - ``symmetric_gauss_seidel`` (incl. its indexed ``rows=`` variant) ->
-  ``sparse_symmetric_gauss_seidel`` (``._gauss_seidel``).
+  ``PreparedSymmetricGaussSeidel`` (``._gauss_seidel``), prepared once per
+  level matrix through a stage-scoped ``GaussSeidelStage`` (``.smoothers``);
+  the trial cycles' sub-hierarchy operators likewise come from a
+  stage-scoped ``TransferOperatorCache`` (``.transfer``).
 - dense ``P.T @ A @ P`` Galerkin products -> ``form_sparse_sparse``
   (``torchalg.sparse.kernels.galerkin``).
 - ``DenseTransferOperator`` -> ``SparseTransferOperator`` (``.transfer``).
-- ``pseudo_inverse_solve`` -> ``dense_pseudo_inverse_solve``
+- ``pseudo_inverse_coarse_solver`` -> ``dense_pseudo_inverse_coarse_solver``
   (``.coarse_solve``) - the one deliberate densification, at whatever
   level's coarsest matrix a trial setup cycle bottoms out at, mirroring the
   same precedent as every other sparse coarsest-level solve in this tree.
@@ -64,19 +67,18 @@ from torchalg.sparse.kernels.galerkin import form_sparse_sparse
 from torchalg.utils.spectral import approximate_spectral_radius
 from torchalg.utils.tentative import fit_candidates
 
-from ._gauss_seidel import sparse_symmetric_gauss_seidel
 from ._jacobi_omega import scaled_by_inverse_diagonal
 from ._node_strength import sparse_node_strength
-from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
+from ._presets import PrebuiltCoarsening, gs_setup_cycle, prebuilt_cycle, seeded_draw
 from ._prolongation import sparse_make_bridge
 from .aggregation import sparse_smoothed_prolongation, sparse_standard_aggregation
-from .coarse_solve import dense_pseudo_inverse_solve
-from .smoothers import resolve_jacobi_default
-from .transfer import SparseTransferOperator
+from .smoothers import GaussSeidelStage, resolve_jacobi_default
+from .transfer import SparseTransferOperator, TransferOperatorCache
 
 if TYPE_CHECKING:
     from typing import Self
 
+    from torchalg.multigrid import VCycle
     from torchalg.multigrid.protocols import MultigridSmoother
 
 _SOLVE_TOLERANCE = 1e-20
@@ -106,7 +108,13 @@ class _Predefined:
 
 @dataclass(frozen=True)
 class _Params:
-    """Setup parameters shared by every stage."""
+    """Setup parameters and stage-scoped prepared state shared by every stage.
+
+    ``gauss_seidel`` and ``transfers`` live exactly as long as one
+    ``adaptive_sa_hierarchy`` call: they prepare each distinct level matrix and
+    each prolongation once, however many relaxation sweeps or trial cycles
+    revisit it. ``setup_cycle`` is the GS V(1,1) cycle prepared through them.
+    """
 
     theta: float
     omega: float
@@ -114,6 +122,9 @@ class _Params:
     max_levels: int
     max_coarse: int
     draw: Callable[[int], torch.Tensor]
+    gauss_seidel: GaussSeidelStage
+    transfers: TransferOperatorCache
+    setup_cycle: VCycle
 
     def spectral_radius(self, matrix: torch.Tensor) -> torch.Tensor:
         """Arnoldi estimate of ``rho`` drawing from the shared random stream.
@@ -235,14 +246,17 @@ def _relax(matrix: torch.Tensor, x: torch.Tensor, params: _Params) -> torch.Tens
     Returns:
         torch.Tensor: Relaxed vector.
     """
-    return sparse_symmetric_gauss_seidel(matrix, x, torch.zeros_like(x), params.candidate_iters)
+    return params.gauss_seidel.prepare(matrix).smooth(
+        torch.zeros_like(x), x, params.candidate_iters
+    )
 
 
-def _hierarchy_of(levels: list[_Level]) -> MultigridHierarchy:
+def _hierarchy_of(levels: list[_Level], params: _Params) -> MultigridHierarchy:
     """Engine hierarchy over working levels.
 
     Args:
         levels (list[_Level]): Working levels, finest first.
+        params (_Params): Setup parameters; supply the stage's transfer-operator cache.
 
     Returns:
         MultigridHierarchy: Hierarchy sharing the levels' tensors.
@@ -252,29 +266,32 @@ def _hierarchy_of(levels: list[_Level]) -> MultigridHierarchy:
         tuple(
             MultigridLevel(
                 matrix=level.A,
-                transfer=None if index == last else SparseTransferOperator(_built(level.P)),
+                transfer=None if index == last else params.transfers(_built(level.P)),
             )
             for index, level in enumerate(levels)
         )
     )
 
 
-def _solve(levels: list[_Level], x: torch.Tensor, iterations: int) -> torch.Tensor:
+def _solve(levels: list[_Level], x: torch.Tensor, iterations: int, params: _Params) -> torch.Tensor:
     """PyAMG's ``solve(b=0, x0=x, tol=1e-20, maxiter=iterations)`` with V-cycles, sparse CSR.
 
     Args:
         levels (list[_Level]): Working levels, finest first.
         x (torch.Tensor): Initial guess.
         iterations (int): Maximum number of cycles.
+        params (_Params): Setup parameters; supply the stage's setup cycle.
 
     Returns:
         torch.Tensor: Iterate after the cycles.
     """
     if len(levels) == 1:
-        return dense_pseudo_inverse_solve(levels[0].A, torch.zeros_like(x))
-    hierarchy, matrix = _hierarchy_of(levels), levels[0].A
+        return torch.zeros_like(x)
+    cycle = params.setup_cycle
+    hierarchy = cycle.prepare(_hierarchy_of(levels, params))
+    matrix = levels[0].A
     for _ in range(iterations):
-        x = x - GS_SETUP_CYCLE.apply(hierarchy, matrix @ x)
+        x = x - cycle.apply(hierarchy, matrix @ x)
         if torch.linalg.norm(matrix @ x) < _SOLVE_TOLERANCE:
             break
     return x
@@ -392,7 +409,7 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
         torch.Tensor: The new fine-level candidate (not yet normalized).
     """
     fine = levels[0].A
-    x = _solve(levels, params.random_vector(fine, fine.shape[0]), params.candidate_iters)
+    x = _solve(levels, params.random_vector(fine, fine.shape[0]), params.candidate_iters, params)
     for i in range(len(levels) - 2):
         candidates = torch.cat([levels[i].B, x.unsqueeze(1)], dim=1)
         tentative_dense, coarse = fit_candidates(_built(levels[i].aggregate), candidates)
@@ -404,15 +421,15 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
         levels[i + 1].A = form_sparse_sparse(prolongation, levels[i].A)
         bridge = sparse_make_bridge(_built(levels[i + 1].T), levels[i + 1].dofs)
         levels[i + 1].P = _jacobi_prolongation(levels[i + 1].A, bridge, params.omega, params)
-        x = _solve(levels[i + 1 :], x, params.candidate_iters)
+        x = _solve(levels[i + 1 :], x, params.candidate_iters, params)
         levels[i + 1].B = coarse[:, :-1].clone()
         levels[i + 1].T = bridge
         levels[i + 1].dofs = candidates.shape[1]
     for level in reversed(levels[:-2]):
         x = _built(level.P) @ x
         rows = torch.nonzero(x).flatten()
-        x = sparse_symmetric_gauss_seidel(
-            level.A, x, torch.zeros_like(x), params.candidate_iters, rows=rows
+        x = params.gauss_seidel.prepare(level.A).smooth(
+            torch.zeros_like(x), x, params.candidate_iters, rows=rows
         )
     return x
 
@@ -458,8 +475,17 @@ def adaptive_sa_hierarchy(
     Raises:
         ValueError: If a computed candidate is identically zero.
     """
+    gauss_seidel = GaussSeidelStage()
     params = _Params(
-        theta, omega, candidate_iters, max_levels, max_coarse, draw or seeded_draw(seed)
+        theta,
+        omega,
+        candidate_iters,
+        max_levels,
+        max_coarse,
+        draw or seeded_draw(seed),
+        gauss_seidel=gauss_seidel,
+        transfers=TransferOperatorCache(),
+        setup_cycle=gs_setup_cycle(gauss_seidel),
     )
     predefined: _Predefined | None = None
     if initial_candidates is None:

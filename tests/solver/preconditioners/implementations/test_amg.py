@@ -135,7 +135,7 @@ class TestJacobiSmoother:
         smoother = JacobiSmoother(omega=0.67)
         rhs = torch.ones(6, dtype=small_spd_amg.dtype)
         x = torch.zeros(6, dtype=small_spd_amg.dtype)
-        x_smooth = smoother.smooth(small_spd_amg, rhs, x, steps=5)
+        x_smooth = smoother.prepare(small_spd_amg).smooth(rhs, x, steps=5)
         r_before = torch.linalg.norm(rhs - small_spd_amg @ x)
         r_after = torch.linalg.norm(rhs - small_spd_amg @ x_smooth)
         assert r_after < r_before
@@ -144,15 +144,17 @@ class TestJacobiSmoother:
         """Output shape must match input shape."""
         smoother = JacobiSmoother()
         rhs = torch.ones(6, dtype=small_spd_amg.dtype)
-        x = smoother.smooth(small_spd_amg, rhs, torch.zeros(6, dtype=small_spd_amg.dtype), steps=1)
+        x = smoother.prepare(small_spd_amg).smooth(
+            rhs, torch.zeros(6, dtype=small_spd_amg.dtype), steps=1
+        )
         assert x.shape == (6,)
 
-    def test_zero_steps_returns_copy(self, small_spd_amg: torch.Tensor) -> None:
+    def test_zero_steps_returns_the_iterate_unchanged(self, small_spd_amg: torch.Tensor) -> None:
         """Zero smoothing steps should return the initial iterate unchanged."""
         smoother = JacobiSmoother()
         x0 = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=small_spd_amg.dtype)
         rhs = torch.ones(6, dtype=small_spd_amg.dtype)
-        x = smoother.smooth(small_spd_amg, rhs, x0, steps=0)
+        x = smoother.prepare(small_spd_amg).smooth(rhs, x0, steps=0)
         torch.testing.assert_close(x, x0)
 
 
@@ -743,7 +745,7 @@ class TestSmootherBase:
         smoother = JacobiSmoother()
         rhs = torch.ones(6, dtype=small_spd_amg.dtype)
         x0 = torch.zeros(6, dtype=small_spd_amg.dtype)
-        result = smoother.smooth(small_spd_amg, rhs, x0, steps=1)
+        result = smoother.prepare(small_spd_amg).smooth(rhs, x0, steps=1)
         assert result.shape == x0.shape
 
 
@@ -841,14 +843,12 @@ class TestAMGPresets:
         self,
         amg_preset_class: Callable[..., AMGPreconditioner],
         poisson_1d: torch.Tensor,
-        poisson_rhs: torch.Tensor,
         raising_smoother: MultigridSmoother,
     ) -> None:
         """Every SA-AMG preset must delegate solve-time smoothing to the injected strategy."""
         precond = amg_preset_class(poisson_1d, n_levels=2, smoother=raising_smoother)
-        precond.setup(poisson_1d)
         with pytest.raises(RuntimeError, match="configured smoother used"):
-            precond.apply(poisson_rhs)
+            precond.setup(poisson_1d)
 
     def test_fcg_converges(
         self,

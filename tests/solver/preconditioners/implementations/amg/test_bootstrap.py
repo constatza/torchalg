@@ -59,7 +59,7 @@ def _dense_bootstrap_setup(
             draw=draw,
         ),
         transfer_operator_factory=DenseTransferOperator,
-        relaxation=GaussSeidelSmoother().smooth,
+        relaxation=GaussSeidelSmoother(),
         setup_cycle=GS_SETUP_CYCLE,
         **other_setup_kwargs,
     )
@@ -83,7 +83,7 @@ def bamg_coarsening(seeded_test_vectors_16_3: torch.Tensor) -> BAMGCoarsening:
     """``BAMGCoarsening`` seeded with ``seeded_test_vectors_16_3``, caliber 3, LSR on."""
     return BAMGCoarsening(
         seeded_test_vectors_16_3,
-        relaxation=GaussSeidelSmoother().smooth,
+        relaxation=GaussSeidelSmoother(),
         nu=5,
         delta=0.7,
         theta_ad=0.5,
@@ -167,7 +167,7 @@ def test_bamg_coarsening_without_lsr_also_produces_psd_galerkin_operator(
     """Plain LS (``use_lsr=False``) must also produce a valid, strictly smaller Galerkin operator."""
     coarsening = BAMGCoarsening(
         seeded_test_vectors_16_3,
-        relaxation=GaussSeidelSmoother().smooth,
+        relaxation=GaussSeidelSmoother(),
         nu=5,
         delta=0.7,
         theta_ad=0.5,
@@ -211,7 +211,7 @@ def test_bamg_coarsening_fit_vectors_corrects_every_vector_at_its_own_top_residu
     test_vectors = torch.stack([vector_a, vector_b], dim=1)
     fine_points = torch.arange(n, dtype=torch.long)
 
-    coarsening = BAMGCoarsening(test_vectors, relaxation=GaussSeidelSmoother().smooth, use_lsr=True)
+    coarsening = BAMGCoarsening(test_vectors, relaxation=GaussSeidelSmoother(), use_lsr=True)
     corrected = coarsening._fit_vectors(matrix, test_vectors, fine_points)
 
     assert not torch.equal(corrected[:, 0], test_vectors[:, 0]), (
@@ -272,7 +272,7 @@ def test_bamg_coarsening_last_prolongation_raises_before_build_transfer(
     seeded_test_vectors_16_3: torch.Tensor,
 ) -> None:
     """Reading ``last_prolongation`` before any ``build_transfer`` call raises, not returns stale/None data."""
-    coarsening = BAMGCoarsening(seeded_test_vectors_16_3, relaxation=GaussSeidelSmoother().smooth)
+    coarsening = BAMGCoarsening(seeded_test_vectors_16_3, relaxation=GaussSeidelSmoother())
     with pytest.raises(RuntimeError, match="build_transfer has not been called"):
         _ = coarsening.last_prolongation
 
@@ -305,7 +305,7 @@ def test_bamg_coarsening_prolongation_has_no_all_zero_rows_for_tiny_test_vectors
 ) -> None:
     """The same invariant must hold for bootstrap-shrunk test vectors (~1e-08), not only unit-scale ones."""
     coarsening = BAMGCoarsening(
-        bootstrap_scale_test_vectors, relaxation=GaussSeidelSmoother().smooth, caliber=3
+        bootstrap_scale_test_vectors, relaxation=GaussSeidelSmoother(), caliber=3
     )
     coarsening.build_transfer(poisson_16)
 
@@ -722,7 +722,6 @@ def test_bootstrap_amg_preconditioner_accepts_test_vector_draw(
 
 def test_bootstrap_amg_preconditioner_uses_configured_solve_smoother(
     anisotropic_2d_matrix_64: torch.Tensor,
-    pcg_rhs_64: torch.Tensor,
     raising_smoother: MultigridSmoother,
 ) -> None:
     """BAMG setup stays internal, while its solve-time cycle uses the injected smoother."""
@@ -733,9 +732,8 @@ def test_bootstrap_amg_preconditioner_uses_configured_solve_smoother(
         seed=5,
         smoother=raising_smoother,
     )
-    preconditioner.setup(anisotropic_2d_matrix_64)
     with pytest.raises(RuntimeError, match="configured smoother used"):
-        preconditioner.apply(pcg_rhs_64)
+        preconditioner.setup(anisotropic_2d_matrix_64)
 
 
 def test_bootstrap_amg_preconditioner_raises_when_setup_yields_a_single_level(

@@ -1,8 +1,8 @@
 """Spectral damping rules for weighted Jacobi: relaxation ``1/rho`` and prolongation ``(4/3)/rho``.
 
-``rho = rho(D^-1 A)`` is estimated once per matrix object (seeded Arnoldi,
-cached) and shared by the relaxation and the prolongator smoothing of the
-same level. A float still fixes omega explicitly.
+``rho = rho(D^-1 A)`` is a pure seeded-Arnoldi estimate: nothing is cached, so each
+setup stage (prolongator smoothing, ``JacobiSmoother.prepare``) computes its own once.
+A float still fixes omega explicitly.
 """
 
 from __future__ import annotations
@@ -91,20 +91,24 @@ class TestSpectralRadius:
             poisson_matrix.clone()
         )
 
-    def test_is_cached_per_matrix_object(
+    def test_is_not_cached_per_matrix_object(
         self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
-        fresh = poisson_matrix.clone()
-        jacobi_spectral_radius(fresh)
-        jacobi_spectral_radius(fresh)
-        assert len(estimator_calls) == 1
+        matrix = poisson_matrix.clone()
+        first = jacobi_spectral_radius(matrix)
+        second = jacobi_spectral_radius(matrix)
+        assert len(estimator_calls) == 2
+        assert first == second
 
-    def test_is_cached_for_inference_tensor(
-        self, inference_poisson_matrix: torch.Tensor, estimator_calls: list[int]
+    def test_works_on_an_inference_tensor(
+        self, inference_poisson_matrix: torch.Tensor, exact_radius: float
     ) -> None:
-        jacobi_spectral_radius(inference_poisson_matrix)
-        jacobi_spectral_radius(inference_poisson_matrix)
-        assert len(estimator_calls) == 1
+        assert jacobi_spectral_radius(inference_poisson_matrix) == pytest.approx(
+            exact_radius, rel=0.02
+        )
+
+    def test_module_keeps_no_global_state(self) -> None:
+        assert not hasattr(jacobi_omega_module, "_cache")
 
 
 class TestRules:
@@ -125,9 +129,11 @@ class TestJacobiSmoother:
     ) -> None:
         rho = jacobi_spectral_radius(poisson_matrix)
         zero = torch.zeros_like(start_vector)
-        expected = JacobiSmoother(omega=1.0 / rho).smooth(poisson_matrix, zero, start_vector, 3)
+        expected = (
+            JacobiSmoother(omega=1.0 / rho).prepare(poisson_matrix).smooth(zero, start_vector, 3)
+        )
         assert torch.allclose(
-            JacobiSmoother().smooth(poisson_matrix, zero, start_vector, 3), expected
+            JacobiSmoother().prepare(poisson_matrix).smooth(zero, start_vector, 3), expected
         )
 
     def test_default_converges_where_a_fixed_omega_diverges(
@@ -135,8 +141,8 @@ class TestJacobiSmoother:
     ) -> None:
         x = torch.ones(10, dtype=torch_dtype)
         zero = torch.zeros(10, dtype=torch_dtype)
-        fixed = JacobiSmoother(omega=0.67).smooth(high_radius_matrix, zero, x, 30)
-        spectral = JacobiSmoother().smooth(high_radius_matrix, zero, x, 30)
+        fixed = JacobiSmoother(omega=0.67).prepare(high_radius_matrix).smooth(zero, x, 30)
+        spectral = JacobiSmoother().prepare(high_radius_matrix).smooth(zero, x, 30)
         assert torch.linalg.norm(fixed) > 1e3
         assert torch.linalg.norm(spectral) < torch.linalg.norm(x)
 
@@ -167,19 +173,19 @@ class TestPresets:
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
         assert not torch.allclose(explicit.apply(residual), default.apply(residual))
 
-    def test_estimation_is_shared_and_not_repeated_per_apply(
+    def test_estimation_happens_in_setup_once_per_stage_and_never_in_apply(
         self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
         matrix = poisson_matrix.clone()
         precond = vcycle_amg(matrix, n_levels=3)
         precond.setup(matrix)
+        after_setup = len(estimator_calls)
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
-        precond.apply(residual)
-        after_first = len(estimator_calls)
-        for _ in range(3):
+        for _ in range(4):
             precond.apply(residual)
-        assert len(estimator_calls) == after_first
-        assert after_first <= 3
+        assert len(estimator_calls) == after_setup
+        # 2 prolongator smoothings + 2 smoother preparations (the coarsest level has no smoother).
+        assert after_setup == 4
 
     def test_pod_preset_uses_smoother_omega(
         self, poisson_matrix: torch.Tensor, torch_dtype: torch.dtype

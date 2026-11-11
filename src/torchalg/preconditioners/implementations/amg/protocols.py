@@ -13,7 +13,14 @@ from torchalg.multigrid.protocols import (
     CoarseningStrategy,
     MultigridCycle,
     MultigridSmoother,
+    PreparedSmoother,
     TransferOperator,
 )
 
-__all__ = ["CoarseningStrategy", "MultigridCycle", "MultigridSmoother", "TransferOperator"]
+__all__ = [
+    "CoarseningStrategy",
+    "MultigridCycle",
+    "MultigridSmoother",
+    "PreparedSmoother",
+    "TransferOperator",
+]

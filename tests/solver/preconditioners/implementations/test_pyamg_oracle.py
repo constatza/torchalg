@@ -70,7 +70,8 @@ class TestCycleAgainstPyAMG:
     ) -> None:
         name, cycle_class = cycle_pair
         hierarchy = build_hierarchy(aniso_matrix, AggregationCoarsening(), 3)
-        ours = cycle_class(JacobiSmoother(OMEGA), n_pre=N_PRE, n_post=N_POST).apply(hierarchy, rhs)
+        cycle = cycle_class(JacobiSmoother(OMEGA), n_pre=N_PRE, n_post=N_POST)
+        ours = cycle.apply(cycle.prepare(hierarchy), rhs)
         oracle = as_torch_preconditioner(
             multilevel_from_hierarchy(hierarchy, OMEGA, N_PRE, N_POST), name, torch_dtype
         )
@@ -111,7 +112,6 @@ class TestResidualHistoryAgainstPyAMG:
     def test_adaptive_sa_uses_configured_solve_smoother(
         self,
         aniso_matrix: torch.Tensor,
-        rhs: torch.Tensor,
         raising_smoother: MultigridSmoother,
     ) -> None:
         """Adaptive setup remains GS-faithful while its solve-time smoother is injectable."""
@@ -121,9 +121,8 @@ class TestResidualHistoryAgainstPyAMG:
             max_coarse=5,
             smoother=raising_smoother,
         )
-        preconditioner.setup(aniso_matrix)
         with pytest.raises(RuntimeError, match="configured smoother used"):
-            preconditioner.apply(rhs)
+            preconditioner.setup(aniso_matrix)
 
     def test_adaptive_sa_defaults_to_jacobi_at_solve_time(
         self,

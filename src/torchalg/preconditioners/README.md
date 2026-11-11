@@ -118,6 +118,16 @@ levels are computed elsewhere (as `AdaptiveSAPreconditioner` does). Calling
 `setup()` again - e.g. after `bind_inputs()` changes an extra input, or to
 rebind to a new/changed matrix - simply rebuilds the hierarchy from scratch.
 
+Dense `IC0Preconditioner` and `ILUPreconditioner` factorize in
+`implementations/_masked_factorization.py` with a right-looking elimination:
+one masked rank-1 update per pivot over the stored rows and columns only
+(per-row index lists from a single `nonzero`), so setup costs the pattern's
+fill-free work rather than `O(n^3)` Python steps, and neither elimination
+synchronizes with the device per entry or per pivot (IC(0) reports a
+non-positive pivot once, after the loop). `ILUPreconditioner.apply` solves
+directly against the packed `L`/`U` factor (`solve_triangular` reads only its
+own triangle), so it builds no `tril`/`triu`/identity matrices.
+
 Weighted-Jacobi damping has two roles with separate parameters, both
 defaulting to a spectral rule with `rho = rho(D^-1 A)` (`amg/_jacobi_omega.py`,
 PyAMG's rules): **relaxation** (`JacobiSmoother`, presets' `smoother_omega`,
@@ -126,16 +136,38 @@ smoothing** (`AggregationCoarsening`, presets' `prolongation_omega`, one Jacobi
 step on the tentative prolongator at setup) uses `omega = (4/3) / rho`
 (Vanek, Mandel & Brezina 1996). `None` selects the rule, a float fixes the
 value. `rho` is a seeded, hence deterministic, Arnoldi estimate
-(`_spectral.approximate_spectral_radius`), cached per matrix object and
-held only for that tensor object's lifetime. Matrices are treated as immutable;
-callers that need different matrix values must use a different tensor object.
-The smoother and prolongation smoothing of the same level, and every `apply`,
-therefore share one estimate per level.
+(`utils.spectral.approximate_spectral_radius`) from a pure, uncached function:
+there is no global state. Prolongation smoothing estimates it once per level
+inside `build_transfer`; `JacobiSmoother.prepare(A)` estimates it once per level
+(the same fixed-seed start, hence the same value) when the cycle is prepared in
+`setup()`. `apply()` never estimates anything.
 For `rho ~= 2` the rules give about 0.5 and 0.67; unlike a fixed 0.67 they keep
 the smoother convergent when `rho > 3` (`omega` must stay below `2 / rho`).
 The POD helpers `apply_jacobi_damping[_trajectory]` and
 `smoother_persistence_scales` default to the relaxation rule as well.
 Gauss-Seidel has no damping parameter.
+
+Smoothers follow a prepare/apply split. A `MultigridSmoother` holds only
+configuration and exposes `prepare(A) -> PreparedSmoother`; `cycle.prepare(hierarchy)`
+(called by `AMGPreconditioner.setup()` and by the BootCMatch/bootstrap setup loops) binds
+one prepared smoother to every non-coarsest level, once and idempotently. A
+`PreparedSmoother` offers `smooth(rhs, x, steps)` and `smooth_from_zero(rhs, steps)`
+for a vector `(n,)` or a block of columns `(n, k)`. `PreparedJacobi` holds
+`diag_inv = omega / diag` (zero where `|diag|` is near zero) with `omega` resolved
+eagerly in `prepare`; sweeps are `x + diag_inv * (rhs - A @ x)` with no clone, and
+`smooth_from_zero` starts from `diag_inv * rhs`. `PreparedSymmetricGaussSeidel`
+(`amg/_relaxation.py`) holds the forward and backward triangular systems:
+`solve_triangular` reads the triangle of `A` in place and a triangle is copied
+only when rows are frozen (zero diagonal, or outside `rows`); the freezing mask
+is `None` and skipped when nothing is frozen. Setup stages that relax one level
+matrix many times prepare once per matrix and reuse it: compatible relaxation
+(`compatible_relaxation_coarsening` prepares its smoother once and passes the
+prepared object to `cr_rate`/`hcr_operator`), adaptive candidate relaxation
+(one preparation per level, reused going down and up; a `rows` subset gets its
+own preparation), and `BootstrapSetup._improve_levels` (the full hierarchy is
+prepared once and each level's sub-hierarchy is a slice of it). The injected
+`relaxation` of `BootstrapSetup`/`BAMGCoarsening`/`multigrid_eigensolver` is a
+`MultigridSmoother`, not a callable.
 
 All preset solve cycles accept a `smoother` strategy. `vcycle_amg`,
 `wcycle_amg`, `AdaptiveSAPreconditioner`, `BootstrapAMGPreconditioner`, and

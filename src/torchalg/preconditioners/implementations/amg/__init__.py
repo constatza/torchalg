@@ -27,7 +27,10 @@ Public API:
 
     Protocols (OCP extension points):
         - TransferOperator: P/R interface (dense, neural, ...).
-        - MultigridSmoother: Smoothing interface (Jacobi, Gauss-Seidel, ...).
+        - MultigridSmoother: Smoothing interface (Jacobi, Gauss-Seidel, ...);
+          ``prepare(A)`` binds it to a level matrix.
+        - PreparedSmoother: Smoother bound to one level matrix (``smooth``,
+          ``smooth_from_zero``).
         - CoarseningStrategy: Coarsening interface (aggregation, RS, neural, ...).
         - MultigridCycle: Cycle interface (V, W, F, ...).
 
@@ -68,7 +71,13 @@ from .bootstrap import (
 from .coarsening import AggregationCoarsening, NeuralCoarseningStrategy, TargetDimensionCoarsening
 from .cycle import VCycle, WCycle
 from .hierarchy import MultigridHierarchy, MultigridLevel
-from .protocols import CoarseningStrategy, MultigridCycle, MultigridSmoother, TransferOperator
+from .protocols import (
+    CoarseningStrategy,
+    MultigridCycle,
+    MultigridSmoother,
+    PreparedSmoother,
+    TransferOperator,
+)
 from .smoothers import GaussSeidelSmoother, JacobiSmoother, SmootherBase
 from .transfer import DenseTransferOperator, NeuralTransferOperator
 from .variants import vcycle_amg, wcycle_amg
@@ -88,6 +97,7 @@ __all__ = [
     # Protocols
     "TransferOperator",
     "MultigridSmoother",
+    "PreparedSmoother",
     "CoarseningStrategy",
     "MultigridCycle",
     # Smoother hierarchy

@@ -23,26 +23,27 @@ References:
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 
 from ._graph import depth_neighborhood
 
-_Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
-"""Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
+if TYPE_CHECKING:
+    from .protocols import MultigridSmoother, PreparedSmoother
 
 
 def hcr_operator(
     matrix: torch.Tensor,
     coarse_mask: torch.Tensor,
-    relaxation: _Relaxation,
+    relaxation: PreparedSmoother,
     sweeps: int,
     start: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """F-relaxation form of compatible relaxation on ``A x = 0`` ([AD11] eq. 3.3).
 
-    Applies ``relaxation`` one sweep at a time, projecting the coarse-marked
-    entries to zero after every sweep.
+    Applies ``relaxation`` (already bound to ``matrix``) one sweep at a time,
+    projecting the coarse-marked entries to zero after every sweep.
 
     This is a **deliberate approximation of** ``E_ff = I - M_ff^{-1} B_ff``,
     not an exact reproduction of it, and it is the form the reference
@@ -52,7 +53,7 @@ def hcr_operator(
     nonzero *during* the sweep; the zeroing only takes effect afterwards, so
     the coarse variables are not truly held fixed throughout. The true
     ``E_ff`` would require an F-only relaxation -
-    ``_relaxation.symmetric_gauss_seidel(..., rows=fine_indices)``, as
+    ``_relaxation.prepare_symmetric_gauss_seidel(matrix, rows=fine_indices)``, as
     ``adaptive.py`` uses. ``tests/.../test_compatible_relaxation.py``
     quantifies the gap (its N=16 1D-Poisson worked example measures
     ``rho ~= 0.516`` where a true F-relaxation would give the brief's
@@ -63,8 +64,8 @@ def hcr_operator(
         matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.
         coarse_mask (torch.Tensor): Boolean mask, shape ``(n,)``, ``True`` at
             ``C``-points.
-        relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x`` (e.g. ``GaussSeidelSmoother().smooth``).
+        relaxation (PreparedSmoother): Smoother prepared for ``matrix``
+            (e.g. ``GaussSeidelSmoother().prepare(matrix)``).
         sweeps (int): Number of relaxation sweeps.
         start (torch.Tensor | None): Initial iterate, shape ``(n,)``; a
             uniform ``[0, 1)`` random vector on ``matrix``'s dtype/device if
@@ -77,18 +78,16 @@ def hcr_operator(
     n = matrix.shape[0]
     zero_rhs = torch.zeros(n, dtype=matrix.dtype, device=matrix.device)
     x = start if start is not None else torch.rand(n, dtype=matrix.dtype, device=matrix.device)
-    x = x.clone()
-    x[coarse_mask] = 0.0
+    x = x.masked_fill(coarse_mask, 0.0)
     for _ in range(sweeps):
-        x = relaxation(matrix, zero_rhs, x, 1)
-        x[coarse_mask] = 0.0
+        x = relaxation.smooth(zero_rhs, x, 1).masked_fill(coarse_mask, 0.0)
     return x
 
 
 def cr_rate(
     matrix: torch.Tensor,
     coarse_mask: torch.Tensor,
-    relaxation: _Relaxation,
+    relaxation: PreparedSmoother,
     sweeps: int,
     draw: Callable[[int], torch.Tensor],
 ) -> tuple[float, torch.Tensor]:
@@ -112,8 +111,7 @@ def cr_rate(
         matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.
         coarse_mask (torch.Tensor): Boolean mask, shape ``(n,)``, ``True`` at
             ``C``-points.
-        relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x``.
+        relaxation (PreparedSmoother): Smoother prepared for ``matrix``.
         sweeps (int): Number of CR sweeps ``nu``.
         draw (Callable[[int], torch.Tensor]): Uniform ``[0, 1)`` random-vector
             source, ``n -> tensor of length n`` (``adaptive.py``'s
@@ -124,8 +122,11 @@ def cr_rate(
         rate and the final relaxed error vector (coarse entries exactly
         zero).
     """
-    start = draw(matrix.shape[0]).to(dtype=matrix.dtype, device=matrix.device).clone()
-    start[coarse_mask] = 0.0
+    start = (
+        draw(matrix.shape[0])
+        .to(dtype=matrix.dtype, device=matrix.device)
+        .masked_fill(coarse_mask, 0.0)
+    )
     initial_norm = torch.linalg.norm(start)
     e = hcr_operator(matrix, coarse_mask, relaxation, sweeps, start=start)
     if initial_norm == 0.0:
@@ -202,7 +203,7 @@ def _independent_set_of(
 
 def compatible_relaxation_coarsening(
     matrix: torch.Tensor,
-    relaxation: _Relaxation,
+    relaxation: MultigridSmoother,
     *,
     nu: int = 5,
     delta: float = 0.7,
@@ -229,8 +230,8 @@ def compatible_relaxation_coarsening(
 
     Args:
         matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.
-        relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x``.
+        relaxation (MultigridSmoother): Smoother bound to ``matrix`` once here
+            and shared by every CR sweep of every stage.
         nu (int): CR sweeps performed per stage (paper default ``nu=5``).
         delta (float): CR stopping tolerance; coarsening halts once
             ``rho_f <= delta`` (paper default ``0.7``).
@@ -261,7 +262,8 @@ def compatible_relaxation_coarsening(
         if initial_coarse is not None
         else torch.zeros(n, dtype=torch.bool, device=matrix.device)
     )
-    rho_f, e = cr_rate(matrix, coarse_mask, relaxation, nu, draw)
+    prepared = relaxation.prepare(matrix)
+    rho_f, e = cr_rate(matrix, coarse_mask, prepared, nu, draw)
     iterations = 0
     while rho_f > delta:
         if iterations >= max_iterations:
@@ -276,6 +278,6 @@ def compatible_relaxation_coarsening(
         coarse_mask = coarse_mask | _independent_set_of(
             candidates, matrix, sigma, guidance_graph=guidance_graph
         )
-        rho_f, e = cr_rate(matrix, coarse_mask, relaxation, nu, draw)
+        rho_f, e = cr_rate(matrix, coarse_mask, prepared, nu, draw)
         iterations += 1
     return coarse_mask

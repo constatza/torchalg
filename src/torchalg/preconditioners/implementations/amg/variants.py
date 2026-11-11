@@ -68,7 +68,8 @@ def vcycle_amg(
         prolongation_omega (float | None): Damping of the Jacobi step that
             smooths the tentative prolongator. ``None`` (default) is
             ``(4/3) / rho(D^{-1}A)`` (Vanek et al. 1996, Section 3); a float
-            fixes it. ``rho`` is estimated once per level and shared.
+            fixes it. ``rho`` is estimated once per level while the level is
+            coarsened; the smoother's own estimate happens in ``setup()``.
         n_pre (int): Pre-smoothing steps (symmetric pre/post preserves SPD).
         n_post (int): Post-smoothing steps.
         theta (float): Strength-of-connection threshold theta in (0, 1).

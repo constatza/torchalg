@@ -1,22 +1,25 @@
 """Multigrid smoothers, sparse-CSR siblings.
 
 Sparse-only counterparts of ``preconditioners.implementations.amg.smoothers``'s
-``JacobiSmoother``/``GaussSeidelSmoother`` (dense; kept unmodified for
-comparison - see ``docs/plan.md``'s "Correction: dense and sparse must be
-separate implementations, not an internal branch"). Both classes here are
-only ever called with sparse CSR input - no ``is_sparse_csr`` check inside
-either ``smooth()`` body.
+``JacobiSmoother``/``GaussSeidelSmoother`` (dense; kept separate - see
+``docs/plan.md``'s "Correction: dense and sparse must be separate
+implementations, not an internal branch"). A smoother object holds only
+configuration; ``prepare(A)`` does every matrix-dependent one-off computation
+(diagonal inverse and spectral-radius damping for Jacobi, level schedules and
+strict-triangle split for Gauss-Seidel) and returns the object that sweeps.
+Only sparse CSR input is ever prepared - no ``is_sparse_csr`` branch anywhere.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
 
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
 
-from ._gauss_seidel import sparse_symmetric_gauss_seidel
+from ._gauss_seidel import PreparedSymmetricGaussSeidel
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 
 if TYPE_CHECKING:
@@ -27,19 +30,70 @@ _NEAR_ZERO_DIAGONAL_TOL = 1e-14
 update (treated as a zero step for that component)."""
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedJacobi:
+    """Weighted Jacobi bound to one sparse CSR matrix.
+
+    Attributes:
+        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
+        diag_inv (torch.Tensor): ``omega / diag(A)`` with ``0`` where the
+            diagonal is (near) zero, shape ``(n,)``.
+    """
+
+    matrix: torch.Tensor
+    diag_inv: torch.Tensor
+
+    def _scale(self, residual: torch.Tensor) -> torch.Tensor:
+        """``diag_inv * residual`` for a vector ``(n,)`` or a block ``(n, k)``."""
+        if residual.ndim == 1:
+            return self.diag_inv * residual
+        return self.diag_inv.unsqueeze(-1) * residual
+
+    def smooth(self, rhs: torch.Tensor, x: torch.Tensor, steps: int) -> torch.Tensor:
+        """Apply ``steps`` sweeps ``x <- x + omega D^-1 (rhs - A x)`` from ``x``.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape; not modified.
+            steps (int): Number of sweeps.
+
+        Returns:
+            torch.Tensor: Updated iterate, same shape as ``x``.
+        """
+        if steps == 0:
+            return x.clone()
+        for _ in range(steps):
+            x = x + self._scale(rhs - self.matrix @ x)
+        return x
+
+    def smooth_from_zero(self, rhs: torch.Tensor, steps: int) -> torch.Tensor:
+        """Apply ``steps`` sweeps from the zero guess, skipping the first ``A @ 0``.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            steps (int): Number of sweeps.
+
+        Returns:
+            torch.Tensor: Iterate after ``steps`` sweeps, same shape as ``rhs``.
+        """
+        if steps == 0:
+            return torch.zeros_like(rhs)
+        x = self._scale(rhs)
+        for _ in range(steps - 1):
+            x = x + self._scale(rhs - self.matrix @ x)
+        return x
+
+
 class JacobiSmoother:
     """Weighted Jacobi smoother for sparse CSR matrices: x <- x + omega * D^{-1} (rhs - Ax).
 
     Sparse-CSR sibling of the dense
-    ``preconditioners.implementations.amg.smoothers.JacobiSmoother`` - same
-    name, disambiguated by package (matches ``torch.mm`` vs.
-    ``torch.sparse.mm``'s own convention), never imported by the dense
-    class.
+    ``preconditioners.implementations.amg.smoothers.JacobiSmoother``.
 
     Args:
         omega (float | torch.Tensor | None): Damping factor. ``None``
             (default) is the relaxation rule ``1 / rho(D^{-1}A)``, estimated
-            once per matrix and cached; a float or 0-d tensor fixes it.
+            in ``prepare`` (never during sweeps); a float or 0-d tensor fixes it.
     """
 
     def __init__(self, omega: float | torch.Tensor | None = None) -> None:
@@ -50,23 +104,14 @@ class JacobiSmoother:
         """
         self._omega = omega
 
-    def smooth(
-        self,
-        A: torch.Tensor,
-        rhs: torch.Tensor,
-        x: torch.Tensor,
-        steps: int,
-    ) -> torch.Tensor:
-        """Apply ``steps`` weighted Jacobi iterations.
+    def prepare(self, A: torch.Tensor) -> PreparedJacobi:
+        """Extract the diagonal and resolve the damping, once, for ``A``.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
-            rhs (torch.Tensor): Right-hand side vector (n,).
-            x (torch.Tensor): Current iterate (n,).
-            steps (int): Number of sweeps.
 
         Returns:
-            torch.Tensor: Updated iterate after ``steps`` sweeps.
+            PreparedJacobi: Jacobi sweeps bound to ``A``.
         """
         diag = sparse_diagonal(A)
         omega = jacobi_omega(A, RELAXATION_NOMINAL, self._omega)
@@ -75,10 +120,7 @@ class JacobiSmoother:
             omega / diag,
             torch.zeros_like(diag),
         )
-        x = x.clone()
-        for _ in range(steps):
-            x = x + diag_inv * (rhs - A @ x)
-        return x
+        return PreparedJacobi(matrix=A, diag_inv=diag_inv)
 
 
 class GaussSeidelSmoother:
@@ -87,29 +129,56 @@ class GaussSeidelSmoother:
     Sparse-CSR sibling of the dense
     ``preconditioners.implementations.amg.smoothers.GaussSeidelSmoother``.
     No factorization step: each sweep is a direct triangular solve against
-    ``A``'s own entries, via ``sparse.preconditioners.amg._gauss_seidel
-    .sparse_symmetric_gauss_seidel``.
+    ``A``'s own entries; ``prepare`` builds the level schedules once.
     """
 
-    def smooth(
-        self,
-        A: torch.Tensor,
-        rhs: torch.Tensor,
-        x: torch.Tensor,
-        steps: int,
-    ) -> torch.Tensor:
-        """Apply ``steps`` symmetric Gauss-Seidel iterations.
+    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+        """Build both level schedules and the strict-triangle split of ``A``.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
-            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
-            x (torch.Tensor): Current iterate, shape ``(n,)`` or ``(n, k)``.
-            steps (int): Number of symmetric iterations.
 
         Returns:
-            torch.Tensor: Updated iterate, same shape as ``x``.
+            PreparedSymmetricGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
         """
-        return sparse_symmetric_gauss_seidel(A, x, rhs, steps)
+        return PreparedSymmetricGaussSeidel.build(A)
+
+
+class GaussSeidelStage:
+    """Gauss-Seidel that prepares each distinct matrix once, for one setup stage.
+
+    Setup algorithms (compatible relaxation, adaptive and bootstrap stages)
+    relax the same level matrices many times, through callables and cycles that
+    only receive the matrix. A stage owns one of these for its duration: the
+    first sweep on a matrix builds its ``PreparedSymmetricGaussSeidel`` and
+    every later sweep on that same tensor object reuses it. The cache is keyed
+    by tensor identity and holds the matrices alive, so it must not outlive the
+    stage (and matrices must not be mutated in place within it); there is no
+    process-global instance.
+
+    It is a ``MultigridSmoother``: compatible relaxation, test-vector
+    relaxation and the setup cycle all bind it to level matrices with ``prepare``.
+    """
+
+    def __init__(self) -> None:
+        """Start with no prepared matrices."""
+        self._prepared: dict[int, PreparedSymmetricGaussSeidel] = {}
+
+    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+        """Return the prepared Gauss-Seidel of ``A``, building it on first use.
+
+        Args:
+            A (torch.Tensor): System matrix (n x n), sparse CSR.
+
+        Returns:
+            PreparedSymmetricGaussSeidel: Shared by every later call with this tensor.
+        """
+        key = id(A)
+        prepared = self._prepared.get(key)
+        if prepared is None:
+            prepared = PreparedSymmetricGaussSeidel.build(A)
+            self._prepared[key] = prepared
+        return prepared
 
 
 def resolve_jacobi_default(

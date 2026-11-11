@@ -22,8 +22,8 @@ operator-class to inject *before* any matrix exists, never by reading
 router" pattern ``docs/plan.md`` already rejected once (that router had to
 import both trees to decide; nothing here ever does):
 
-- ``relaxation`` (was: ``GaussSeidelSmoother().smooth`` hardcoded in
-  ``run``).
+- ``relaxation`` (was: ``GaussSeidelSmoother()`` hardcoded in
+  ``run``): a ``MultigridSmoother``, bound to each level matrix with ``prepare``.
 - ``setup_cycle`` (was: module-level ``GS_SETUP_CYCLE`` hardcoded in
   ``_improve_test_vectors``) - the GS V(1,1) cycle used only for setup-time
   test-vector improvement, built from the same injected ``relaxation``.
@@ -62,10 +62,7 @@ from typing import Protocol
 import torch
 
 from .hierarchy import MultigridHierarchy, MultigridLevel
-from .protocols import MultigridCycle, TransferOperator
-
-_Relaxation = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, int], torch.Tensor]
-"""Shape of a ``SmootherBase.smooth``-style relaxation callable: ``(A, rhs, x, steps) -> x``."""
+from .protocols import MultigridCycle, MultigridSmoother, TransferOperator
 
 
 class _BootstrapCoarseningStrategy(Protocol):
@@ -98,7 +95,7 @@ class _BootstrapCoarseningStrategy(Protocol):
 
 
 _CoarseningFactory = Callable[
-    [torch.Tensor, _Relaxation, Callable[[int], torch.Tensor]], _BootstrapCoarseningStrategy
+    [torch.Tensor, MultigridSmoother, Callable[[int], torch.Tensor]], _BootstrapCoarseningStrategy
 ]
 """``(test_vectors, relaxation, draw) -> _BootstrapCoarseningStrategy`` - builds
 a fresh, level-0-seeded ``BAMGCoarsening`` (dense or sparse)."""
@@ -108,7 +105,7 @@ _TransferOperatorFactory = Callable[[torch.Tensor], TransferOperator]
 (dense or sparse CSR) as a ``DenseTransferOperator``/``SparseTransferOperator``."""
 
 _Eigensolver = Callable[
-    [list[torch.Tensor], list[torch.Tensor], int, _Relaxation, int], dict[int, torch.Tensor]
+    [list[torch.Tensor], list[torch.Tensor], int, MultigridSmoother, int], dict[int, torch.Tensor]
 ]
 """Shape of ``_mge.multigrid_eigensolver``: ``(levels, prolongations, k_e,
 relaxation, eta) -> per-level eigenvector columns``."""
@@ -162,28 +159,28 @@ def _seeded_test_vectors(
 
 
 def _relax_columns(
-    matrix: torch.Tensor, vectors: torch.Tensor, relaxation: _Relaxation, sweeps: int
+    matrix: torch.Tensor, vectors: torch.Tensor, relaxation: MultigridSmoother, sweeps: int
 ) -> torch.Tensor:
     """Relax every column of ``vectors`` on ``matrix @ x = 0`` ([STATUS14] eq. 4.1).
 
     Each test-vector column is independent of every other (``relaxation``
     never couples columns), so all ``k`` columns are relaxed in one batched
-    call rather than a Python loop - both the dense and sparse
-    ``GaussSeidelSmoother.smooth`` (the ``relaxation`` this is always
-    injected with) accept a ``(n, k)`` ``x``/``rhs`` directly.
+    call rather than a Python loop - both the dense and sparse prepared
+    ``GaussSeidelSmoother`` (the ``relaxation`` this is always injected with)
+    accept a ``(n, k)`` ``x``/``rhs`` directly.
 
     Args:
         matrix (torch.Tensor): Level matrix, shape ``(n, n)``.
         vectors (torch.Tensor): Test vectors, shape ``(n, k)``.
-        relaxation (_Relaxation): Relaxation callable, ``(A, rhs, x, steps)
-            -> x``, batched over ``x``'s trailing dimension.
+        relaxation (MultigridSmoother): Smoother, bound to ``matrix`` here and
+            batched over ``x``'s trailing dimension.
         sweeps (int): Number of sweeps ``eta``.
 
     Returns:
         torch.Tensor: Relaxed test vectors, shape ``(n, k)``.
     """
     zero_rhs = torch.zeros_like(vectors)
-    return relaxation(matrix, zero_rhs, vectors, sweeps)
+    return relaxation.prepare(matrix).smooth(zero_rhs, vectors, sweeps)
 
 
 def _improve_test_vectors(
@@ -201,7 +198,7 @@ def _improve_test_vectors(
     every step inside ``setup_cycle.apply`` is either the (now batched)
     smoother or a plain matrix product - ``matrix @ x``, the transfer
     operators' ``P @ x``/``P.T @ x``, and the coarse solvers
-    (``torch.linalg.solve``/``torch.linalg.pinv(...) @ rhs``) - all of which
+    (the prepared LU/pseudo-inverse solves) - all of which
     already operate columnwise for a ``(n, k)`` right-hand side with no
     further changes.
 
@@ -216,9 +213,10 @@ def _improve_test_vectors(
     Returns:
         torch.Tensor: Improved test vectors, shape ``(n, k)``.
     """
+    prepared = setup_cycle.prepare(hierarchy)
     x = vectors
     for _ in range(iterations):
-        x = x - setup_cycle.apply(hierarchy, matrix @ x)
+        x = x - setup_cycle.apply(prepared, matrix @ x)
     return x
 
 
@@ -308,8 +306,8 @@ class BootstrapSetup:
             it wants.
         transfer_operator_factory (_TransferOperatorFactory): Wraps a raw
             prolongation tensor as a ``TransferOperator``.
-        relaxation (_Relaxation): Relaxation callable used by CR and by
-            setup-time test-vector relaxation (dense or sparse Gauss-Seidel).
+        relaxation (MultigridSmoother): Smoother used by CR and by setup-time
+            test-vector relaxation (dense or sparse Gauss-Seidel).
         setup_cycle (MultigridCycle): The setup-time cycle used only for
             ``_improve_levels``' test-vector improvement (e.g. a GS V(1,1)
             built from the same ``relaxation``).
@@ -328,7 +326,7 @@ class BootstrapSetup:
 
     coarsening_factory: _CoarseningFactory
     transfer_operator_factory: _TransferOperatorFactory
-    relaxation: _Relaxation
+    relaxation: MultigridSmoother
     setup_cycle: MultigridCycle
     eta: int = 4
     k_r: int = 8
@@ -373,6 +371,10 @@ class BootstrapSetup:
     ) -> dict[int, torch.Tensor]:
         """Improve every level's relaxation-derived test vectors via its own sub-hierarchy cycle.
 
+        The full hierarchy is prepared once (one smoother and one coarse solve per level);
+        each level's sub-hierarchy is a slice of the same prepared levels, so no level is
+        prepared more than once per call.
+
         Args:
             levels (list[torch.Tensor]): Level matrices, finest first.
             prolongations (list[torch.Tensor]): Prolongations, one per level
@@ -385,13 +387,14 @@ class BootstrapSetup:
             dict[int, torch.Tensor]: Improved ``V^r`` test vectors keyed by
             each improved level's matrix dimension.
         """
+        prepared = self.setup_cycle.prepare(
+            _hierarchy_of(levels, prolongations, self.transfer_operator_factory)
+        )
         return {
             levels[index].shape[0]: _improve_test_vectors(
                 levels[index],
                 level_vectors[levels[index].shape[0]],
-                _hierarchy_of(
-                    levels[index:], prolongations[index:], self.transfer_operator_factory
-                ),
+                MultigridHierarchy(prepared.levels[index:]),
                 self.eta,
                 self.setup_cycle,
             )
@@ -446,7 +449,7 @@ class BootstrapSetup:
         self,
         matrix: torch.Tensor,
         coarsening: _BootstrapCoarseningStrategy,
-        relaxation: _Relaxation,
+        relaxation: MultigridSmoother,
         level_vectors: dict[int, torch.Tensor] | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Coarsen ``matrix`` down to ``max_levels``/``max_coarse``.
@@ -463,7 +466,7 @@ class BootstrapSetup:
             matrix (torch.Tensor): Finest-level matrix.
             coarsening (_BootstrapCoarseningStrategy): Coarsening
                 strategy, already seeded with the finest-level test vectors.
-            relaxation (_Relaxation): Relaxation callable applied to the test
+            relaxation (MultigridSmoother): Smoother applied to the test
                 vectors before each level is coarsened.
             level_vectors (dict[int, torch.Tensor] | None): Per-level
                 test vectors from ``_improve_levels``, keyed by matrix

@@ -49,9 +49,8 @@ from ._aggregation import standard_aggregation
 from ._node_strength import node_strength
 from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
 from ._prolongation import jacobi_prolongation, make_bridge
-from ._relaxation import symmetric_gauss_seidel
+from ._relaxation import prepare_symmetric_gauss_seidel
 from .amg import AMGPreconditioner
-from .cycle import pseudo_inverse_solve
 from .hierarchy import MultigridHierarchy, MultigridLevel
 from .smoothers import resolve_jacobi_default
 from .transfer import DenseTransferOperator
@@ -59,7 +58,7 @@ from .transfer import DenseTransferOperator
 if TYPE_CHECKING:
     from typing import Self
 
-    from .protocols import MultigridSmoother
+    from .protocols import MultigridSmoother, PreparedSmoother
 
 _SOLVE_TOLERANCE = 1e-20
 """Absolute residual tolerance of the trial cycles (``ml.solve(..., tol=1e-20)``)."""
@@ -181,18 +180,18 @@ def _built(value: torch.Tensor | None) -> torch.Tensor:
     return value
 
 
-def _relax(matrix: torch.Tensor, x: torch.Tensor, params: _Params) -> torch.Tensor:
+def _relax(relaxation: PreparedSmoother, x: torch.Tensor, params: _Params) -> torch.Tensor:
     """``candidate_iters`` symmetric Gauss-Seidel iterations on ``A x = 0``.
 
     Args:
-        matrix (torch.Tensor): Level matrix.
+        relaxation (PreparedSmoother): Gauss-Seidel bound to the level matrix.
         x (torch.Tensor): Vector to relax.
         params (_Params): Setup parameters.
 
     Returns:
         torch.Tensor: Relaxed vector.
     """
-    return symmetric_gauss_seidel(matrix, x, torch.zeros_like(x), params.candidate_iters)
+    return relaxation.smooth(torch.zeros_like(x), x, params.candidate_iters)
 
 
 def _hierarchy_of(levels: list[_Level]) -> MultigridHierarchy:
@@ -231,8 +230,9 @@ def _solve(levels: list[_Level], x: torch.Tensor, iterations: int) -> torch.Tens
         torch.Tensor: Iterate after the cycles.
     """
     if len(levels) == 1:
-        return pseudo_inverse_solve(levels[0].A, torch.zeros_like(x))
-    hierarchy, matrix = _hierarchy_of(levels), levels[0].A
+        return torch.zeros_like(x)
+    hierarchy = GS_SETUP_CYCLE.prepare(_hierarchy_of(levels))
+    matrix = levels[0].A
     for _ in range(iterations):
         x = x - GS_SETUP_CYCLE.apply(hierarchy, matrix @ x)
         if torch.linalg.norm(matrix @ x) < _SOLVE_TOLERANCE:
@@ -314,7 +314,9 @@ def _initial_setup_stage(
             than one level was aggregated, the aggregation to reuse.
     """
     current = matrix
-    x = _relax(current, params.random_vector(matrix, matrix.shape[0]), params)
+    # Each level is relaxed going down and again coming back up: prepare it once.
+    relaxations = [prepare_symmetric_gauss_seidel(matrix)]
+    x = _relax(relaxations[0], params.random_vector(matrix, matrix.shape[0]), params)
     iterates, prolongations, matrices = [x], [], [matrix]
     aggregates: list[torch.Tensor] = []
     strengths: list[torch.Tensor] = []
@@ -331,11 +333,12 @@ def _initial_setup_stage(
         matrices.append(current)
         if current.shape[0] <= params.max_coarse or len(aggregates) + 1 >= params.max_levels:
             break
-        x = _relax(current, x, params)
+        relaxations.append(prepare_symmetric_gauss_seidel(current))
+        x = _relax(relaxations[-1], x, params)
         iterates.append(x)
     x = iterates[-1]
     for level in range(len(prolongations) - 2, -1, -1):
-        x = _relax(matrices[level], prolongations[level] @ x, params)
+        x = _relax(relaxations[level], prolongations[level] @ x, params)
     predefined = _Predefined(tuple(aggregates), tuple(strengths)) if len(aggregates) > 1 else None
     return x, predefined
 
@@ -375,9 +378,8 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
     for level in reversed(levels[:-2]):
         x = _built(level.P) @ x
         rows = torch.nonzero(x).flatten()
-        x = symmetric_gauss_seidel(
-            level.A, x, torch.zeros_like(x), params.candidate_iters, rows=rows
-        )
+        relaxation = prepare_symmetric_gauss_seidel(level.A, rows=rows)
+        x = _relax(relaxation, x, params)
     return x
 
 

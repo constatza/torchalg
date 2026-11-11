@@ -3,8 +3,8 @@
 Dense-as-oracle, this project's standing rule: the sparse sibling is
 checked against the dense ``BAMGCoarsening`` given the same matrix (one
 dense, one its sparse CSR twin), the same seeded test vectors, the same
-seeded CR draw, and the sparse ``GaussSeidelSmoother`` in place of the dense
-one (already parity-tested elsewhere) - full "two classes, same result"
+seeded CR draw, and the sparse ``GaussSeidelStage`` relaxation in place of a
+dense ``solve_triangular`` Gauss-Seidel oracle (``tests/sparse/conftest.py``) - full "two classes, same result"
 parity at the whole-algorithm level, matching
 ``tests/sparse/preconditioners/amg/test_coarsening.py``'s existing pattern
 for ``AggregationCoarsening``.
@@ -13,6 +13,7 @@ for ``AggregationCoarsening``.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
@@ -21,11 +22,11 @@ from torchalg import pcg
 from torchalg.preconditioners.implementations.amg.bootstrap import (
     BAMGCoarsening as DenseBAMGCoarsening,
 )
-from torchalg.preconditioners.implementations.amg.smoothers import (
-    GaussSeidelSmoother as DenseGaussSeidelSmoother,
-)
 from torchalg.sparse.preconditioners.amg.bootstrap import BAMGCoarsening
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelSmoother
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
+
+if TYPE_CHECKING:
+    from tests.sparse.conftest import DenseRelaxation
 
 
 @pytest.fixture
@@ -60,6 +61,8 @@ class TestBAMGCoarseningBuildTransfer:
 
     def test_matches_dense_on_poisson_1d(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_large_dense: torch.Tensor,
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -70,7 +73,7 @@ class TestBAMGCoarseningBuildTransfer:
 
         dense_coarsening = DenseBAMGCoarsening(
             test_vectors.clone(),
-            DenseGaussSeidelSmoother().smooth,
+            dense_relaxation,
             nu=3,
             delta=0.7,
             caliber=4,
@@ -78,7 +81,7 @@ class TestBAMGCoarseningBuildTransfer:
         )
         sparse_coarsening = BAMGCoarsening(
             test_vectors.clone(),
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation,
             nu=3,
             delta=0.7,
             caliber=4,
@@ -104,6 +107,8 @@ class TestBAMGCoarseningBuildTransfer:
 
     def test_default_parameter_level_matches_dense_values(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_large_dense: torch.Tensor,
         bamg_default_test_vectors: torch.Tensor,
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
@@ -111,12 +116,12 @@ class TestBAMGCoarseningBuildTransfer:
         """Default benchmark-level BAMG setup preserves dense coarse and P values."""
         dense_coarsening = DenseBAMGCoarsening(
             bamg_default_test_vectors.clone(),
-            DenseGaussSeidelSmoother().smooth,
+            dense_relaxation,
             draw=seeded_draw_factory(0),
         )
         sparse_coarsening = BAMGCoarsening(
             bamg_default_test_vectors.clone(),
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation,
             draw=seeded_draw_factory(0),
         )
 
@@ -130,6 +135,8 @@ class TestBAMGCoarseningBuildTransfer:
 
     def test_matches_dense_across_two_levels(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_large_dense: torch.Tensor,
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -141,7 +148,7 @@ class TestBAMGCoarseningBuildTransfer:
 
         dense_coarsening = DenseBAMGCoarsening(
             test_vectors.clone(),
-            DenseGaussSeidelSmoother().smooth,
+            dense_relaxation,
             nu=3,
             delta=0.7,
             caliber=4,
@@ -149,7 +156,7 @@ class TestBAMGCoarseningBuildTransfer:
         )
         sparse_coarsening = BAMGCoarsening(
             test_vectors.clone(),
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation,
             nu=3,
             delta=0.7,
             caliber=4,
@@ -166,6 +173,8 @@ class TestBAMGCoarseningBuildTransfer:
 
     def test_matches_dense_at_larger_scale(
         self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelStage,
         poisson_1d_xlarge_dense: torch.Tensor,
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -187,7 +196,7 @@ class TestBAMGCoarseningBuildTransfer:
 
         dense_coarsening = DenseBAMGCoarsening(
             test_vectors.clone(),
-            DenseGaussSeidelSmoother().smooth,
+            dense_relaxation,
             nu=3,
             delta=0.7,
             caliber=4,
@@ -195,7 +204,7 @@ class TestBAMGCoarseningBuildTransfer:
         )
         sparse_coarsening = BAMGCoarsening(
             test_vectors.clone(),
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation,
             nu=3,
             delta=0.7,
             caliber=4,
@@ -219,13 +228,13 @@ class TestBAMGCoarseningBuildTransfer:
             sparse_transfer.restrict(fine_vector), dense_transfer.restrict(fine_vector)
         )
 
-    def test_test_vectors_for_and_set_test_vectors(self, poisson_1d_csr: torch.Tensor) -> None:
+    def test_test_vectors_for_and_set_test_vectors(
+        self, poisson_1d_csr: torch.Tensor, sparse_relaxation: GaussSeidelStage
+    ) -> None:
         torch.manual_seed(4)
         n = poisson_1d_csr.shape[0]
         test_vectors = torch.randn(n, 2, dtype=poisson_1d_csr.values().dtype)
-        coarsening = BAMGCoarsening(
-            test_vectors, GaussSeidelSmoother().smooth, draw=lambda m: torch.rand(m)
-        )
+        coarsening = BAMGCoarsening(test_vectors, sparse_relaxation, draw=lambda m: torch.rand(m))
         assert torch.equal(coarsening.test_vectors_for(poisson_1d_csr), test_vectors)
 
         new_vectors = torch.randn(n, 2, dtype=poisson_1d_csr.values().dtype)
@@ -233,12 +242,12 @@ class TestBAMGCoarseningBuildTransfer:
         assert torch.equal(coarsening.test_vectors_for(poisson_1d_csr), new_vectors)
 
     def test_last_prolongation_raises_before_build_transfer(
-        self, poisson_1d_csr: torch.Tensor
+        self, poisson_1d_csr: torch.Tensor, sparse_relaxation: GaussSeidelStage
     ) -> None:
         n = poisson_1d_csr.shape[0]
         coarsening = BAMGCoarsening(
             torch.randn(n, 2, dtype=poisson_1d_csr.values().dtype),
-            GaussSeidelSmoother().smooth,
+            sparse_relaxation,
             draw=lambda m: torch.rand(m),
         )
         with pytest.raises(RuntimeError, match="build_transfer has not been called"):

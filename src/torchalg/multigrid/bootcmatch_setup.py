@@ -174,7 +174,11 @@ class BootCMatchSetup:
             else self.draw(n).to(dtype=matrix.dtype, device=matrix.device)
         )
         hierarchies = [
-            _build_hierarchy(matrix, self.coarsening_factory(w), self.max_levels, self.max_coarse)
+            self.cycle.prepare(
+                _build_hierarchy(
+                    matrix, self.coarsening_factory(w), self.max_levels, self.max_coarse
+                )
+            )
         ]
 
         eps = torch.finfo(matrix.dtype).eps
@@ -193,8 +197,10 @@ class BootCMatchSetup:
 
             w = x
             hierarchies.append(
-                _build_hierarchy(
-                    matrix, self.coarsening_factory(w), self.max_levels, self.max_coarse
+                self.cycle.prepare(
+                    _build_hierarchy(
+                        matrix, self.coarsening_factory(w), self.max_levels, self.max_coarse
+                    )
                 )
             )
 

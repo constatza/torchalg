@@ -15,47 +15,31 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from torchalg.sparse.kernels.triangular import LevelSchedule, level_schedule, triangular_solve
+from torchalg.sparse.kernels.triangular import PreparedTriangularSolve
 
 
 class SparseTriangularSolveCache(nn.Module):
-    """Setup-owned upper factor and schedules for a triangular solve pair.
+    """Setup-owned prepared forward and backward solves for a triangular pair.
 
-    The lower factor remains owned by the parent preconditioner. All derived
-    tensors here are registered as non-persistent buffers: they follow
-    ``nn.Module.to()`` but are rebuilt from the canonical operator by
-    ``setup()`` rather than serialized as a second source of truth.
+    Each half is a ``PreparedTriangularSolve`` (schedule, diagonal and level-sorted
+    entries computed once); ``nn.Module.to()`` moves their non-persistent buffers, and
+    ``setup()`` rebuilds them from the canonical operator rather than serializing a
+    second source of truth.
 
     Args:
-        upper: Explicit sparse CSR upper factor.
-        forward_schedule: Schedule for the lower solve.
-        backward_schedule: Schedule for the upper solve.
+        forward: Prepared solve against the lower factor.
+        backward: Prepared solve against the upper factor.
     """
 
-    def __init__(
-        self,
-        upper: torch.Tensor,
-        forward_schedule: LevelSchedule,
-        backward_schedule: LevelSchedule,
-    ) -> None:
+    def __init__(self, forward: PreparedTriangularSolve, backward: PreparedTriangularSolve) -> None:
         """Register a complete, internally consistent solve cache."""
         super().__init__()
-        self.upper: torch.Tensor
-        self.forward_row_order: torch.Tensor
-        self.forward_level_sizes: torch.Tensor
-        self.backward_row_order: torch.Tensor
-        self.backward_level_sizes: torch.Tensor
-        self.register_buffer("upper", upper, persistent=False)
-        self.register_buffer("forward_row_order", forward_schedule.row_order, persistent=False)
-        self.register_buffer("forward_level_sizes", forward_schedule.level_sizes, persistent=False)
-        self.register_buffer("backward_row_order", backward_schedule.row_order, persistent=False)
-        self.register_buffer(
-            "backward_level_sizes", backward_schedule.level_sizes, persistent=False
-        )
+        self.forward_solve = forward
+        self.backward_solve = backward
 
     @classmethod
     def build(cls, lower: torch.Tensor, upper: torch.Tensor) -> SparseTriangularSolveCache:
-        """Construct schedules for a fixed lower/upper factor pair.
+        """Prepare both substitutions for a fixed lower/upper factor pair.
 
         Args:
             lower: Explicit sparse CSR lower factor.
@@ -65,32 +49,20 @@ class SparseTriangularSolveCache(nn.Module):
             Complete reusable solve cache.
         """
         return cls(
-            upper=upper,
-            forward_schedule=level_schedule(lower, direction="forward"),
-            backward_schedule=level_schedule(upper, direction="backward"),
+            PreparedTriangularSolve(lower, "forward"),
+            PreparedTriangularSolve(upper, "backward"),
         )
 
-    def solve(self, lower: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
+    def solve(self, residual: torch.Tensor) -> torch.Tensor:
         """Apply the cached lower/upper triangular solve pair.
 
         Args:
-            lower: Explicit sparse CSR lower factor matching the cache.
             residual: Vector or matrix right-hand side.
 
         Returns:
             Preconditioned residual with the same shape as ``residual``.
         """
-        forward_schedule = LevelSchedule(
-            row_order=self.forward_row_order,
-            level_sizes=self.forward_level_sizes,
-        )
-        backward_schedule = LevelSchedule(
-            row_order=self.backward_row_order,
-            level_sizes=self.backward_level_sizes,
-        )
-
-        y = triangular_solve(lower, forward_schedule, residual, direction="forward")
-        return triangular_solve(self.upper, backward_schedule, y, direction="backward")
+        return self.backward_solve.solve(self.forward_solve.solve(residual))
 
 
 def build_sparse_cholesky_solve_cache(factor: torch.Tensor) -> SparseTriangularSolveCache:

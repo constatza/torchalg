@@ -18,7 +18,14 @@ re-export shims pointing here, so existing imports keep working unchanged.
 from __future__ import annotations
 
 from .amg import AMGPreconditioner
-from .cycle import VCycle, WCycle, pseudo_inverse_solve
+from .coarse_solve import (
+    CoarseSolve,
+    CoarseSolverFactory,
+    HierarchyNotPreparedError,
+    lu_coarse_solver,
+    pseudo_inverse_coarse_solver,
+)
+from .cycle import VCycle, WCycle
 from .hierarchy import MultigridHierarchy, MultigridLevel, build_hierarchy
 from .protocols import CoarseningStrategy, MultigridCycle, MultigridSmoother, TransferOperator
 
@@ -26,7 +33,11 @@ __all__ = [
     "AMGPreconditioner",
     "VCycle",
     "WCycle",
-    "pseudo_inverse_solve",
+    "CoarseSolve",
+    "CoarseSolverFactory",
+    "HierarchyNotPreparedError",
+    "lu_coarse_solver",
+    "pseudo_inverse_coarse_solver",
     "MultigridHierarchy",
     "MultigridLevel",
     "build_hierarchy",
