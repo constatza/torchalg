@@ -32,6 +32,22 @@ References:
       Sec. 4.3 (the caliber-growth penalization rule ``LS_{W''} <
       (LS_{W'})^{gamma(|W''|-|W'|)}``).
 
+Selection without per-row solves: the weighted LS residual of a candidate
+set depends only on the span of its whitened columns ``sqrt(omega) * v_j``,
+so it is unique even when the Gram matrix is singular. Growing the set one
+candidate at a time therefore needs no Gram solve at all; it is orthogonal
+matching pursuit (a Gram-Schmidt sweep). Keeping every candidate
+orthogonalized against the already-selected ones, adding candidate ``j``
+lowers the residual by ``(r . c_j)^2 / ||c_j||^2`` where ``r`` is the current
+residual and ``c_j`` the orthogonalized candidate; the best candidate is the
+argmax of that gain. This costs ``O(caliber * m * max_cand * k)`` for ``m``
+rows, whereas solving a batched ``lstsq`` for every padded trial system at
+every growth step dominated bootstrap AMG setup. Candidates that are
+numerically dependent on the selected set (duplicate rows, rows of exactly
+zero energy, padded duplicates) are detected with a relative norm test and get
+zero gain, which is the same outcome ``lstsq`` reached through its
+rank-revealing truncation.
+
 Real-SPD substitution: formulas using Hermitian-transpose notation (``V^H``)
 are read as the plain transpose ``V^T`` - torchalg is real-SPD only
 throughout (no complex numbers anywhere in this codebase).
@@ -40,6 +56,17 @@ throughout (no complex numbers anywhere in this codebase).
 from __future__ import annotations
 
 import torch
+
+_DEPENDENCE_ULPS = 1.0
+"""A candidate whose orthogonalized squared norm falls to ``eps`` times its
+original squared norm (i.e. its norm to ``sqrt(eps)`` of the original, the
+resolution a Gram-matrix rank decision has) is numerically dependent on the
+selected set and gets zero gain."""
+
+_PIVOT_RATIO_ULPS = 1000.0
+"""``batched_ls_interpolation_rows`` trusts a Cholesky factorization only when
+``min(L_ii)^2 / max(L_ii)^2 > _PIVOT_RATIO_ULPS * eps``; rows below that, or
+where the factorization fails, are re-solved with ``lstsq``."""
 
 _RANK_DEFICIENCY_RTOL = 1e-10
 """Relative tolerance for ``torch.linalg.matrix_rank`` when checking
@@ -215,33 +242,36 @@ def batched_select_interpolatory_set(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched sibling of ``select_interpolatory_set``, vectorized over ``m`` rows.
 
-    Replicates ``select_interpolatory_set``'s greedy caliber-bounded growth
-    loop and its normalized penalization test exactly (see that function's
-    docstring for the rule's derivation), but evaluates every row's trial
-    candidates in one batched tensor op per growth step instead of a nested
-    Python loop per fine grid point - the actual scalability fix this
-    function exists for (``BAMGCoarsening._prolongation`` calls the
-    single-row path once per fine row, up to tens of thousands of times).
+    Reproduces ``select_interpolatory_set``'s greedy caliber-bounded growth
+    loop and its normalized penalization test (see that function's docstring
+    for the rule's derivation) for all rows at once. The best candidate per
+    step is found by orthogonal matching pursuit rather than by solving a
+    least-squares system per trial set (see the module docstring): the
+    whitened candidate columns ``sqrt(omega) * v_j`` are gathered once into
+    an ``(m, max_cand, k)`` tensor, kept orthogonalized against the already
+    selected candidates, and the candidate with the largest residual
+    reduction ``(r . c)^2 / ||c||^2`` wins. The residual after each pick is
+    computed directly from the updated residual vector, not by subtracting
+    the gain, so the penalization test compares values free of cancellation.
 
-    The only Python-level loop is ``for step in range(caliber)`` - a fixed,
-    small (default 4) hyperparameter, not data-dependent; every iteration
-    body is pure batched tensor ops over all ``m`` rows and all
-    ``max_cand`` candidate slots at once.
-
-    **Documented deviation from the single-row path:** step (f) below
-    always uses ``torch.linalg.lstsq``, never ``torch.linalg.solve`` with a
-    rank check. A batched ``solve`` would error (or silently produce
-    garbage) if even one matrix among the ``m * max_cand`` trial Gram
-    matrices built per step were singular, whereas ``lstsq`` degrades
-    gracefully per-slot; on well-conditioned full-rank systems (where the
-    single-row path takes the ``solve`` branch) the two agree to numerical
-    precision, so this changes performance characteristics only, never
-    results.
+    Rank-deficient rows need no special handling: a candidate dependent on
+    the selected set (relative orthogonalized norm below ``sqrt(eps)``,
+    which includes exactly-zero columns and a duplicate of a selected
+    candidate) has zero gain and leaves the residual unchanged, so it either
+    loses to any informative candidate or fails the penalization test and
+    stops the row. Because the test is relative to each column's own norm,
+    the selection is invariant to the overall scale of ``test_vectors``
+    (relaxed bootstrap vectors reach ``~1e-8`` magnitude). Equal gains
+    resolve to the lowest candidate slot (``argmax`` returns the first
+    maximum), matching the single-row loop's first-minimum rule.
 
     Once a row's best candidate at some step fails the penalization test,
     that row is permanently deactivated (``active``) and never grows again
     on a later step - exactly matching the single-row loop's ``break``,
     not merely skipping one step.
+
+    The only Python-level loop is ``for step in range(caliber)`` - a fixed,
+    small (default 4) hyperparameter, not data-dependent.
 
     Args:
         padded_candidates (torch.Tensor): Long tensor, shape
@@ -268,11 +298,17 @@ def batched_select_interpolatory_set(
         that row's interpolatory-set indices in selection order.
         ``chosen`` at masked-``False`` positions is unspecified padding.
     """
-    m, max_cand = padded_candidates.shape
+    m, _ = padded_candidates.shape
     device = test_vectors.device
+    dtype = test_vectors.dtype
+    dependence_floor = _DEPENDENCE_ULPS * torch.finfo(dtype).eps
 
-    target_vectors = test_vectors[targets]
-    empty_set_value = (weights * target_vectors**2).sum(dim=-1)
+    whitener = weights.sqrt()
+    residual = test_vectors[targets] * whitener
+    orthogonal = test_vectors[padded_candidates] * whitener
+    original_energy = orthogonal.square().sum(dim=-1)
+
+    empty_set_value = residual.square().sum(dim=-1)
     normalizer = torch.where(empty_set_value > 0, empty_set_value, torch.ones_like(empty_set_value))
     current_value = empty_set_value / normalizer
 
@@ -280,40 +316,48 @@ def batched_select_interpolatory_set(
     remaining_mask = candidate_mask.clone()
     chosen = torch.zeros(m, caliber, dtype=torch.long, device=device)
     chosen_mask = torch.zeros(m, caliber, dtype=torch.bool, device=device)
+    no_gain = torch.full((), float("-inf"), dtype=dtype, device=device)
 
     for step in range(caliber):
-        trial_indices = torch.empty(m, max_cand, step + 1, dtype=torch.long, device=device)
-        if step > 0:
-            trial_indices[:, :, :step] = chosen[:, :step].unsqueeze(1).expand(-1, max_cand, -1)
-        trial_indices[:, :, step] = padded_candidates
+        energy = orthogonal.square().sum(dim=-1)
+        independent = energy > dependence_floor * original_energy
+        correlation = torch.einsum("mck,mk->mc", orthogonal, residual)
+        coefficient = torch.where(
+            independent, correlation / energy.clamp(min=torch.finfo(dtype).tiny), 0.0
+        )
+        gain = torch.where(remaining_mask, coefficient * correlation, no_gain)
 
-        restricted = test_vectors[trial_indices]
-        weighted = restricted * weights
-        gram = weighted @ restricted.transpose(-1, -2)
-        rhs = torch.einsum("mcpk,mk->mcp", weighted, target_vectors)
-        p = torch.linalg.lstsq(gram, rhs.unsqueeze(-1)).solution.squeeze(-1)
-        reconstructed = torch.einsum("mcp,mcpk->mck", p, restricted)
-        residual = target_vectors.unsqueeze(1) - reconstructed
-        trial_value = (weights * residual**2).sum(dim=-1)
+        best_gain, best_slot = gain.max(dim=-1)
+        slot_index = best_slot.view(-1, 1)
+        best_candidate = padded_candidates.gather(-1, slot_index).squeeze(-1)
+        best_direction = orthogonal.gather(
+            1, best_slot.view(-1, 1, 1).expand(-1, 1, orthogonal.shape[-1])
+        ).squeeze(1)
+        best_coefficient = coefficient.gather(-1, slot_index)
 
-        valid = remaining_mask
-        trial_value = torch.where(valid, trial_value, torch.full_like(trial_value, float("inf")))
-
-        best_value, best_slot = trial_value.min(dim=-1)
-        best_value_normalized = best_value / normalizer
-        best_candidate = padded_candidates.gather(-1, best_slot.unsqueeze(-1)).squeeze(-1)
-        has_valid_candidate = torch.isfinite(best_value)
-        accept = active & has_valid_candidate & (best_value_normalized < current_value**gamma)
+        updated_residual = residual - best_coefficient * best_direction
+        best_value = updated_residual.square().sum(dim=-1) / normalizer
+        has_valid_candidate = torch.isfinite(best_gain)
+        accept = active & has_valid_candidate & (best_value < current_value**gamma)
 
         chosen[:, step] = torch.where(accept, best_candidate, chosen[:, step])
         chosen_mask[:, step] = accept
-        current_value = torch.where(accept, best_value_normalized, current_value)
+        current_value = torch.where(accept, best_value, current_value)
+        residual = torch.where(accept.unsqueeze(-1), updated_residual, residual)
 
         clear = torch.zeros_like(remaining_mask)
-        clear.scatter_(-1, best_slot.unsqueeze(-1), accept.unsqueeze(-1))
+        clear.scatter_(-1, slot_index, accept.unsqueeze(-1))
         remaining_mask = remaining_mask & ~clear
-
         active = active & accept
+
+        if step + 1 < caliber:
+            direction_energy = (best_direction * best_direction).sum(dim=-1, keepdim=True)
+            usable = accept.unsqueeze(-1) & (direction_energy > 0)
+            projection = torch.einsum("mck,mk->mc", orthogonal, best_direction) / torch.where(
+                usable, direction_energy, torch.ones_like(direction_energy)
+            )
+            projection = torch.where(usable, projection, 0.0)
+            orthogonal = orthogonal - projection.unsqueeze(-1) * best_direction.unsqueeze(1)
 
     return chosen, chosen_mask
 
@@ -329,14 +373,13 @@ def batched_ls_interpolation_rows(
 
     Each row ``r`` may have a different valid prefix length (``0`` to
     ``caliber``, per ``chosen_mask[r]``); this solves all ``m`` rows'
-    normal equations in one batched ``torch.linalg.lstsq`` call via a
-    "masked identity padding" trick: invalid slots are zeroed out of the
-    Gram matrix's cross terms and given an identity on their own diagonal,
-    so each invalid slot independently solves ``scale * p = 0`` (``p = 0``
-    for any nonzero ``scale``) and decouples exactly from the row's real
-    sub-block instead of corrupting it - this holds for *any* nonzero
-    diagonal pad value, since the cross terms between the valid and
-    invalid blocks are already zeroed above.
+    normal equations at once via a "masked identity padding" trick: invalid
+    slots are zeroed out of the Gram matrix's cross terms and given an
+    identity on their own diagonal, so each invalid slot independently solves
+    ``scale * p = 0`` (``p = 0`` for any nonzero ``scale``) and decouples
+    exactly from the row's real sub-block instead of corrupting it - this
+    holds for *any* nonzero diagonal pad value, since the cross terms between
+    the valid and invalid blocks are already zeroed above.
 
     **The pad value matters for conditioning, even though it cannot change
     the exact answer.** A bare ``1.0`` pad is fine in infinite precision,
@@ -345,10 +388,20 @@ def batched_ls_interpolation_rows(
     sub-block's Gram entries ``~1e-16`` - next to a literal ``1.0`` pad,
     the combined per-row matrix's condition number is then dominated by
     that ``1e16`` scale mismatch, not by the real sub-block's own
-    conditioning, and ``torch.linalg.lstsq`` can return numerical zero for
-    the real block instead of its correct value. Scaling the pad to each
-    row's own real-block diagonal magnitude removes the mismatch without
-    touching the exactness argument above.
+    conditioning. Scaling the pad to each row's own real-block diagonal
+    magnitude removes the mismatch without touching the exactness argument
+    above, and keeps the padded matrix symmetric positive definite whenever
+    the real block is.
+
+    **Solver choice.** The padded ``(m, caliber, caliber)`` Gram is
+    factorized with ``torch.linalg.cholesky_ex`` (one batched call that
+    reports failure per row instead of raising). A row is accepted when the
+    factorization succeeded and its pivot ratio ``min(L_ii)^2 /
+    max(L_ii)^2`` exceeds ``_PIVOT_RATIO_ULPS * eps``; only the remaining
+    rows - singular or nearly singular Grams, e.g. duplicate or collinear
+    chosen vectors, or ``caliber > k`` - are re-solved with the
+    rank-revealing ``torch.linalg.lstsq``, so the result agrees with a
+    full-batch ``lstsq`` while the common well-conditioned case avoids it.
 
     Implemented independently from ``batched_select_interpolatory_set``
     (not reusing that function's per-step byproducts) - this mirrors the
@@ -401,5 +454,32 @@ def batched_ls_interpolation_rows(
     rhs = torch.einsum("mck,mk->mc", weighted, target_vectors)
     rhs = torch.where(valid, rhs, torch.zeros_like(rhs))
 
-    p = torch.linalg.lstsq(gram, rhs.unsqueeze(-1)).solution.squeeze(-1)
+    p = _solve_padded_gram(gram, rhs)
     return torch.where(valid, p, torch.zeros_like(p))
+
+
+def _solve_padded_gram(gram: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+    """Solve ``gram @ p = rhs`` per row: Cholesky where well conditioned, ``lstsq`` elsewhere.
+
+    Args:
+        gram (torch.Tensor): Symmetric Gram matrices, shape ``(m, c, c)``.
+        rhs (torch.Tensor): Right-hand sides, shape ``(m, c)``.
+
+    Returns:
+        torch.Tensor: Solutions, shape ``(m, c)``.
+    """
+    factor, info = torch.linalg.cholesky_ex(gram)
+    pivots = factor.diagonal(dim1=-2, dim2=-1).abs()
+    pivot_ratio = (pivots.amin(dim=-1) / pivots.amax(dim=-1)) ** 2
+    trusted = (info == 0) & (pivot_ratio > _PIVOT_RATIO_ULPS * torch.finfo(gram.dtype).eps)
+
+    # Rows that failed hold unspecified factors (possibly NaN); give them a benign
+    # right-hand side so the batched solve stays finite, then overwrite them below.
+    solution = torch.cholesky_solve(
+        torch.where(trusted.unsqueeze(-1), rhs, torch.zeros_like(rhs)).unsqueeze(-1), factor
+    ).squeeze(-1)
+    if bool(trusted.all()):
+        return solution
+    fallback = ~trusted
+    refit = torch.linalg.lstsq(gram[fallback], rhs[fallback].unsqueeze(-1)).solution.squeeze(-1)
+    return solution.masked_scatter(fallback.unsqueeze(-1), refit)
