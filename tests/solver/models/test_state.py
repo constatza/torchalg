@@ -115,10 +115,11 @@ class TestCGState:
         assert cg_state.direction_history.max_size == 3
 
     def test_create_initial_has_no_previous_iterate(self, cg_state: CGState) -> None:
-        """Two-term-recurrence lookback fields are unset at iteration 0."""
-        assert cg_state.w_prev is None
-        assert cg_state.r_prev is None
+        """The two-term-recurrence lookback is only ``(r, w)``; no previous vectors are kept."""
         assert cg_state.rw_prev == 0.0
+        assert cg_state.ortho_breakdown_at is None
+        assert not hasattr(cg_state, "w_prev")
+        assert not hasattr(cg_state, "r_prev")
 
     def test_create_initial_zero_rhs_norm_creates_valid_state(
         self,

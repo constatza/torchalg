@@ -13,12 +13,13 @@ whether a real SPD system happens to trigger genuine numerical breakdown.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import torch
 
 from torchalg.conjugate_gradient import FCGSolver
+from torchalg.models.history import DirectionWindow
 from torchalg.strategies.orthogonalization import (
     OrthogonalizationReport,
     OrthogonalizationStrategy,
@@ -39,11 +40,12 @@ class _AlwaysBreaksDown(OrthogonalizationStrategy):
     def orthogonalize(
         self,
         vector: torch.Tensor,
-        d_vectors: Sequence[torch.Tensor],
-        q_vectors: Sequence[torch.Tensor],
+        window: DirectionWindow,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Pass ``vector`` through unchanged, always flagged as breakdown."""
-        return vector, OrthogonalizationReport(coefficients=(), breakdown=torch.tensor(True))
+        return vector, OrthogonalizationReport(
+            coefficients=torch.empty(0), breakdown=torch.tensor(True)
+        )
 
 
 class _NeverBreaksDown(OrthogonalizationStrategy):
@@ -57,11 +59,12 @@ class _NeverBreaksDown(OrthogonalizationStrategy):
     def orthogonalize(
         self,
         vector: torch.Tensor,
-        d_vectors: Sequence[torch.Tensor],
-        q_vectors: Sequence[torch.Tensor],
+        window: DirectionWindow,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Pass ``vector`` through unchanged, never flagged as breakdown."""
-        return vector, OrthogonalizationReport(coefficients=(), breakdown=torch.tensor(False))
+        return vector, OrthogonalizationReport(
+            coefficients=torch.empty(0), breakdown=torch.tensor(False)
+        )
 
 
 def test_ortho_breakdown_reaches_termination_diagnostics(

@@ -1,27 +1,24 @@
 """History tracking for iterative solvers.
 
 Ported from ``neuralls.domain.solver.models.history`` (see ``docs/plan.md``)
-with ``NDArray`` fields translated to ``torch.Tensor`` and the numpy copy
-inside ``DirectionHistory.add`` translated to ``torch.Tensor.clone()``. This
-module defines immutable history dataclasses for tracking algorithm state:
+with ``NDArray`` fields translated to ``torch.Tensor``. This module defines:
 
-- ``DirectionHistory``: Search directions and matrix-vector products (for FCG).
-- ``ResidualHistory``: Residual norms (absolute and relative).
-
-All classes use frozen, slotted dataclasses for immutability, following
-functional programming principles.
+- ``DirectionHistory``: sliding window of search directions, matrix-vector
+  products and their curvatures (for FCG), held in preallocated ``(m, n)``
+  buffers; ``DirectionWindow`` is the contiguous view orthogonalization
+  consumes.
+- ``ResidualHistory``: Residual norms (absolute and relative); immutable.
 
 Theory:
     Krylov methods like FCG require maintaining a window of search
-    directions for orthogonalization. Using immutable tuples ensures no
-    accidental mutation and simplifies reasoning about algorithm
-    correctness.
+    directions for orthogonalization. Keeping the window in contiguous
+    buffers lets one matrix-vector product replace a Python loop over the
+    stored pairs.
 
 Design:
-    - Immutable (``frozen=True``) for thread safety and predictable behavior.
-    - Tuple-based storage (immutable sequences).
-    - Factory methods for creating empty instances.
-    - Update methods return new instances (functional style).
+    - ``DirectionHistory`` is an append-only accumulator owned by one solve
+      (mutation is what makes it allocation-free per iteration);
+      ``ResidualHistory`` stays frozen with tuple storage.
 """
 
 from __future__ import annotations
@@ -32,20 +29,77 @@ import torch
 
 
 @dataclass(frozen=True, slots=True)
+class DirectionWindow:
+    """Contiguous view of the stored ``(d_j, q_j)`` pairs, oldest first.
+
+    Row ``j`` of ``d`` and ``q`` is the ``j``-th stored direction and its
+    product ``q_j = A d_j``. ``curvature[j] = (d_j, q_j)`` is the A-norm
+    squared of that direction, computed once when the pair was stored.
+    The tensors are views into the history's buffers (valid until the next
+    ``DirectionHistory.append``), except when autograd is tracking the
+    stored pairs, where they are detached copies of the buffers.
+
+    Attributes:
+        d: Search directions, shape ``(k, n)``.
+        q: Matrix-vector products ``A d_j``, shape ``(k, n)``.
+        curvature: ``(d_j, q_j)``, shape ``(k,)``.
+    """
+
+    d: torch.Tensor
+    q: torch.Tensor
+    curvature: torch.Tensor
+
+    @classmethod
+    def empty(cls, like: torch.Tensor) -> DirectionWindow:
+        """Return a zero-pair window whose dtype, device and width match ``like``."""
+        n = like.shape[-1]
+        return cls(
+            d=torch.empty((0, n), dtype=like.dtype, device=like.device),
+            q=torch.empty((0, n), dtype=like.dtype, device=like.device),
+            curvature=torch.empty(0, dtype=like.dtype, device=like.device),
+        )
+
+    def __len__(self) -> int:
+        """Return the number of stored pairs ``k``."""
+        return self.d.shape[0]
+
+    def tail(self, count: int) -> DirectionWindow:
+        """Return the newest ``count`` pairs (all of them if fewer are stored)."""
+        start = max(len(self) - count, 0)
+        return DirectionWindow(
+            d=self.d[start:],
+            q=self.q[start:],
+            curvature=self.curvature[start:],
+        )
+
+
+_INITIAL_ROWS = 8
+"""Rows allocated by the first ``append``; the buffers then double up to capacity."""
+
+
 class DirectionHistory:
-    """Immutable history of search directions and matrix-vector products.
+    """Sliding window of search directions and matrix-vector products.
 
-    Maintains a sliding window of search directions (``d_i``) and their
-    corresponding matrix-vector products (``q_i = A d_i``) for algorithms
-    like Flexible Conjugate Gradient that require orthogonalization against
-    previous directions.
+    Stores the last ``max_size`` pairs ``(d_j, q_j = A d_j)`` that Flexible
+    Conjugate Gradient (Notay 2000) orthogonalizes against, together with
+    each pair's curvature ``(d_j, q_j)`` so it is computed once instead of
+    on every later iteration.
 
-    When ``max_size`` is reached, older directions are dropped to maintain
-    the window size.
+    Storage is a pair of contiguous ``(capacity, n)`` buffers, allocated on
+    the first ``append`` and grown geometrically up to ``max_size`` plus a
+    slack of ``max_size // 2`` rows. New pairs are written after the newest
+    row; once the buffer is full, the live window is shifted to the front
+    (one ``(max_size, n)`` copy every ``max_size // 2`` appends) so the
+    window is always one contiguous slice that a single matrix-vector
+    product can consume. Memory is therefore ``O(1.5 * max_size * n)``
+    regardless of the iteration count, and nothing is allocated per
+    iteration beyond the stored copies.
 
-    For full orthogonalization (FCG(inf)), set ``max_size`` to a large value
-    (e.g. the reference's ``DEFAULT_FCG_HISTORY_LIMIT=200``) or the expected
-    maximum iteration count.
+    Unlike the frozen solver state, this object is an append-only
+    accumulator owned by exactly one solve: ``append`` mutates it in
+    place, and the ``DirectionWindow`` views from earlier calls must not be
+    used after a later ``append``. The buffers copy their inputs, so stored
+    pairs never alias tensors the caller keeps.
 
     Theory (Notay 2000):
         FCG orthogonalization formula::
@@ -56,104 +110,150 @@ class DirectionHistory:
         ``m`` is the orthogonalization window size.
 
     Attributes:
-        d_vectors (tuple[torch.Tensor, ...]): Previous search directions
-            ``[d_{i-m}, ..., d_{i-1}]`` (Notay 2000). Immutable tuple ensures
-            no accidental modification.
-        q_vectors (tuple[torch.Tensor, ...]): Previous matrix-vector
-            products ``[q_{i-m}, ..., q_{i-1}]``. Each ``q_j = A @ d_j``.
-            Used in orthogonalization coefficients.
-        max_size (int): Maximum window size (effectively unlimited if
-            large). Vectors are truncated to keep only the last ``max_size``.
-        total_updates (int): Total number of directions added (monotonic,
-            not truncated). Used for debugging and statistics.
+        max_size: Maximum window size; older pairs are dropped beyond it.
+        total_updates: Total number of pairs ever appended (monotonic, not
+            truncated).
 
     Example:
         >>> history = DirectionHistory.empty(max_size=10)
-        >>> history = history.add(d, q)
-        >>> history = history.add(d2, q2)
-        >>> len(history.d_vectors)  # 2
+        >>> history.append(d, q, curvature)
+        >>> history.append(d2, q2, curvature2)
+        >>> len(history)  # 2
     """
 
-    d_vectors: tuple[torch.Tensor, ...] = ()
-    """Previous search directions (immutable tuple) (Notay 2000)."""
+    __slots__ = (
+        "_curvature",
+        "_d",
+        "_end",
+        "_q",
+        "_start",
+        "_tracks_grad",
+        "max_size",
+        "total_updates",
+    )
 
-    q_vectors: tuple[torch.Tensor, ...] = ()
-    """Previous matrix-vector products q_j = A @ d_j (immutable tuple)."""
-
-    max_size: int = 10
-    """Maximum window size for truncation."""
-
-    total_updates: int = 0
-    """Total number of directions ever added (monotonic)."""
+    def __init__(self, max_size: int = 10) -> None:
+        """Create an empty history keeping at most ``max_size`` pairs."""
+        self.max_size = max_size
+        self.total_updates = 0
+        self._d: torch.Tensor | None = None
+        self._q: torch.Tensor | None = None
+        self._curvature: torch.Tensor | None = None
+        self._start = 0
+        self._end = 0
+        self._tracks_grad = False
 
     @classmethod
     def empty(cls, max_size: int = 10) -> DirectionHistory:
-        """Create empty history with specified maximum size.
+        """Create an empty history with the given maximum window size."""
+        return cls(max_size=max_size)
+
+    @property
+    def _full_capacity(self) -> int:
+        """Rows needed for the full window plus compaction slack."""
+        return self.max_size + max(1, self.max_size // 2)
+
+    def append(self, d: torch.Tensor, q: torch.Tensor, curvature: torch.Tensor) -> None:
+        """Store ``(d, q)`` as the newest pair, dropping the oldest beyond ``max_size``.
 
         Args:
-            max_size (int): Maximum number of directions to store. Defaults
-                to ``10``.
-
-        Returns:
-            DirectionHistory: New history with no vectors.
-
-        Example:
-            >>> history = DirectionHistory.empty(max_size=20)
-            >>> history.d_vectors
-            ()
+            d: New search direction, shape ``(n,)``.
+            q: Its matrix-vector product ``A d``, shape ``(n,)``.
+            curvature: ``(d, q)`` as a 0-d tensor, computed by the caller
+                (the CG step already has it).
         """
-        return cls(d_vectors=(), q_vectors=(), max_size=max_size, total_updates=0)
+        if self.max_size < 1:
+            raise ValueError(f"cannot append to a history with max_size={self.max_size} < 1")
+        if self._d is None:
+            self._allocate(min(_INITIAL_ROWS, self._full_capacity), like=d)
+        elif self._end == self._buffer_rows:
+            self._make_room()
+        assert self._d is not None
+        assert self._q is not None
+        assert self._curvature is not None
+        row = self._end
+        self._d[row].copy_(d)
+        self._q[row].copy_(q)
+        self._curvature[row].copy_(curvature)
+        self._tracks_grad = self._tracks_grad or (
+            torch.is_grad_enabled()
+            and (d.requires_grad or q.requires_grad or curvature.requires_grad)
+        )
+        self._end += 1
+        self.total_updates += 1
+        self._start = max(self._start, self._end - self.max_size)
 
-    def add(self, d: torch.Tensor, q: torch.Tensor) -> DirectionHistory:
-        """Return new history with vectors added (immutable update).
+    def window(self, like: torch.Tensor) -> DirectionWindow:
+        """Return the live window (oldest first) as contiguous views.
 
-        Args:
-            d (torch.Tensor): New search direction to add (Notay 2000).
-            q (torch.Tensor): New matrix-vector product (``A @ d``) to add.
+        ``like`` supplies the dtype/device/width of an empty window when
+        nothing has been stored yet.
 
-        Returns:
-            DirectionHistory: New history with the vector added and old
-                vectors possibly truncated.
-
-        Theory:
-            Truncation maintains only the last ``max_size`` vectors to:
-            1. Bound memory usage at ``O(max_size * n)``.
-            2. Limit orthogonalization cost to ``O(max_size * n)`` per
-               iteration.
-            3. Prevent numerical error accumulation.
-
-        Example:
-            >>> history = DirectionHistory.empty(max_size=2)
-            >>> history = history.add(d1, q1)
-            >>> history = history.add(d2, q2)
-            >>> history = history.add(d3, q3)  # Drops d1, q1
-            >>> len(history.d_vectors)  # 2
+        When autograd tracks the stored pairs the views are cloned: a later
+        in-place ``append`` into the same buffer would otherwise invalidate
+        tensors saved for backward.
         """
-        # Clone so the stored history never aliases a tensor the caller
-        # might later mutate in place (mirrors the reference's
-        # `np.asarray(d, copy=True)`).
-        new_d = self.d_vectors + (d.clone(),)
-        new_q = self.q_vectors + (q.clone(),)
-
-        if len(new_d) > self.max_size:
-            new_d = new_d[-self.max_size :]
-        if len(new_q) > self.max_size:
-            new_q = new_q[-self.max_size :]
-
-        return DirectionHistory(
-            d_vectors=new_d,
-            q_vectors=new_q,
-            max_size=self.max_size,
-            total_updates=self.total_updates + 1,
+        if self._d is None or self._q is None or self._curvature is None:
+            return DirectionWindow.empty(like)
+        live = slice(self._start, self._end)
+        window = DirectionWindow(
+            d=self._d[live],
+            q=self._q[live],
+            curvature=self._curvature[live],
+        )
+        if not self._tracks_grad:
+            return window
+        return DirectionWindow(
+            d=window.d.clone(),
+            q=window.q.clone(),
+            curvature=window.curvature.clone(),
         )
 
     def __len__(self) -> int:
-        """Return number of directions stored (not ``total_updates``).
+        """Return the number of pairs currently stored (not ``total_updates``)."""
+        return self._end - self._start
 
-        Returns:
-            int: Current window size (``len(d_vectors)``).
-        """
-        return len(self.d_vectors)
+    @property
+    def _buffer_rows(self) -> int:
+        """Allocated row count (0 before the first append)."""
+        return 0 if self._d is None else self._d.shape[0]
+
+    def _allocate(self, rows: int, *, like: torch.Tensor) -> None:
+        """Allocate fresh buffers of ``rows`` rows, copying any live window to the front."""
+        n = like.shape[-1]
+        old = None if self._d is None else self._live_buffers()
+        new_d = torch.empty((rows, n), dtype=like.dtype, device=like.device)
+        new_q = torch.empty((rows, n), dtype=like.dtype, device=like.device)
+        new_curvature = torch.empty(rows, dtype=like.dtype, device=like.device)
+        live = len(self)
+        if old is not None:
+            for new_buffer, old_buffer in zip((new_d, new_q, new_curvature), old, strict=True):
+                new_buffer[:live] = old_buffer
+        self._d, self._q = new_d, new_q
+        self._curvature = new_curvature
+        self._start, self._end = 0, live
+
+    def _live_buffers(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the live rows of the three buffers, for relocation."""
+        assert self._d is not None
+        assert self._q is not None
+        assert self._curvature is not None
+        live = slice(self._start, self._end)
+        return self._d[live], self._q[live], self._curvature[live]
+
+    def _make_room(self) -> None:
+        """Grow the buffers, or shift the live window to the front once at capacity."""
+        assert self._d is not None
+        rows = self._buffer_rows
+        if rows < self._full_capacity:
+            self._allocate(min(2 * rows, self._full_capacity), like=self._d[0])
+            return
+        live = len(self)
+        for buffer in (self._d, self._q, self._curvature):
+            assert buffer is not None
+            # Clone first: the source and destination slices overlap.
+            buffer[:live] = buffer[self._start : self._end].clone()
+        self._start, self._end = 0, live
 
 
 @dataclass(frozen=True, slots=True)

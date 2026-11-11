@@ -28,6 +28,16 @@ mode.
 System validation accepts dense and PyTorch sparse tensors. For sparse
 matrices it validates stored values, since implicit entries are finite zeros
 and PyTorch does not implement `torch.isfinite` directly for CSR tensors.
+Finiteness is one fused infinity-norm reduction (no `n^2` boolean mask), so a
+`nan`/`inf` anywhere in `A` is still rejected at a fraction of the cost.
+
+Work per solve: a `k`-iteration CG solve applies the preconditioner `k` times
+and multiplies by `A` `k` times (`k + 1` with a nonzero `x0`, whose residual
+needs `A x0`). The first iteration reuses the preconditioned residual,
+direction and `A d` computed for the initial state, `(r, w)` is computed once
+per iteration and shared with the direction strategy, and `(d, q)` once.
+`stable_dot_product` is a plain `torch.dot` plus one finiteness test; only a
+non-finite (overflowed) result falls back to the rescaled evaluation.
 
 Sparse AMG keeps its existing greedy and compatible-relaxation coarsening
 algorithms as correctness baselines. Any tensor-parallel coarsening path is

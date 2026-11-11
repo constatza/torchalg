@@ -7,7 +7,12 @@ from dataclasses import dataclass
 import torch
 
 
-def _to_cpu_copy(vector: torch.Tensor) -> torch.Tensor:
+def as_scalar_value(value: torch.Tensor | float) -> torch.Tensor:
+    """Return ``value`` as a 0-d float64 tensor without any host conversion."""
+    return torch.as_tensor(value, dtype=torch.float64)
+
+
+def to_cpu_copy(vector: torch.Tensor) -> torch.Tensor:
     """Detach and move ``vector`` to a fresh CPU tensor.
 
     ``.to("cpu")`` is a no-op view (not a copy) when ``vector`` is already on
@@ -28,6 +33,10 @@ class ScalarHistory:
     to this container. Converting on every ``.add()`` would force a device sync
     per iteration for a value that's only ever needed once, in bulk, at the
     very end of the solve.
+
+    ``add``/``prepend`` copy the whole tuple (``O(k)`` each), which is fine for
+    one-off updates; the per-iteration solver loop does not use them but
+    appends to lists in ``IterationHistory`` and snapshots into this type once.
     """
 
     values: tuple[torch.Tensor, ...] = ()
@@ -40,13 +49,11 @@ class ScalarHistory:
 
     def add(self, value: torch.Tensor | float) -> ScalarHistory:
         """Return a new history with ``value`` appended (as a 0-d tensor, no conversion)."""
-        tensor_value = torch.as_tensor(value, dtype=torch.float64)
-        return ScalarHistory(values=self.values + (tensor_value,))
+        return ScalarHistory(values=(*self.values, as_scalar_value(value)))
 
     def prepend(self, value: torch.Tensor | float) -> ScalarHistory:
         """Return a new history with ``value`` prepended (as a 0-d tensor, no conversion)."""
-        tensor_value = torch.as_tensor(value, dtype=torch.float64)
-        return ScalarHistory(values=(tensor_value,) + self.values)
+        return ScalarHistory(values=(as_scalar_value(value), *self.values))
 
     def to_list(self) -> list[float]:
         """Materialize the whole history to floats in ONE batched conversion."""
@@ -73,6 +80,9 @@ class VectorHistory:
     and transferring at the end - the latter would not bound peak device
     memory at all, since the accumulation itself is what exhausts it (see
     ``docs/bug-full-trace-history-exhausts-gpu-memory.md``).
+
+    ``add``/``prepend`` copy the whole tuple (``O(k)`` each); the solver loop
+    appends to lists in ``IterationHistory`` instead (see ``ScalarHistory``).
     """
 
     vectors: tuple[torch.Tensor, ...] = ()
@@ -85,11 +95,11 @@ class VectorHistory:
 
     def add(self, vector: torch.Tensor) -> VectorHistory:
         """Return a new history with ``vector`` appended, moved to CPU."""
-        return VectorHistory(vectors=(*self.vectors, _to_cpu_copy(vector)))
+        return VectorHistory(vectors=(*self.vectors, to_cpu_copy(vector)))
 
     def prepend(self, vector: torch.Tensor) -> VectorHistory:
         """Return a new history with ``vector`` prepended, moved to CPU."""
-        return VectorHistory(vectors=(_to_cpu_copy(vector), *self.vectors))
+        return VectorHistory(vectors=(to_cpu_copy(vector), *self.vectors))
 
     def to_tensor(self) -> torch.Tensor:
         """Stack vectors into a tensor with iteration as the first dimension."""

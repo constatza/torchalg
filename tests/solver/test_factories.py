@@ -485,16 +485,15 @@ def test_fcg_defers_orthogonalization_breakdown_and_coefficient_conversion(
     to_torch: Callable[[NDArray], torch.Tensor],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """FCG's orthogonalization breakdown and coefficients defer conversion to batch time.
+    """FCG's orthogonalization breakdown and coefficients defer conversion to the end.
 
-    Orthogonalization breakdown (bool) and coefficients (float) are now stored
-    as 0-d tensors / tuples-of-tensors, deferred to a single batched extraction
-    at the end of the solve (in _build_result). Per-iteration bool/item conversions
-    should be negligible — the count should not scale with orthogonalization calls.
-
-    This test verifies the batching works by counting .item() calls (which force
-    a device sync for tensor-to-Python-scalar conversion). With batching, nearly
-    all calls happen in one batch at the end, not per-iteration.
+    Orthogonalization breakdown (bool) and coefficients (float) stay tensors:
+    the breakdown flags fold into one device-side record resolved after the
+    loop. The only deliberate per-iteration ``.item()`` calls are the three
+    overflow guards (finiteness of ``(r, w)``, of ``(d, q)`` and of the
+    window projections); each replaces a ~15-kernel always-on rescaling. The
+    bound of 3.5 per iteration therefore leaves no room for a per-iteration
+    breakdown/coefficient conversion on top of them.
     """
     from torchalg.factories import flexible_cg
 
@@ -514,13 +513,8 @@ def test_fcg_defers_orthogonalization_breakdown_and_coefficient_conversion(
     _, result = flexible_cg(matrix, rhs, rtol=1e-300, atol=1e-300, maxiter=maxiter)
 
     assert result.iterations == maxiter
-    # With batched extraction, .item() calls for orthogonalization should be
-    # negligible — mostly fixed overhead from other parts of the solver, not
-    # scaled by the number of orthogonalization calls per iteration.
-    # FCG with a tridiagonal system doesn't always trigger orthogonalization,
-    # so the count should be small relative to maxiter * iterations.
     actual_per_iter = item_call_count / maxiter if maxiter > 0 else 0
-    assert actual_per_iter < 2.0, (
-        f".item() calls per iteration should be <2.0 (fixed overhead only), "
+    assert actual_per_iter < 3.5, (
+        f".item() calls per iteration should be <3.5 (the three overflow guards only), "
         f"got {actual_per_iter:.2f} (total {item_call_count} for {maxiter} iterations)"
     )

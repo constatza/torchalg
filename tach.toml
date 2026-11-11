@@ -212,7 +212,7 @@ path = "torchalg.monitoring"
 depends_on = ["torchalg.utils.energy", "torchalg.utils.numerics"]
 [[modules]]
 path = "torchalg.strategies"
-depends_on = ["torchalg.models.state", "torchalg.utils.energy", "torchalg.utils.numerics"]
+depends_on = ["torchalg.models.history", "torchalg.models.state", "torchalg.utils.energy", "torchalg.utils.numerics"]
 
 # Stable preconditioner abstractions.
 [[modules]]
@@ -301,7 +301,7 @@ path = "torchalg.base"
 depends_on = ["torchalg.models.protocols", "torchalg.models.result", "torchalg.models.state", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.strategies", "torchalg.utils.device", "torchalg.utils.grad_mode", "torchalg.utils.validation"]
 [[modules]]
 path = "torchalg.conjugate_gradient"
-depends_on = ["torchalg.base", "torchalg.models.diagnostics", "torchalg.models.result", "torchalg.models.state", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.strategies", "torchalg.utils.numerics", "torchalg.utils.validation"]
+depends_on = ["torchalg.base", "torchalg.models.diagnostics", "torchalg.models.history", "torchalg.models.result", "torchalg.models.state", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.strategies", "torchalg.utils.numerics", "torchalg.utils.validation"]
 [[modules]]
 path = "torchalg.factories"
 depends_on = ["torchalg.base", "torchalg.conjugate_gradient", "torchalg.models.result", "torchalg.monitoring", "torchalg.preconditioners.base", "torchalg.preconditioners.implementations", "torchalg.strategies"]

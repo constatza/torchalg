@@ -29,6 +29,7 @@ import torch
 
 from torchalg.base import DEFAULT_ATOL, DEFAULT_RTOL, IterativeSolverBase
 from torchalg.models.diagnostics import TerminationDiagnostics
+from torchalg.models.history import DirectionHistory
 from torchalg.models.result import SolverResult
 from torchalg.models.state import CGState, SolverState
 from torchalg.monitoring import IterationHistory, TraceMode
@@ -46,6 +47,32 @@ from torchalg.strategies.direction import (
 from torchalg.strategies.orthogonalization import OrthogonalizationStrategy
 from torchalg.utils.numerics import stable_dot_product
 from torchalg.utils.validation import check_solution_validity, describe_breakdown_reason
+
+
+def _record_first_breakdown(
+    recorded: torch.Tensor | None,
+    flag: torch.Tensor | None,
+    iteration: int,
+) -> torch.Tensor | None:
+    """Fold this iteration's breakdown ``flag`` into the running first-breakdown record.
+
+    Pure device-side ``where`` so the solve loop never synchronizes on it and
+    never accumulates a per-iteration list. ``recorded`` holds ``0`` until a
+    flag fires, then stays at that first 1-based iteration.
+    """
+    if flag is None:
+        return recorded
+    if recorded is None:
+        recorded = torch.zeros((), dtype=torch.int64, device=flag.device)
+    return torch.where(flag & (recorded == 0), iteration, recorded)
+
+
+def _resolve_first_breakdown(recorded: torch.Tensor | None) -> int | None:
+    """Read the first-breakdown record once, at the end of the solve."""
+    if recorded is None:
+        return None
+    iteration = int(recorded)
+    return iteration if iteration > 0 else None
 
 
 class _IdentityPreconditioner(Preconditioner):
@@ -100,9 +127,21 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         x0: torch.Tensor | None,
         maxiter: int | None = None,
     ) -> CGState:
-        """Create iteration-zero CG state."""
-        u = torch.zeros_like(b) if x0 is None else x0.clone()
-        r = b - linear_op(u)
+        """Create iteration-zero CG state.
+
+        Holds the first preconditioned residual ``w_0 = M^{-1} r_0``, the first
+        direction ``d_0 = w_0`` and ``q_0 = A d_0``; the first iteration
+        consumes them instead of recomputing, so a ``k``-iteration solve costs
+        ``k`` preconditioner applies and ``k`` matvecs (``k + 1`` with a
+        nonzero ``x0``, whose residual needs ``A x0``).
+        """
+        if x0 is None:
+            # b - A @ 0 == b exactly, so the zero-guess matvec is skipped.
+            u = torch.zeros_like(b)
+            r = b.clone()
+        else:
+            u = x0.clone()
+            r = b - linear_op(u)
         residual_norm = torch.linalg.norm(r)
         rhs_norm = self.convergence_criterion.norm(b)
         initial_state = SolverState(
@@ -133,20 +172,32 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         linear_op: Callable[[torch.Tensor], torch.Tensor],
         state: CGState,
     ) -> CGState:
-        """Execute one unified CG iteration."""
-        w = self._apply_preconditioner(self.preconditioner, state.r, state)
+        """Execute one unified CG iteration.
+
+        The first iteration (``state.iteration == 0``) reuses the
+        preconditioned residual and ``q = A d`` that ``_initialize_state``
+        already computed from the same ``r``; the direction strategy is still
+        invoked so its per-iteration bookkeeping (e.g. the periodic-restart
+        window counter) advances identically, and by contract returns a copy
+        of ``w`` at iteration 0.
+        """
+        first_iteration = state.iteration == 0
+        w = (
+            state.w
+            if first_iteration
+            else self._apply_preconditioner(self.preconditioner, state.r, state)
+        )
         rw_curr = stable_dot_product(state.r, w)
-        d, ortho_breakdown = self.direction_strategy.compute_direction(w, state)
-        q = linear_op(d)
+        d, ortho_breakdown = self.direction_strategy.compute_direction(w, rw_curr, state)
+        q = state.q if first_iteration else linear_op(d)
         curvature = stable_dot_product(d, q)
         alpha = rw_curr / curvature
         energy_decrement = alpha * rw_curr
         u_new = state.u + alpha * d
         r_new = state.r - alpha * q
         residual_norm_new = torch.linalg.norm(r_new)
-        direction_history = self._updated_direction_history(state, d, q)
+        direction_history = self._updated_direction_history(state, d, q, curvature)
         new_iteration = state.iteration + 1
-        breakdown_history = state.breakdown_history + (ortho_breakdown,)
 
         return replace(
             state,
@@ -158,10 +209,10 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             d=d,
             q=q,
             direction_history=direction_history,
-            w_prev=w.clone(),
-            r_prev=state.r.clone(),
             rw_prev=rw_curr,
-            breakdown_history=breakdown_history,
+            ortho_breakdown_at=_record_first_breakdown(
+                state.ortho_breakdown_at, ortho_breakdown, new_iteration
+            ),
             energy_decrement=energy_decrement,
         )
 
@@ -211,8 +262,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             energy_decrements,
         ) = self._extract_histories_from_iteration_history(rhs_norm_for_history)
 
-        # Batch-extract ortho_breakdown_at from breakdown_history (deferred from per-iteration)
-        ortho_breakdown_at = self._extract_ortho_breakdown_at(state.breakdown_history)
+        ortho_breakdown_at = _resolve_first_breakdown(state.ortho_breakdown_at)
 
         breakdown = state.breakdown or not solution_valid
         diagnostics = self._diagnostics(state, converged, breakdown, ortho_breakdown_at)
@@ -264,12 +314,14 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         state: CGState,
         direction: torch.Tensor,
         matrix_product: torch.Tensor,
-    ):
-        """Return direction history updated only when the strategy needs it."""
+        curvature: torch.Tensor,
+    ) -> DirectionHistory:
+        """Append ``(d, q, (d, q))`` unless the strategy needs no direction history."""
         required = self.direction_strategy.required_history_size
         if required is not None and required <= 0:
             return state.direction_history
-        return state.direction_history.add(direction, matrix_product)
+        state.direction_history.append(direction, matrix_product, curvature)
+        return state.direction_history
 
     def _compute_relative_residual[T: (float, torch.Tensor)](
         self, abs_residual: T, rhs_norm: float
@@ -287,24 +339,6 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             The relative residual, same type as abs_residual.
         """
         return abs_residual / rhs_norm if rhs_norm > 1e-14 else abs_residual  # type: ignore[return-value]
-
-    def _extract_ortho_breakdown_at(
-        self,
-        breakdown_history: tuple[torch.Tensor, ...],
-    ) -> int | None:
-        """Extract the first iteration where orthogonalization breakdown occurred.
-
-        Performs one batched extraction from the accumulated breakdown_history
-        instead of checking per-iteration in _iterate_step.
-        """
-        if not breakdown_history:
-            return None
-        breakdown_flags = torch.stack(breakdown_history)
-        first_breakdown_indices = torch.nonzero(breakdown_flags, as_tuple=True)[0]
-        if first_breakdown_indices.numel() > 0:
-            # Add 1 because breakdown_history[i] corresponds to iteration i+1
-            return int(first_breakdown_indices[0]) + 1
-        return None
 
     def _diagnostics(
         self,

@@ -6,8 +6,12 @@ Builds on the session-wide ``torch_dtype`` fixture from ``tests/conftest.py``.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+
 import pytest
 import torch
+
+from torchalg.models.history import DirectionHistory, DirectionWindow
 
 # =============================================================================
 # norms.py fixtures
@@ -117,9 +121,25 @@ def previous_matrix_product(torch_dtype: torch.dtype) -> torch.Tensor:
 
 
 @pytest.fixture
+def make_window() -> Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], DirectionWindow]:
+    """Factory building a ``DirectionWindow`` from ``(d_j)``/``(q_j)`` sequences."""
+
+    def _make(
+        directions: Sequence[torch.Tensor], products: Sequence[torch.Tensor]
+    ) -> DirectionWindow:
+        history = DirectionHistory.empty(max_size=max(len(directions), 1))
+        for d, q in zip(directions, products, strict=True):
+            history.append(d, q, torch.dot(d, q))
+        return history.window(like=directions[0] if directions else products[0])
+
+    return _make
+
+
+@pytest.fixture
 def periodic_restart_history(
     torch_dtype: torch.dtype,
-) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+    make_window: Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], DirectionWindow],
+) -> DirectionWindow:
     """Five standard-basis (d, q) pairs for probing FCG(m) window sizing.
 
     ``d_j == q_j == e_j``, so every A-conjugacy denominator ``d_j . q_j``
@@ -130,11 +150,10 @@ def periodic_restart_history(
     ``len(report.coefficients)``.
 
     Returns:
-        tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
-            ``(d_vectors, q_vectors)``, each 5 standard-basis vectors.
+        DirectionWindow: Window of 5 standard-basis pairs.
     """
     basis = tuple(torch.eye(5, dtype=torch_dtype)[i] for i in range(5))
-    return basis, basis
+    return make_window(basis, basis)
 
 
 @pytest.fixture

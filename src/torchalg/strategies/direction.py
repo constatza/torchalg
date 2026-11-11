@@ -17,7 +17,6 @@ import torch
 
 from torchalg.models.state import CGState
 from torchalg.strategies.orthogonalization import OrthogonalizationStrategy
-from torchalg.utils.numerics import stable_dot_product
 
 
 class DirectionStrategy(ABC):
@@ -30,16 +29,25 @@ class DirectionStrategy(ABC):
 
     @abstractmethod
     def compute_direction(
-        self, w: torch.Tensor, state: CGState
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Compute the search direction for the current state.
 
+        Args:
+            w: Preconditioned residual ``w_k = M^{-1} r_k``.
+            rw: ``(r_k, w_k)``, already computed by the solver step.
+            state: Current solver state. At ``state.iteration == 0`` the
+                direction must be a copy of ``w`` (there is nothing to
+                conjugate against); the solver reuses the precomputed
+                ``state.q = A w`` for that first direction.
+
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: ``(direction, ortho_breakdown)`` -
-                ``ortho_breakdown`` is a 0-d bool tensor; ``True`` iff this
-                step's orthogonalization (if any) reported a near-zero/degenerate
-                result; strategies with no orthogonalization always return
-                a tensor wrapping ``False``.
+            tuple[torch.Tensor, torch.Tensor | None]: ``(direction,
+                ortho_breakdown)`` - ``ortho_breakdown`` is a 0-d bool tensor,
+                ``True`` iff this step's orthogonalization reported a
+                near-zero/degenerate result, or ``None`` for strategies that
+                perform no orthogonalization (nothing to report, and no
+                per-iteration flag allocation).
         """
 
 
@@ -67,21 +75,14 @@ class TwoTermRecurrenceStrategy(DirectionStrategy):
         return 0
 
     def compute_direction(
-        self, w: torch.Tensor, state: CGState
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
+    ) -> tuple[torch.Tensor, None]:
         """Compute ``d_k = w_k + beta_k d_{k-1}``. Never orthogonalizes."""
-        # `torch.zeros((), dtype=torch.bool, device=w.device)`, not a bare
-        # `torch.tensor(False)` (always CPU): this breakdown flag gets
-        # stacked with every other iteration's in CGState.breakdown_history
-        # (see conjugate_gradient.py::_build_result) — a CPU entry mixed
-        # into a GPU solve's stack would fail with a device-mismatch error.
-        no_breakdown = torch.zeros((), dtype=torch.bool, device=w.device)
         if state.iteration == 0:
-            return w.clone(), no_breakdown
+            return w.clone(), None
 
-        rw_curr = stable_dot_product(state.r, w)
-        beta = rw_curr / state.rw_prev
-        return w + beta * state.d, no_breakdown
+        beta = rw / state.rw_prev
+        return w + beta * state.d, None
 
 
 class OrthogonalizationDirectionStrategy(DirectionStrategy):
@@ -108,13 +109,12 @@ class OrthogonalizationDirectionStrategy(DirectionStrategy):
         return self.orthogonalization.window_size
 
     def compute_direction(
-        self, w: torch.Tensor, state: CGState
+        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Orthogonalize ``w`` against stored directions/products."""
         direction, report = self.orthogonalization.orthogonalize(
             vector=w,
-            d_vectors=state.direction_history.d_vectors,
-            q_vectors=state.direction_history.q_vectors,
+            window=state.direction_history.window(like=w),
         )
         return direction, report.breakdown
 
@@ -146,17 +146,16 @@ class CompositeDirectionStrategy(DirectionStrategy):
         return self.reorthog_strategy.window_size
 
     def compute_direction(
-        self, w: torch.Tensor, state: CGState
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Compute base direction and optionally reorthogonalize it."""
-        direction, base_breakdown = self.base_strategy.compute_direction(w, state)
+        direction, base_breakdown = self.base_strategy.compute_direction(w, rw, state)
         if self.reorthog_strategy is None:
             return direction, base_breakdown
         reorthogonalized, report = self.reorthog_strategy.orthogonalize(
             vector=direction,
-            d_vectors=state.direction_history.d_vectors,
-            q_vectors=state.direction_history.q_vectors,
+            window=state.direction_history.window(like=direction),
         )
-        # Combine breakdown flags using logical OR on tensors
-        combined_breakdown = base_breakdown | report.breakdown
-        return reorthogonalized, combined_breakdown
+        if base_breakdown is None:
+            return reorthogonalized, report.breakdown
+        return reorthogonalized, base_breakdown | report.breakdown

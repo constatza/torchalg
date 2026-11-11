@@ -153,6 +153,27 @@ def overflow_cancelling_vectors() -> tuple[torch.Tensor, torch.Tensor]:
     return a, b
 
 
+@pytest.fixture
+def seeded_dot_vectors(torch_dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two seeded random vectors of ordinary magnitude (stays on the plain-dot path)."""
+    generator = torch.Generator().manual_seed(0)
+    a = torch.randn(257, generator=generator, dtype=torch_dtype)
+    b = torch.randn(257, generator=generator, dtype=torch_dtype)
+    return a, b
+
+
+@pytest.fixture
+def huge_times_tiny_vectors() -> tuple[torch.Tensor, torch.Tensor]:
+    """Vectors whose entries exceed the overflow scale but whose products stay finite.
+
+    ``a_i = 1e155`` is past ``sqrt(0.1 * finfo(float64).max) ~ 3.2e153``, so the
+    rescaled path must still be taken even though a plain dot is finite.
+    """
+    a = torch.full((16,), 1e155, dtype=torch.float64)
+    b = torch.full((16,), 3e-155, dtype=torch.float64)
+    return a, b
+
+
 # =============================================================================
 # validate_matrix / validate_rhs_vector / validate_ax_equals_b fixtures
 # =============================================================================
@@ -204,6 +225,35 @@ def non_finite_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
         torch.Tensor: Square matrix with one non-finite entry.
     """
     return torch.tensor([[1.0, float("nan")], [0.0, 1.0]], dtype=torch_dtype)
+
+
+@pytest.fixture(params=[(2, 2, "nan"), (0, 3, "inf"), (3, 0, "-inf"), (3, 3, "nan")])
+def poisoned_dense_matrix(request: pytest.FixtureRequest) -> torch.Tensor:
+    """A 4x4 float64 matrix with one ``nan``/``+-inf`` entry at a varied position."""
+    row, col, kind = request.param
+    matrix = torch.eye(4, dtype=torch.float64)
+    matrix[row, col] = float(kind)
+    return matrix
+
+
+@pytest.fixture
+def poisoned_csr_matrix() -> torch.Tensor:
+    """A CSR matrix whose stored values include an ``inf``."""
+    matrix = torch.eye(4, dtype=torch.float64)
+    matrix[1, 2] = float("inf")
+    return matrix.to_sparse_csr()
+
+
+@pytest.fixture
+def near_overflow_finite_matrix() -> torch.Tensor:
+    """A finite matrix whose entry sum would overflow: must not be rejected."""
+    return torch.full((3, 3), 1e308, dtype=torch.float64)
+
+
+@pytest.fixture
+def integer_matrix() -> torch.Tensor:
+    """An integer matrix (always finite)."""
+    return torch.eye(3, dtype=torch.int64)
 
 
 @pytest.fixture

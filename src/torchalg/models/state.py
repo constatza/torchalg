@@ -176,20 +176,17 @@ class CGState(KrylovState):
         direction_history (DirectionHistory): Sliding window of search
             directions and products. Used by FCG for truncated Gram-Schmidt
             orthogonalization.
-        w_prev (torch.Tensor | None): Previous preconditioned residual
-            w_{k-1} (for two-term recurrence). Used by
-            ``TwoTermRecurrenceStrategy`` to compute the beta coefficient.
-        r_prev (torch.Tensor | None): Previous residual r_{k-1} (for
-            two-term recurrence). Used by ``TwoTermRecurrenceStrategy`` to
-            compute the beta coefficient.
         rw_prev (torch.Tensor | float): Previous inner product
             (r_{k-1}, w_{k-1}) (for two-term recurrence; 0-d tensor or
             float). Used by ``TwoTermRecurrenceStrategy`` to compute the beta
             coefficient.
-        ortho_breakdown_at (int | None): Iteration at which FCG's
-            orthogonalization first reported breakdown (near-zero result,
-            loss of A-conjugacy), or ``None`` if it never occurred so far.
-            Purely diagnostic - carried through to
+        ortho_breakdown_at (torch.Tensor | None): Device-side running record
+            of the iteration at which FCG's orthogonalization first reported
+            breakdown (near-zero result, loss of A-conjugacy): a 0-d integer
+            tensor holding that 1-based iteration, or ``0`` while none has
+            occurred; ``None`` for strategies that never report breakdown.
+            Kept on the device so the solve loop never synchronizes on it;
+            it is read once when the result is built. Purely diagnostic - carried through to
             ``TerminationDiagnostics.ortho_breakdown_at`` and never gates
             ``_check_stopping`` (Notay 2000 treats truncated-orthogonalization
             quality loss as a convergence-rate signal, not a hard breakdown
@@ -229,8 +226,6 @@ class CGState(KrylovState):
         ...     d=torch.ones(10),
         ...     q=torch.ones(10),
         ...     direction_history=DirectionHistory.empty(max_size=10),
-        ...     w_prev=None,
-        ...     r_prev=None,
         ...     rw_prev=0.0,
         ... )
         >>> len(state.direction_history)
@@ -240,22 +235,13 @@ class CGState(KrylovState):
     direction_history: DirectionHistory
     """Sliding window of search directions and matrix-vector products."""
 
-    w_prev: torch.Tensor | None
-    """Previous preconditioned residual w_{k-1} (for two-term recurrence)."""
-
-    r_prev: torch.Tensor | None
-    """Previous residual r_{k-1} (for two-term recurrence)."""
-
     rw_prev: torch.Tensor | float
     """Previous inner product (r_{k-1}, w_{k-1}) (for two-term recurrence; 0-d tensor or float)."""
 
-    ortho_breakdown_at: int | None = None
-    """Iteration of first-detected orthogonalization breakdown, or None."""
-
-    breakdown_history: tuple[torch.Tensor, ...] = ()
-    """Per-iteration orthogonalization-breakdown flags (0-d bool tensors), batched
-    into a single extraction in _build_result rather than resolved to bool per
-    iteration — see conjugate_gradient.py::_build_result."""
+    ortho_breakdown_at: torch.Tensor | None = None
+    """First 1-based iteration with orthogonalization breakdown as a 0-d int tensor
+    (``0`` = none yet), or None when no strategy reports breakdown. Resolved to an
+    int once in conjugate_gradient.py::_build_result."""
 
     energy_decrement: torch.Tensor | float | None = None
     """This step's exact alpha_k * rho_k (decrease in ||e_k||_A^2, 0-d tensor or float), or None initially."""
@@ -321,8 +307,5 @@ class CGState(KrylovState):
             d=d,
             q=q,
             direction_history=DirectionHistory.empty(max_size=max_history),
-            w_prev=None,
-            r_prev=None,
             rw_prev=0.0,
-            ortho_breakdown_at=None,
         )

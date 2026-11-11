@@ -15,7 +15,8 @@ strategies, or preconditioners.
   - `DISABLED`: no data is recorded at all.
   - `MINIMAL`: residual norms only.
   - `FULL`: residual norms plus residual, solution, and direction tensors.
-- `ScalarHistory` stores immutable scalar sequences.
+- `ScalarHistory` stores immutable scalar sequences (`add`/`prepend` copy the
+  tuple, so they are for one-off updates; the solver loop does not use them).
 - `VectorHistory` stores immutable `torch.Tensor` sequences, always moved to
   CPU the moment each vector is added (`add`/`prepend`), regardless of the
   solve device - this bounds device memory during a `FULL`-traced solve to
@@ -23,7 +24,9 @@ strategies, or preconditioners.
   `docs/bug-full-trace-history-exhausts-gpu-memory.md`. `to_tensor()` stacks
   the (CPU) sequence.
 - `IterationHistory` is a small mutable container that applies trace-mode
-  policy by replacing immutable histories with updated instances. Two scalar
+  policy by appending to private lists (amortized `O(1)` per iteration); its
+  history properties materialize immutable `ScalarHistory`/`VectorHistory`
+  snapshots on access, so a snapshot never changes as iterations continue. Two scalar
   channels run independently of `TraceMode` (cheap - O(1) floats/iteration,
   never vectors):
   - `error_norms`: exact `||u_k - x_exact||_A`, populated whenever an

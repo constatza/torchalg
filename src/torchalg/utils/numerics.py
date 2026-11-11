@@ -57,6 +57,11 @@ def _overflow_scale_threshold(dtype: torch.dtype) -> float:
     return math.sqrt(overflow_threshold)
 
 
+def is_finite(value: torch.Tensor) -> bool:
+    """Return whether every entry of ``value`` is finite (one host synchronization)."""
+    return bool(torch.isfinite(value).all().item())
+
+
 def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Compute a dot product with overflow prevention via balanced scaling.
 
@@ -71,6 +76,17 @@ def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         So ``dot(a, b) = s^2 * dot(a/s, b/s)``. This is mathematically exact,
         just reordered for numerical stability.
 
+    Cost:
+        Overflow is absorbing in floating point (an infinite product or
+        partial sum makes the result ``inf`` or ``nan``, never finite again),
+        so a finite ``torch.dot(a, b)`` proves nothing overflowed and is the
+        answer. That is the common path: one dot, one finiteness test and
+        one host synchronization, with no ``n``-sized temporaries. Only a
+        non-finite plain result takes the rescaled path (``max |a_i|, |b_i|``
+        scaled to ``sqrt(sqrt(0.1 * finfo.max))``), which is the previous
+        branch-free formulation; the two paths agree to rounding whenever
+        both are finite.
+
     Args:
         a (torch.Tensor): First vector for dot product, shape ``(n,)``.
         b (torch.Tensor): Second vector for dot product, shape ``(n,)``.
@@ -83,6 +99,19 @@ def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         >>> import torch
         >>> stable_dot_product(torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0]))
         tensor(11.)
+    """
+    plain = torch.dot(a, b)
+    if is_finite(plain):
+        return plain
+    return _scaled_dot_product(a, b)
+
+
+def _scaled_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Dot product evaluated after balanced scaling of both vectors (overflow-safe path).
+
+    The scale is ``1`` unless ``max(|a|, |b|)`` exceeds the dtype's overflow
+    scale threshold, in which case both vectors are scaled by
+    ``target / max`` and the result is divided by the squared scale.
     """
     max_a = a.abs().max()
     max_b = b.abs().max()

@@ -48,6 +48,26 @@ class TestValidateMatrix:
         with pytest.raises(ValueError, match="non-finite"):
             validate_matrix(non_finite_matrix)
 
+    def test_nan_or_inf_at_any_position_raises(self, poisoned_dense_matrix: torch.Tensor) -> None:
+        """Every position (first, last, off-diagonal) and kind of poison is caught."""
+        with pytest.raises(ValueError, match="non-finite"):
+            validate_matrix(poisoned_dense_matrix)
+
+    def test_non_finite_csr_value_raises(self, poisoned_csr_matrix: torch.Tensor) -> None:
+        """A non-finite stored CSR value is caught."""
+        with pytest.raises(ValueError, match="non-finite"):
+            validate_matrix(poisoned_csr_matrix)
+
+    def test_large_finite_entries_are_not_rejected(
+        self, near_overflow_finite_matrix: torch.Tensor
+    ) -> None:
+        """Finiteness is per entry: values whose sum would overflow are still valid."""
+        validate_matrix(near_overflow_finite_matrix)
+
+    def test_integer_matrix_passes(self, integer_matrix: torch.Tensor) -> None:
+        """Integer dtypes cannot hold ``nan``/``inf`` and need no scan."""
+        validate_matrix(integer_matrix)
+
 
 class TestValidateRhsVector:
     """Tests for ``validate_rhs_vector``."""

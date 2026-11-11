@@ -128,3 +128,38 @@ def test_disabled_mode_does_not_log() -> None:
     assert history.solutions is None
     assert history.directions is None
     assert history.iteration_count() == 0
+
+
+def test_snapshots_do_not_change_when_more_iterations_are_logged(
+    residual_vector: torch.Tensor,
+    solution_vector: torch.Tensor,
+    direction_vector: torch.Tensor,
+) -> None:
+    """Properties hand out immutable snapshots of the append-only internal lists."""
+    history = IterationHistory(mode=TraceMode.FULL)
+    history.log_iteration(
+        residual_norm=2.0,
+        residual=residual_vector,
+        solution=solution_vector,
+        direction=direction_vector,
+        energy_decrement=0.5,
+    )
+    norms = history.residual_norms
+    residuals = history.residuals
+    energies = history.energy_decrements
+    assert residuals is not None
+
+    history.log_iteration(
+        residual_norm=1.0,
+        residual=residual_vector,
+        solution=solution_vector,
+        direction=direction_vector,
+        energy_decrement=0.25,
+    )
+
+    assert norms.to_list() == [2.0]
+    assert energies.to_list() == [0.5]
+    assert len(residuals) == 1
+    assert history.residual_norms.to_list() == [2.0, 1.0]
+    assert history.energy_decrements.to_list() == [0.5, 0.25]
+    assert history.iteration_count() == 2

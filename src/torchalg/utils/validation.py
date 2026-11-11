@@ -19,11 +19,36 @@ Design:
 
 from __future__ import annotations
 
+import math
+
 import torch
+
+
+def _all_finite(values: torch.Tensor) -> bool:
+    """Return whether every entry of ``values`` is finite, in one read-only pass.
+
+    ``torch.isfinite(values).all()`` allocates an ``n^2`` boolean mask and then
+    reads it again (about 4x the memory traffic of the matrix itself). The
+    infinity norm ``max |v_i|`` is a single fused reduction without any
+    temporary and propagates ``nan``, so it is finite exactly when no entry
+    is ``nan`` or ``+-inf``. Integer and boolean tensors cannot hold either,
+    so they pass without a scan.
+    """
+    if not (values.is_floating_point() or values.is_complex()):
+        return True
+    return bool(torch.isfinite(torch.linalg.vector_norm(values.detach(), ord=math.inf)))
 
 
 def validate_matrix(A: torch.Tensor) -> None:
     """Validate system matrix is square, 2-D, and finite.
+
+    The finiteness check inspects every stored entry, so a ``nan``/``inf``
+    anywhere in ``A`` raises here rather than surfacing as a ``nan`` residual
+    later. That scan is inherently ``O(n^2)`` memory reads for a dense matrix
+    (the matvec reads the same data every iteration), so it is done as one
+    fused infinity-norm reduction without temporaries; shape checks stay
+    ``O(1)``. Skipping the scan would make a poisoned matrix undetectable
+    until breakdown, so it is deliberately kept.
 
     Args:
         A (torch.Tensor): Input matrix.
@@ -40,7 +65,7 @@ def validate_matrix(A: torch.Tensor) -> None:
     # PyTorch has no ``torch.isfinite`` CSR overload. Implicit sparse entries
     # are mathematically zero (and finite), so validate just stored values.
     values = A if A.layout == torch.strided else A.values()
-    if not torch.isfinite(values).all():
+    if not _all_finite(values):
         raise ValueError("Matrix contains non-finite values")
 
 

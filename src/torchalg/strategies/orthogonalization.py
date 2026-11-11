@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import torch
 
-from torchalg.utils.numerics import stable_dot_product
+from torchalg.models.history import DirectionWindow
+from torchalg.utils.numerics import is_finite, stable_dot_product
 
 DEFAULT_M_MAX = 20
 REORTHOG_ZERO_NORM_TOL = 1e-14
@@ -19,28 +19,36 @@ REORTHOG_ZERO_NORM_TOL = 1e-14
 class OrthogonalizationReport:
     """Diagnostic report returned by an orthogonalization step."""
 
-    coefficients: tuple[torch.Tensor, ...]
-    """Orthogonalization coefficients used in order (0-d tensors; no production
-    consumer needs these as floats — only tests inspect them, via .item())."""
+    coefficients: torch.Tensor
+    """Orthogonalization coefficients, oldest stored direction first (1-d
+    tensor of length ``k``; no production consumer needs these as floats -
+    only tests inspect them)."""
 
     breakdown: torch.Tensor = field(default_factory=lambda: torch.tensor(False))
     """0-d bool tensor: whether the orthogonalized vector became near-zero.
     Deferred to a tensor rather than resolved to bool here, since nothing
     reads this per-iteration — it's batched into a single extraction at the
-    very end of the solve (see CGState.breakdown_history / _build_result)."""
+    very end of the solve (see CGState.ortho_breakdown_at)."""
 
 
 def _no_breakdown(reference: torch.Tensor) -> torch.Tensor:
-    """A 0-d ``False`` tensor matching ``reference``'s device/dtype.
+    """A 0-d ``False`` tensor matching ``reference``'s device.
 
     ``OrthogonalizationReport.breakdown``'s dataclass default is a bare
     ``torch.tensor(False)`` (always CPU) — fine as a type-level default, but
-    the empty-history early returns below must not actually use it: mixing a
-    CPU tensor into ``CGState.breakdown_history`` alongside GPU-computed
-    entries from ``_build_report`` would make the batched ``torch.stack(...)``
-    in ``_build_result`` fail on any GPU solve (device mismatch).
+    the empty-history early returns below must not actually use it: combining
+    a CPU flag with GPU-computed ones from ``_build_report`` in the solver's
+    breakdown accumulator would fail on any GPU solve (device mismatch).
     """
     return torch.zeros((), dtype=torch.bool, device=reference.device)
+
+
+def _empty_report(vector: torch.Tensor) -> OrthogonalizationReport:
+    """Report for an orthogonalization against an empty window."""
+    return OrthogonalizationReport(
+        coefficients=torch.empty(0, dtype=vector.dtype, device=vector.device),
+        breakdown=_no_breakdown(vector),
+    )
 
 
 class OrthogonalizationStrategy(ABC):
@@ -55,10 +63,9 @@ class OrthogonalizationStrategy(ABC):
     def orthogonalize(
         self,
         vector: torch.Tensor,
-        d_vectors: Sequence[torch.Tensor],
-        q_vectors: Sequence[torch.Tensor],
+        window: DirectionWindow,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
-        """Orthogonalize ``vector`` against stored directions/products."""
+        """Orthogonalize ``vector`` against the stored directions/products."""
 
 
 class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
@@ -96,16 +103,14 @@ class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
     def orthogonalize(
         self,
         vector: torch.Tensor,
-        d_vectors: Sequence[torch.Tensor],
-        q_vectors: Sequence[torch.Tensor],
+        window: DirectionWindow,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Orthogonalize using FCG periodic restart."""
-        result = vector.clone()
-        n_history = len(d_vectors)
+        n_history = len(window)
 
         if n_history == 0:
             self._iteration_count += 1
-            return result, OrthogonalizationReport(coefficients=(), breakdown=_no_breakdown(vector))
+            return vector.clone(), _empty_report(vector)
 
         if math.isinf(self.m_max):
             m_i = n_history
@@ -113,13 +118,7 @@ class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
             m_i = (self._iteration_count % int(self.m_max)) + 1
             m_i = min(m_i, n_history)
 
-        start_idx = n_history - m_i
-        result, report = _orthogonalize_classical(
-            vector=vector,
-            result=result,
-            d_vectors=d_vectors[start_idx:],
-            q_vectors=q_vectors[start_idx:],
-        )
+        result, report = _orthogonalize_classical(vector, window.tail(m_i))
         self._iteration_count += 1
         return result, report
 
@@ -147,21 +146,13 @@ class TruncatedGramSchmidt(OrthogonalizationStrategy):
     def orthogonalize(
         self,
         vector: torch.Tensor,
-        d_vectors: Sequence[torch.Tensor],
-        q_vectors: Sequence[torch.Tensor],
+        window: DirectionWindow,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Orthogonalize against the last ``window_size`` directions."""
-        result = vector.clone()
-        m = min(len(d_vectors), self._window_size)
-        if m == 0:
-            return result, OrthogonalizationReport(coefficients=(), breakdown=_no_breakdown(vector))
+        if len(window) == 0:
+            return vector.clone(), _empty_report(vector)
 
-        return _orthogonalize_classical(
-            vector=vector,
-            result=result,
-            d_vectors=d_vectors[-m:],
-            q_vectors=q_vectors[-m:],
-        )
+        return _orthogonalize_classical(vector, window.tail(self._window_size))
 
 
 class ModifiedGramSchmidt(OrthogonalizationStrategy):
@@ -182,23 +173,25 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
     def orthogonalize(
         self,
         vector: torch.Tensor,
-        d_vectors: Sequence[torch.Tensor],
-        q_vectors: Sequence[torch.Tensor],
+        window: DirectionWindow,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
-        """Orthogonalize using the updated vector for each numerator."""
-        result = vector.clone()
-        if len(d_vectors) == 0:
-            return result, OrthogonalizationReport(coefficients=(), breakdown=_no_breakdown(vector))
+        """Orthogonalize using the updated vector for each numerator.
 
+        Inherently sequential: each numerator uses the vector already
+        updated by the previous directions, so this cannot be collapsed into
+        matrix-vector products without changing the algorithm.
+        """
+        if len(window) == 0:
+            return vector.clone(), _empty_report(vector)
+
+        result = vector
         coefficients: list[torch.Tensor] = []
-        for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
-            numerator = stable_dot_product(result, q_j)
-            denominator = stable_dot_product(d_j, q_j)
-            coeff = numerator / denominator
+        for d_j, q_j, curvature_j in zip(window.d, window.q, window.curvature, strict=True):
+            coeff = stable_dot_product(result, q_j) / curvature_j
             coefficients.append(coeff)
             result = result - coeff * d_j
 
-        return result, _build_report(vector, result, coefficients)
+        return result, _build_report(vector, result, torch.stack(coefficients))
 
 
 def create_fcg_orthogonalization(
@@ -214,30 +207,40 @@ def create_fcg_orthogonalization(
     return PeriodicRestartOrthogonalization(m_max=float(m_max))
 
 
+def _projections(vector: torch.Tensor, window: DirectionWindow) -> torch.Tensor:
+    """Return ``[(vector, q_j)]`` for every stored pair, shape ``(k,)``.
+
+    One matrix-vector product; if any entry is non-finite (overflow), the
+    per-pair ``stable_dot_product`` loop recomputes them, so overflow
+    handling matches the sequential formulation.
+    """
+    projections = window.q @ vector
+    if is_finite(projections):
+        return projections
+    return torch.stack([stable_dot_product(vector, q_j) for q_j in window.q])
+
+
 def _orthogonalize_classical(
-    *,
     vector: torch.Tensor,
-    result: torch.Tensor,
-    d_vectors: Sequence[torch.Tensor],
-    q_vectors: Sequence[torch.Tensor],
+    window: DirectionWindow,
 ) -> tuple[torch.Tensor, OrthogonalizationReport]:
-    """Apply classical A-conjugacy Gram-Schmidt to selected history."""
-    coefficients: list[torch.Tensor] = []
+    """Apply classical A-conjugacy Gram-Schmidt against ``window``.
 
-    for d_j, q_j in zip(d_vectors, q_vectors, strict=True):
-        numerator = stable_dot_product(vector, q_j)
-        denominator = stable_dot_product(d_j, q_j)
-        coeff = numerator / denominator
-        coefficients.append(coeff)
-        result = result - coeff * d_j
-
+    Classical Gram-Schmidt takes every numerator ``(vector, q_j)`` from the
+    original ``vector``, so the coefficients are independent of each other
+    and the sequential sum ``vector - sum_j c_j d_j`` is one matrix-vector
+    product ``D^T c`` (the same formula, summed in a different order). The
+    denominators ``(d_j, q_j)`` are the curvatures stored with the window.
+    """
+    coefficients = _projections(vector, window) / window.curvature
+    result = torch.addmv(vector, window.d.mT, coefficients, alpha=-1)
     return result, _build_report(vector, result, coefficients)
 
 
 def _build_report(
     vector: torch.Tensor,
     result: torch.Tensor,
-    coefficients: list[torch.Tensor],
+    coefficients: torch.Tensor,
 ) -> OrthogonalizationReport:
     """Build an orthogonalization report with breakdown classification.
 
@@ -249,4 +252,4 @@ def _build_report(
     result_norm = torch.linalg.norm(result)
     vector_norm = torch.linalg.norm(vector)
     breakdown = result_norm < REORTHOG_ZERO_NORM_TOL * torch.clamp_min(vector_norm, 1.0)
-    return OrthogonalizationReport(coefficients=tuple(coefficients), breakdown=breakdown)
+    return OrthogonalizationReport(coefficients=coefficients, breakdown=breakdown)
