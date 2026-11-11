@@ -29,6 +29,8 @@ References:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 
@@ -77,35 +79,39 @@ def _fit_aggregates_batched(block: torch.Tensor, tol: float) -> tuple[torch.Tens
     return q, r
 
 
-def fit_candidates(
-    aggregate: torch.Tensor, vectors: torch.Tensor, tol: float = 1e-10
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fit candidates to a tentative prolongator ``Q`` and coarse candidates ``R``.
+@dataclass(frozen=True, slots=True)
+class _TentativeEntries:
+    """Stored entries of ``Q`` (one row per valid dof, ``m`` columns each) and ``R``."""
 
-    Args:
-        aggregate (torch.Tensor): Long tensor of length ``n_nodes`` giving each
-            node's aggregate, ``-1`` if isolated (row of ``Q`` left zero).
-        vectors (torch.Tensor): Candidates, shape ``(dofs_per_node * n_nodes, m)``.
-        tol (float): Relative threshold for dropping dependent columns.
+    rows: torch.Tensor
+    cols: torch.Tensor
+    values: torch.Tensor
+    coarse: torch.Tensor
+    shape: tuple[int, int]
 
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: ``(Q, R)`` with shapes
-            ``(n_dofs, m * n_aggregates)`` and ``(m * n_aggregates, m)``.
-    """
+
+def _tentative_entries(
+    aggregate: torch.Tensor, vectors: torch.Tensor, tol: float
+) -> _TentativeEntries:
     device, dtype = vectors.device, vectors.dtype
     n_nodes, m = aggregate.shape[0], vectors.shape[1]
     dofs = vectors.shape[0] // n_nodes
     n_aggregates = max(int(aggregate.max().item()) + 1, 1)
-
-    q = torch.zeros(vectors.shape[0], n_aggregates * m, dtype=dtype, device=device)
-    r = torch.zeros(n_aggregates * m, m, dtype=dtype, device=device)
+    shape = (vectors.shape[0], n_aggregates * m)
+    empty_index = torch.empty(0, m, dtype=torch.long, device=device)
 
     # dof-major aggregate id per row of `vectors`, in the same node-major
     # row order `dof_of_node[aggregate == index]` would visit.
     dof_aggregate = torch.repeat_interleave(aggregate, dofs)
     valid_rows = torch.nonzero(dof_aggregate >= 0, as_tuple=False).flatten()
     if valid_rows.numel() == 0:
-        return q, r
+        return _TentativeEntries(
+            rows=empty_index,
+            cols=empty_index,
+            values=torch.empty(0, m, dtype=dtype, device=device),
+            coarse=torch.zeros(n_aggregates * m, m, dtype=dtype, device=device),
+            shape=shape,
+        )
     valid_agg = dof_aggregate[valid_rows]
 
     # Group rows by aggregate while preserving each aggregate's original
@@ -129,6 +135,69 @@ def fit_candidates(
     valid_a, valid_s = torch.nonzero(valid_pad, as_tuple=True)
     rows_out = padded_rows[valid_a, valid_s]
     col_idx = valid_a.unsqueeze(1) * m + torch.arange(m, device=device).unsqueeze(0)
-    q[rows_out.unsqueeze(1).expand(-1, m), col_idx] = q_batched[valid_a, valid_s]
-    r[:] = r_batched.reshape(n_aggregates * m, m)
-    return q, r
+    return _TentativeEntries(
+        rows=rows_out.unsqueeze(1).expand(-1, m),
+        cols=col_idx,
+        values=q_batched[valid_a, valid_s],
+        coarse=r_batched.reshape(n_aggregates * m, m),
+        shape=shape,
+    )
+
+
+def fit_candidates(
+    aggregate: torch.Tensor, vectors: torch.Tensor, tol: float = 1e-10
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fit candidates to a dense tentative prolongator ``Q`` and coarse candidates ``R``.
+
+    Args:
+        aggregate (torch.Tensor): Long tensor of length ``n_nodes`` giving each
+            node's aggregate, ``-1`` if isolated (row of ``Q`` left zero).
+        vectors (torch.Tensor): Candidates, shape ``(dofs_per_node * n_nodes, m)``.
+        tol (float): Relative threshold for dropping dependent columns.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: ``(Q, R)`` with shapes
+            ``(n_dofs, m * n_aggregates)`` and ``(m * n_aggregates, m)``.
+    """
+    entries = _tentative_entries(aggregate, vectors, tol)
+    q = torch.zeros(entries.shape, dtype=vectors.dtype, device=vectors.device)
+    q[entries.rows, entries.cols] = entries.values
+    return q, entries.coarse
+
+
+def fit_candidates_csr(
+    aggregate: torch.Tensor, vectors: torch.Tensor, tol: float = 1e-10
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``fit_candidates`` with ``Q`` built directly as sparse CSR.
+
+    Identical to ``fit_candidates(...)[0].to_sparse_csr()`` (same indices and values,
+    exact zeros dropped) without the dense ``(n_dofs, m * n_aggregates)``
+    intermediate, which is quadratic in n: at n = 90 000 the dense build and its
+    conversion took 11.6 of a 15 s adaptive SA setup.
+
+    Args:
+        aggregate (torch.Tensor): Long tensor of length ``n_nodes`` giving each
+            node's aggregate, ``-1`` if isolated (row of ``Q`` left empty).
+        vectors (torch.Tensor): Candidates, shape ``(dofs_per_node * n_nodes, m)``.
+        tol (float): Relative threshold for dropping dependent columns.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: ``(Q, R)``, ``Q`` sparse CSR of shape
+            ``(n_dofs, m * n_aggregates)``, ``R`` dense ``(m * n_aggregates, m)``.
+    """
+    entries = _tentative_entries(aggregate, vectors, tol)
+    rows, cols, values = (
+        entries.rows.reshape(-1),
+        entries.cols.reshape(-1),
+        entries.values.reshape(-1),
+    )
+    stored = values != 0
+    rows, cols, values = rows[stored], cols[stored], values[stored]
+    # Each row's columns are already ascending (aggregate * m + j), so a stable sort
+    # by row yields CSR order.
+    order = torch.argsort(rows, stable=True)
+    row_counts = torch.bincount(rows, minlength=entries.shape[0])
+    crow = torch.zeros(entries.shape[0] + 1, dtype=torch.long, device=rows.device)
+    crow[1:] = torch.cumsum(row_counts, 0)
+    q = torch.sparse_csr_tensor(crow, cols[order], values[order], entries.shape)
+    return q, entries.coarse

@@ -44,7 +44,7 @@ from torchalg.preconditioners.implementations.amg._relaxation import (
 from torchalg.preconditioners.implementations.amg.adaptive import adaptive_sa_hierarchy
 from torchalg.preconditioners.implementations.amg.smoothers import JacobiSmoother
 from torchalg.utils.spectral import approximate_spectral_radius
-from torchalg.utils.tentative import fit_candidates
+from torchalg.utils.tentative import fit_candidates, fit_candidates_csr
 
 ATOL = 1e-11
 SOLVE_OMEGA = 0.67
@@ -152,6 +152,24 @@ class TestFitCandidates:
         q, r = fit_candidates(aggregate_map, vectors)
         np.testing.assert_allclose(q.numpy(), q_ref.toarray(), atol=ATOL)
         np.testing.assert_allclose(r.numpy(), r_ref, atol=ATOL)
+
+    @pytest.mark.parametrize("fixture", ["dependent_vectors", "block_vectors"])
+    def test_csr_matches_dense_conversion(
+        self, aggregate_map: torch.Tensor, request: pytest.FixtureRequest, fixture: str
+    ) -> None:
+        """The direct CSR build equals ``fit_candidates`` + ``to_sparse_csr`` exactly."""
+        vectors = request.getfixturevalue(fixture)
+        q_dense, r_dense = fit_candidates(aggregate_map, vectors)
+        expected = q_dense.to_sparse_csr()
+
+        q, r = fit_candidates_csr(aggregate_map, vectors)
+
+        assert q.layout == torch.sparse_csr
+        assert q.shape == expected.shape
+        assert torch.equal(q.crow_indices(), expected.crow_indices())
+        assert torch.equal(q.col_indices(), expected.col_indices())
+        assert torch.equal(q.values(), expected.values())
+        assert torch.equal(r, r_dense)
 
     def test_isolated_node_row_stays_zero(
         self, aggregate_map: torch.Tensor, dependent_vectors: torch.Tensor

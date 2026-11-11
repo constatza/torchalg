@@ -31,13 +31,11 @@ swapped for its sparse sibling:
   level's coarsest matrix a trial setup cycle bottoms out at, mirroring the
   same precedent as every other sparse coarsest-level solve in this tree.
 
-``fit_candidates`` (``torchalg.utils.tentative``) is reused directly,
-unmodified: it operates on a node-aggregate index tensor and dense
-candidate vectors, never on ``A`` or ``P`` themselves, so it is genuinely
-format-agnostic (already promoted, per the scoping investigation this
-module follows). Its dense ``Q`` output (the tentative prolongator) is
-converted to sparse CSR immediately after the call, before any further use,
-so prolongation/Galerkin products downstream never see a dense operator.
+``fit_candidates_csr`` (``torchalg.utils.tentative``) shares the dense
+tree's per-aggregate Gram-Schmidt and builds the tentative prolongator ``Q``
+directly as sparse CSR, identical to converting the dense ``Q``, so neither
+a dense ``(n, n_coarse)`` intermediate nor any downstream product ever sees
+a dense operator.
 
 This module's own candidate-construction algorithm has no greedy/
 discrete-selection tie-break analogous to BAMG's ``select_interpolatory_
@@ -65,7 +63,7 @@ from torchalg.multigrid import AMGPreconditioner, MultigridHierarchy, MultigridL
 from torchalg.preconditioners.base import PreconditionerContext
 from torchalg.sparse.kernels.galerkin import form_sparse_sparse
 from torchalg.utils.spectral import approximate_spectral_radius
-from torchalg.utils.tentative import fit_candidates
+from torchalg.utils.tentative import fit_candidates_csr
 
 from ._jacobi_omega import scaled_by_inverse_diagonal
 from ._node_strength import sparse_node_strength
@@ -316,8 +314,7 @@ def _extend(levels: list[_Level], params: _Params, predefined: _Predefined | Non
             predefined.strengths[len(levels) - 1],
             predefined.aggregates[len(levels) - 1],
         )
-    tentative_dense, coarse_candidates = fit_candidates(aggregate, level.B)
-    tentative = tentative_dense.to_sparse_csr()
+    tentative, coarse_candidates = fit_candidates_csr(aggregate, level.B)
     prolongation = _jacobi_prolongation(level.A, tentative, params.omega, params)
     level.strength, level.aggregate, level.T, level.P = strength, aggregate, tentative, prolongation
     levels.append(
@@ -378,9 +375,8 @@ def _initial_setup_stage(
     while matrix.shape[0] > params.max_coarse and params.max_levels > 1:
         strength = sparse_node_strength(current, 1, params.theta)
         aggregate = sparse_standard_aggregation(strength)
-        tentative_dense, coarse = fit_candidates(aggregate, x.unsqueeze(1))
+        tentative, coarse = fit_candidates_csr(aggregate, x.unsqueeze(1))
         x = coarse[:, 0]
-        tentative = tentative_dense.to_sparse_csr()
         prolongation = _jacobi_prolongation(current, tentative, params.omega, params)
         current = form_sparse_sparse(prolongation, current)
         strengths.append(strength)
@@ -414,8 +410,7 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
     x = _solve(levels, params.random_vector(fine, fine.shape[0]), params.candidate_iters, params)
     for i in range(len(levels) - 2):
         candidates = torch.cat([levels[i].B, x.unsqueeze(1)], dim=1)
-        tentative_dense, coarse = fit_candidates(_built(levels[i].aggregate), candidates)
-        tentative = tentative_dense.to_sparse_csr()
+        tentative, coarse = fit_candidates_csr(_built(levels[i].aggregate), candidates)
         levels[i].T = tentative
         x = coarse[:, -1]
         prolongation = _jacobi_prolongation(levels[i].A, tentative, params.omega, params)
