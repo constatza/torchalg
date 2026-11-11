@@ -60,10 +60,11 @@ knob, not to silently hardcode one setting.
   any MGE enrichment" - **partially resolved, TODO(bamg-fidelity,
   needs-check) remains.** ``BAMGCoarsening`` now tracks the composite
   prolongation ``P_l = P_0 P_1 ... P_{l-1}`` incrementally as
-  ``build_transfer`` runs level by level (``_current_T``, ``None`` -
+  ``build_transfer`` runs level by level (``_composite``, ``None`` -
   meaning ``T = I`` - only at the true finest level of each bootstrap
-  cycle's coarsening pass), and threads the resulting ``T_l = P_l^H P_l``
-  into both call sites via an optional ``T`` parameter (default ``None``,
+  cycle's coarsening pass), and threads it into both call sites via an
+  optional ``composite`` parameter, where ``T_l = P_l^H P_l`` enters only as
+  ``<T v, v> = ||P_l v||^2`` (the Gram matrix is never formed; default ``None``,
   preserving every existing ``k_e=0`` caller's exact behavior). ``T_l =
   P_l^H P_l`` and the composite-prolongation chaining formula are confirmed
   directly against [STATUS14] Sec. 4 (arXiv:1406.1819) - that part is
@@ -365,7 +366,7 @@ class BAMGCoarsening:
         *current* level ``l`` up to the finest level, built incrementally as
         ``build_transfer`` runs level by level; ``None`` at the finest level
         (no coarsening has happened yet within this pass, so ``T_0 = I``
-        trivially - see ``_current_T``). A fresh ``BAMGCoarsening`` per
+        trivially). A fresh ``BAMGCoarsening`` per
         bootstrap cycle (``BootstrapSetup._coarsening_from``) means this
         always starts ``None`` at the true finest level, matching the
         natural reading of [STATUS14]'s composite-interpolation definition
@@ -373,22 +374,6 @@ class BAMGCoarsening:
         at ``l = 0`` is the identity, so ``T_0 = I`` - the paper states the
         chain for ``l >= 1`` and does not spell out the ``l = 0`` case
         explicitly)."""
-
-    def _current_T(self) -> torch.Tensor | None:
-        """Composite-interpolation Gram operator ``T_l = P_l^H P_l`` for the level about to be processed.
-
-        [STATUS14] Sec. 4 / ``docs/bootstrap-amg.md`` line 234: ``T`` only
-        differs from the identity once at least one coarser level has been
-        built within this pass, i.e. never at the finest level. Returning
-        ``None`` (rather than materializing an explicit identity matrix)
-        lets ``test_vector_weights``/``algebraic_distance`` take their
-        cheaper ``T = I`` path directly.
-
-        Returns:
-            torch.Tensor | None: ``T_l``, shape ``(n, n)`` for the current
-            level's dimension ``n``, or ``None`` for ``T = I``.
-        """
-        return self._composite.T @ self._composite if self._composite is not None else None
 
     def test_vectors_for(self, matrix: torch.Tensor) -> torch.Tensor:
         """Currently stored test vectors for ``matrix``'s dimension.
@@ -434,10 +419,12 @@ class BAMGCoarsening:
             tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse, transfer)``.
         """
         test_vectors = self._vectors[A.shape[0]]
-        T = self._current_T()
-        distance = algebraic_distance(test_vectors, A, depth=self._depth, T=T)
+        composite = self._composite
+        distance = algebraic_distance(test_vectors, A, depth=self._depth, composite=composite)
         coarse_mask = self._coarse_mask(A, distance)
-        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance, T=T)
+        prolongation = self._prolongation(
+            A, test_vectors, coarse_mask, distance, composite=composite
+        )
         coarse_matrix = prolongation.T @ A @ prolongation
         self._last_prolongation = prolongation
         self._vectors[coarse_matrix.shape[0]] = prolongation.T @ test_vectors
@@ -563,7 +550,7 @@ class BAMGCoarsening:
         test_vectors: torch.Tensor,
         coarse_mask: torch.Tensor,
         distance: torch.Tensor,
-        T: torch.Tensor | None = None,
+        composite: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """LS/LSR-fitted prolongation matrix ``P`` (identity on ``C``, fitted rows on ``F``).
 
@@ -573,11 +560,11 @@ class BAMGCoarsening:
             coarse_mask (torch.Tensor): Boolean coarse mask, shape ``(n,)``.
             distance (torch.Tensor): Algebraic-distance matrix ``r``, shape
                 ``(n, n)``, used by the empty-interpolatory-set fallback.
-            T (torch.Tensor | None): Composite-interpolation Gram operator
-                for the LS/LSR fit weights (``omega_kappa``'s ``T``-weighted
-                generalization - see ``_mge.py``'s module docstring for its
-                unresolved TODO status); ``None`` for the ``T = I``
-                reduction (see ``_current_T``).
+            composite (torch.Tensor | None): Composite interpolation ``C``
+                (``T = C^T C``) for the LS/LSR fit weights (``omega_kappa``'s
+                ``T``-weighted generalization - see ``_mge.py``'s module
+                docstring for its unresolved TODO status); ``None`` for the
+                ``T = I`` reduction.
 
         Returns:
             torch.Tensor: Prolongation matrix, shape ``(n, n_c)``.
@@ -590,7 +577,7 @@ class BAMGCoarsening:
         coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
         coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
 
-        weights = test_vector_weights(test_vectors, A, T=T)
+        weights = test_vector_weights(test_vectors, A, composite=composite)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = depth_neighborhood(A, self._depth + 2)
         n_fine = fine_points.numel()

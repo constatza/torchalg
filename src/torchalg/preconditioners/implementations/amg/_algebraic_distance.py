@@ -117,7 +117,10 @@ def _residual_corrected_vectors(test_vectors: torch.Tensor, matrix: torch.Tensor
 
 
 def algebraic_distance(
-    test_vectors: torch.Tensor, matrix: torch.Tensor, depth: int = 1, T: torch.Tensor | None = None
+    test_vectors: torch.Tensor,
+    matrix: torch.Tensor,
+    depth: int = 1,
+    composite: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pairwise caliber-one algebraic distance ``r_ij`` ([AD11] eq. 4.3).
 
@@ -136,10 +139,10 @@ def algebraic_distance(
     ``S_ij = sum_kappa omega_kappa v_tilde_i^(kappa) v_j^(kappa)`` the
     corrected-target/raw-predictor cross term and ``T_i = sum_kappa
     omega_kappa v_tilde_i^(kappa)^2`` the corrected target's own weighted
-    energy - unrelated to this function's own ``T`` parameter below despite
-    the shared letter: ``T_i`` here is a per-row scalar intermediate of this
-    SSE decomposition, while ``T`` is the composite-interpolation Gram
-    *operator* that only enters through ``omega_kappa`` itself), avoiding
+    energy - unrelated to the composite-interpolation Gram operator ``T = C^T C``
+    despite the shared letter: ``T_i`` here is a per-row scalar intermediate
+    of this SSE decomposition, while ``T`` only enters through ``omega_kappa``
+    itself, via ``composite``), avoiding
     both a Python loop over pairs and an ``(n, n, k)`` intermediate.
 
     Args:
@@ -147,10 +150,9 @@ def algebraic_distance(
         matrix (torch.Tensor): Dense fine-grid matrix ``A``, shape ``(n, n)``.
         depth (int): Search depth ``d`` defining the neighborhood ``V_i``
             (default ``1``).
-        T (torch.Tensor | None): Composite-interpolation Gram operator
-            passed through to ``test_vector_weights``, shape ``(n, n)``;
-            ``None`` for the ``T = I`` reduction (see that function's
-            docstring).
+        composite (torch.Tensor | None): Composite interpolation ``C`` passed
+            through to ``test_vector_weights``; ``None`` for the ``T = I``
+            reduction (see that function's docstring).
 
     Returns:
         torch.Tensor: Dense algebraic-distance matrix ``r``, shape
@@ -158,7 +160,7 @@ def algebraic_distance(
         symmetric in general.
     """
     neighborhood = depth_neighborhood(matrix, depth)
-    weights = test_vector_weights(test_vectors, matrix, T=T)
+    weights = test_vector_weights(test_vectors, matrix, composite=composite)
     corrected = _residual_corrected_vectors(test_vectors, matrix)
 
     cross = (corrected * weights) @ test_vectors.T

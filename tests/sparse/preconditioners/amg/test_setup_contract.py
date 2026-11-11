@@ -201,6 +201,8 @@ class TestSetupStagesPrepareEachMatrixOnce:
         ).setup(poisson_1d_large_csr)
         assert built_matrices
         assert len({id(matrix) for matrix in built_matrices}) == len(built_matrices)
+        assert built_operators
+        assert len({id(p) for p in built_operators}) == len(built_operators)
 
     def test_setup_runs_do_not_share_prepared_state(
         self,

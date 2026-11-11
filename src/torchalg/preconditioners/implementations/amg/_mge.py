@@ -36,8 +36,8 @@ regardless of how much any single eigenvector changed, so
 using the ``T = I`` reduction only where that precondition ("on the finest
 level, or before any MGE enrichment," ``docs/bootstrap-amg.md`` line 234)
 actually holds: ``BAMGCoarsening`` tracks the composite prolongation
-incrementally (``_current_T`` in ``bootstrap.py``) and passes the resulting
-``T_l`` (this module's own ``T_l = P_l^H P_l`` and
+incrementally (``_composite`` in ``bootstrap.py``) and passes it, as the
+composite interpolation ``C`` with ``T_l = C^T C`` (this module's own ``T_l = P_l^H P_l`` and
 composite-prolongation-chaining formula, both directly confirmed against
 [STATUS14] Sec. 4, prose before eq. 4.2 - ``docs/bamg/status14_raw.md``)
 into both ``test_vector_weights`` and ``algebraic_distance`` once ``k_e > 0``

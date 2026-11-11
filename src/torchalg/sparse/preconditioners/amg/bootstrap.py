@@ -43,13 +43,10 @@ a different algorithm:
   test_vectors``) route through COO for the transpose step, mirroring
   ``kernels.galerkin.form_sparse_sparse``'s own documented
   CSR-transpose-yields-CSC workaround.
-- **``T_l`` is materialized dense** at the one point it is actually read
-  (``_current_T``): it only ever multiplies dense ``test_vectors``
-  downstream either way, it is bounded by the *current* level's size (not
-  growing across levels), and this matches the established coarsest-level-
-  densification precedent (``kernels.coarse_solve.dense_coarse_solve``) -
-  densifying one small per-level Gram operator, never ``A`` or ``P``
-  themselves.
+- **``T_l`` is never formed.** The only use of ``T_l = C^T C`` is the
+  weight numerator ``<T v, v> = ||C v||^2`` with dense ``test_vectors``, so
+  the sparse composite interpolation ``C`` itself is passed down and
+  multiplied against the test vectors (one sparse-dense product per level).
 - **The LS-ring/coarse-neighbor candidate lookup** (dense:
   ``torch.nonzero(coarse_neighborhood, as_tuple=False).tolist()`` grouped by
   row) is replaced by directly reading ``sparse_depth_neighborhood``'s own
@@ -241,6 +238,9 @@ class BAMGCoarsening:
         depth: int = 1,
         draw: Callable[[int], torch.Tensor] | None = None,
         seed: int = 0,
+        transfer_operator: Callable[
+            [torch.Tensor], SparseTransferOperator
+        ] = SparseTransferOperator,
     ) -> None:
         """Store hyperparameters and the finest-level test vectors.
 
@@ -257,7 +257,13 @@ class BAMGCoarsening:
             draw (Callable[[int], torch.Tensor] | None): Uniform ``[0, 1)``
                 random-vector source for CR.
             seed (int): Seed of the default draw source.
+            transfer_operator (Callable[[torch.Tensor], SparseTransferOperator]):
+                Wraps each built prolongation. Pass the setup stage's
+                ``TransferOperatorCache`` so ``build_transfer`` and the
+                hierarchy builder share one operator (one transpose) per
+                prolongation instead of building a throwaway.
         """
+        self._transfer_operator = transfer_operator
         self._relaxation = relaxation
         self._nu = nu
         self._delta = delta
@@ -270,20 +276,6 @@ class BAMGCoarsening:
         self._vectors: dict[int, torch.Tensor] = {test_vectors.shape[0]: test_vectors}
         self._last_prolongation: torch.Tensor | None = None
         self._composite: torch.Tensor | None = None
-
-    def _current_T(self) -> torch.Tensor | None:
-        """Composite-interpolation Gram operator ``T_l = P_l^T P_l`` for the level about to be processed.
-
-        Materialized dense - see the module docstring's rationale.
-
-        Returns:
-            torch.Tensor | None: Dense ``T_l``, shape ``(n, n)`` for the
-            current level's dimension ``n``, or ``None`` for ``T = I``.
-        """
-        if self._composite is None:
-            return None
-        composite_coo = self._composite.to_sparse_coo()
-        return torch.sparse.mm(composite_coo.t(), composite_coo).to_dense()
 
     def test_vectors_for(self, matrix: torch.Tensor) -> torch.Tensor:
         """Currently stored test vectors for ``matrix``'s dimension.
@@ -329,10 +321,14 @@ class BAMGCoarsening:
             tuple[torch.Tensor, SparseTransferOperator]: ``(A_coarse, transfer)``.
         """
         test_vectors = self._vectors[A.shape[0]]
-        T = self._current_T()
-        distance = sparse_algebraic_distance(test_vectors, A, depth=self._depth, T=T)
+        composite = self._composite
+        distance = sparse_algebraic_distance(
+            test_vectors, A, depth=self._depth, composite=composite
+        )
         coarse_mask = self._coarse_mask(A, distance)
-        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance, T=T)
+        prolongation = self._prolongation(
+            A, test_vectors, coarse_mask, distance, composite=composite
+        )
         coarse_matrix = form_sparse_sparse(prolongation, A)
         self._last_prolongation = prolongation
 
@@ -345,7 +341,7 @@ class BAMGCoarsening:
         else:
             composed = torch.sparse.mm(self._composite.to_sparse_coo(), p_coo)
             self._composite = composed.to_sparse_csr()
-        return coarse_matrix, SparseTransferOperator(prolongation)
+        return coarse_matrix, self._transfer_operator(prolongation)
 
     def _coarse_mask(self, A: torch.Tensor, distance: torch.Tensor) -> torch.Tensor:
         """Compatible-relaxation coarse set, guided by the algebraic-distance graph.
@@ -457,7 +453,7 @@ class BAMGCoarsening:
         test_vectors: torch.Tensor,
         coarse_mask: torch.Tensor,
         distance: torch.Tensor,
-        T: torch.Tensor | None = None,
+        composite: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """LS/LSR-fitted sparse CSR prolongation ``P`` (identity on ``C``, fitted rows on ``F``).
 
@@ -468,9 +464,9 @@ class BAMGCoarsening:
             distance (torch.Tensor): Sparse CSR algebraic-distance matrix
                 ``r``, shape ``(n, n)``, used by the empty-interpolatory-set
                 fallback.
-            T (torch.Tensor | None): Dense composite-interpolation Gram
-                operator for the LS/LSR fit weights; ``None`` for the
-                ``T = I`` reduction.
+            composite (torch.Tensor | None): Sparse CSR composite
+                interpolation ``C`` (``T = C^T C``) for the LS/LSR fit
+                weights; ``None`` for the ``T = I`` reduction.
 
         Returns:
             torch.Tensor: Sparse CSR prolongation matrix, shape
@@ -485,7 +481,7 @@ class BAMGCoarsening:
         coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
         coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
 
-        weights = test_vector_weights(test_vectors, A, T=T)
+        weights = test_vector_weights(test_vectors, A, composite=composite)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = sparse_depth_neighborhood(A, self._depth + 2)
 
@@ -757,6 +753,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
 
         def new_bootstrap_setup() -> BootstrapSetup:
             stage = GaussSeidelStage()
+            transfers = TransferOperatorCache()
             return BootstrapSetup(
                 coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
                     vectors,
@@ -768,8 +765,9 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
                     gamma=gamma,
                     use_lsr=use_lsr,
                     draw=draw,
+                    transfer_operator=transfers,
                 ),
-                transfer_operator_factory=TransferOperatorCache(),
+                transfer_operator_factory=transfers,
                 relaxation=stage,
                 setup_cycle=gs_setup_cycle(stage),
                 eta=eta,

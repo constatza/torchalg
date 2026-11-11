@@ -26,13 +26,15 @@ computing weights, protecting against division by near-zero."""
 
 
 def test_vector_weights(
-    test_vectors: torch.Tensor, matrix: torch.Tensor, T: torch.Tensor | None = None
+    test_vectors: torch.Tensor, matrix: torch.Tensor, composite: torch.Tensor | None = None
 ) -> torch.Tensor:
     """Per-test-vector weights ``omega_kappa``.
 
     ``omega_kappa = <T v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>``.
-    ``T`` is the composite-interpolation Gram operator ``P_l^H P_l``
-    (``docs/bootstrap-amg.md`` Sec. 4.2); ``T = None`` uses the ``T = I``
+    ``T = C^T C`` is the composite-interpolation Gram operator ``P_l^H P_l``
+    (``docs/bootstrap-amg.md`` Sec. 4.2) of the composite interpolation ``C``;
+    ``<T v, v> = ||C v||^2``, so the weights take ``C`` and never form the
+    ``(n, n)`` matrix ``T``. ``composite = None`` uses the ``T = I``
     reduction to a pure ``A``-energy weighting, valid "on the finest level,
     or before any MGE enrichment" - i.e. whenever no composite
     interpolation has been built yet, which is every level when MGE
@@ -46,8 +48,9 @@ def test_vector_weights(
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
         matrix (torch.Tensor): Dense or sparse CSR matrix ``A``, shape
             ``(n, n)``.
-        T (torch.Tensor | None): Composite-interpolation Gram operator,
-            shape ``(n, n)``; ``None`` for the ``T = I`` reduction.
+        composite (torch.Tensor | None): Composite interpolation ``C``
+            (dense or sparse CSR), shape ``(m, n)``; ``None`` for the
+            ``T = I`` reduction.
 
     Returns:
         torch.Tensor: Weight vector, shape ``(k,)``.
@@ -56,7 +59,7 @@ def test_vector_weights(
     energy_safe = torch.where(energy.abs() > _NEAR_ZERO_ENERGY_TOL, energy, torch.ones_like(energy))
     numerator = (
         (test_vectors**2).sum(dim=0)
-        if T is None
-        else (test_vectors * (T @ test_vectors)).sum(dim=0)
+        if composite is None
+        else ((composite @ test_vectors) ** 2).sum(dim=0)
     )
     return numerator / energy_safe

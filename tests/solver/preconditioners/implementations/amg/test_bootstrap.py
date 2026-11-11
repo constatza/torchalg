@@ -239,33 +239,22 @@ def test_bamg_coarsening_stores_restricted_test_vectors_for_next_level(
     assert torch.allclose(stored, expected)
 
 
-def test_bamg_coarsening_current_t_is_none_at_the_finest_level(
-    bamg_coarsening: BAMGCoarsening,
-) -> None:
-    """``T_0 = I`` at the finest level, represented as ``None`` (no composite
-    prolongation has been built yet within this coarsening pass)."""
-    assert bamg_coarsening._current_T() is None
-
-
-def test_bamg_coarsening_current_t_becomes_the_composite_gram_operator_after_one_level(
+def test_bamg_coarsening_composite_interpolation_is_the_first_prolongation_after_one_level(
     poisson_16: torch.Tensor,
     bamg_coarsening: BAMGCoarsening,
 ) -> None:
-    """[BAMG11] Sec. 4.2: ``T_l = P_l^H P_l``, the composite-interpolation Gram
-    operator. After coarsening the finest level, the NEXT level's ``T`` must
-    be exactly ``P_0^T @ P_0`` for the just-built prolongation ``P_0`` - not
-    ``I`` anymore, and not some other placeholder. This is what makes the
-    ``test_vector_weights``/``algebraic_distance`` calls inside
-    ``build_transfer`` paper-faithful once MGE (``k_e > 0``) makes ``T_l``
-    genuinely differ from ``I`` at non-finest levels.
+    """[BAMG11] Sec. 4.2: ``T_l = P_l^H P_l``, the composite-interpolation Gram operator.
+
+    The strategy keeps the composite interpolation ``C`` itself (``T = C^T C`` is never
+    formed): after coarsening the finest level, ``C`` for the NEXT level must be exactly
+    the just-built ``P_0``, not ``None`` (the ``T = I`` reduction) and not a placeholder.
+    This is what makes the ``test_vector_weights`` call inside ``build_transfer``
+    paper-faithful once the hierarchy has more than one level.
     """
+    assert bamg_coarsening._composite is None
     bamg_coarsening.build_transfer(poisson_16)
-    prolongation = bamg_coarsening.last_prolongation
 
-    T = bamg_coarsening._current_T()
-
-    assert T is not None
-    assert torch.allclose(T, prolongation.T @ prolongation)
+    assert bamg_coarsening._composite is bamg_coarsening.last_prolongation
 
 
 def test_bamg_coarsening_last_prolongation_raises_before_build_transfer(

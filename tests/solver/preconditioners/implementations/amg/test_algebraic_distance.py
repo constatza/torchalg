@@ -91,7 +91,7 @@ def test_vector_weights_t_none_matches_identity_t(
     poisson_1d_factory: Callable[[int], torch.Tensor],
     small_test_vectors: torch.Tensor,
 ) -> None:
-    """``T=None`` (the default) must be numerically identical to passing an
+    """``composite=None`` (the default) must be numerically identical to passing an
     explicit identity ``T`` - [BAMG11] eq. 4.1's ``T = I`` reduction, valid
     "on the finest level, or before any MGE enrichment" (``docs/
     bootstrap-amg.md`` line 234). This is the regression guard for every
@@ -102,32 +102,36 @@ def test_vector_weights_t_none_matches_identity_t(
     identity = torch.eye(3, dtype=small_test_vectors.dtype)
 
     weights_default = compute_test_vector_weights(small_test_vectors, matrix)
-    weights_explicit_identity = compute_test_vector_weights(small_test_vectors, matrix, T=identity)
+    weights_explicit_identity = compute_test_vector_weights(
+        small_test_vectors, matrix, composite=identity
+    )
 
     assert torch.equal(weights_default, weights_explicit_identity)
 
 
-def test_vector_weights_uses_non_identity_t(
+def test_vector_weights_use_the_composite_interpolation_gram_operator(
     poisson_1d_factory: Callable[[int], torch.Tensor],
     small_test_vectors: torch.Tensor,
 ) -> None:
-    """A non-identity ``T`` must change the result: ``omega_kappa = <T v, v> /
-    <A v, v>`` ([BAMG11] eq. 4.1's general form, composite-interpolation Gram
-    operator ``T = P_l^H P_l``, not just its ``T=I`` finest-level reduction).
+    """``omega_kappa = <T v, v> / <A v, v>`` with ``T = C^T C`` ([BAMG11] eq. 4.1's general form).
+
+    The composite interpolation ``C`` is passed instead of ``T``: ``<T v, v> = ||C v||^2``
+    is identical in exact arithmetic and avoids forming the ``(n, n)`` Gram matrix.
     """
     matrix = poisson_1d_factory(3)
-    non_identity_T = torch.tensor(
-        [[2.0, 0.5, 0.0], [0.5, 3.0, 0.0], [0.0, 0.0, 1.5]], dtype=small_test_vectors.dtype
+    composite = torch.tensor(
+        [[1.0, 0.5, 0.0], [0.0, 2.0, 0.5], [0.0, 0.0, 1.5], [0.5, 0.0, 1.0]],
+        dtype=small_test_vectors.dtype,
     )
+    gram = composite.T @ composite
 
     weights_identity = compute_test_vector_weights(small_test_vectors, matrix)
-    weights_non_identity = compute_test_vector_weights(small_test_vectors, matrix, T=non_identity_T)
+    weights = compute_test_vector_weights(small_test_vectors, matrix, composite=composite)
 
-    assert not torch.equal(weights_identity, weights_non_identity)
-    # Directly verify the general formula, not just "it changed".
-    expected_numerator = (small_test_vectors * (non_identity_T @ small_test_vectors)).sum(dim=0)
+    assert not torch.equal(weights_identity, weights)
+    expected_numerator = (small_test_vectors * (gram @ small_test_vectors)).sum(dim=0)
     expected_denominator = (small_test_vectors * (matrix @ small_test_vectors)).sum(dim=0)
-    assert torch.allclose(weights_non_identity, expected_numerator / expected_denominator)
+    torch.testing.assert_close(weights, expected_numerator / expected_denominator)
 
 
 def test_algebraic_distance_t_none_matches_identity_t(
@@ -140,7 +144,9 @@ def test_algebraic_distance_t_none_matches_identity_t(
     identity = torch.eye(3, dtype=small_test_vectors.dtype)
 
     r_default = algebraic_distance(small_test_vectors, matrix, depth=1)
-    r_explicit_identity = algebraic_distance(small_test_vectors, matrix, depth=1, T=identity)
+    r_explicit_identity = algebraic_distance(
+        small_test_vectors, matrix, depth=1, composite=identity
+    )
 
     assert torch.equal(r_default, r_explicit_identity)
 

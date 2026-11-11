@@ -25,8 +25,8 @@ directly from storage format, not a different algorithm:
   sparse-sparse product kernel.
 - The smooth-vector restriction ``P.T @ w`` goes through COO for the
   transpose step, mirroring every other sparse-CSR transpose-needing
-  product in this package (``BAMGCoarsening``'s own ``_current_T``/
-  restricted-vectors code).
+  product in this package (``BAMGCoarsening``'s own composite-prolongation
+  chaining and restricted-vectors code).
 """
 
 from __future__ import annotations
