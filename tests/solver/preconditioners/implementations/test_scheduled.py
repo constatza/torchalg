@@ -204,3 +204,14 @@ def test_primary_property_matches_constructor_arg(diagonal_matrix: torch.Tensor)
     primary = JacobiPreconditioner().setup(diagonal_matrix)
     scheduled = ScheduledPreconditioner(primary=primary, limit_iters=10, start_iter=0)
     assert scheduled.primary is primary
+
+
+def test_to_moves_the_wrapped_preconditioners(diagonal_matrix: torch.Tensor) -> None:
+    """``.to()`` (and so ``solve()``'s placement) reaches the wrapped preconditioners."""
+    primary = JacobiPreconditioner()
+    scheduled = ScheduledPreconditioner(primary=primary).setup(diagonal_matrix)
+
+    moved = scheduled.to(dtype=torch.float32)
+
+    assert moved is scheduled
+    assert primary.inv_diag.dtype == torch.float32

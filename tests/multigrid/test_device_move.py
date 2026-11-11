@@ -109,3 +109,14 @@ def test_device_move_keeps_the_prepared_preconditioner(
 
     torch.testing.assert_close(first.cpu(), expected)
     torch.testing.assert_close(second.cpu(), expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_adaptive_sa_accepts_host_candidates_for_a_gpu_matrix(poisson_2d: torch.Tensor) -> None:
+    """Known near-null candidates given on the host follow the matrix to its device."""
+    candidates = torch.ones(poisson_2d.shape[0], 1, dtype=poisson_2d.dtype)
+    matrix = poisson_2d.cuda()
+
+    preconditioner = AdaptiveSAPreconditioner(initial_candidates=candidates).setup(matrix)
+
+    assert preconditioner.apply(torch.ones_like(matrix[0])).device.type == "cuda"

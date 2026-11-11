@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Self
 
 import torch
+from torch import nn
 
 from ..base import (
     BindableInputs,
@@ -46,7 +47,9 @@ def _setup_sub(
             )
 
 
-class ScheduledPreconditioner(NonLinearPreconditioner, MatrixSetupPreconditioner, BindableInputs):
+class ScheduledPreconditioner(
+    NonLinearPreconditioner, MatrixSetupPreconditioner, BindableInputs, nn.Module
+):
     """Preconditioner that switches between primary and fallback by iteration.
 
     Uses the fallback before ``start_iter``, the primary while the schedule
@@ -55,10 +58,10 @@ class ScheduledPreconditioner(NonLinearPreconditioner, MatrixSetupPreconditioner
     delayed, bounded, or both.
 
     Composes two other ``Preconditioner`` instances via constructor
-    injection rather than holding its own tensor buffers, so it stays a
-    plain class - no ``nn.Module`` needed here, even though the wrapped
-    ``primary``/``fallback`` preconditioners may themselves be ``nn.Module``
-    subclasses (e.g. ``JacobiPreconditioner``).
+    injection and holds no tensors of its own. It is an ``nn.Module`` so the
+    wrapped ``primary``/``fallback``, when they are modules (e.g.
+    ``JacobiPreconditioner``), register as submodules and follow ``.to()`` -
+    including the placement ``solve()`` performs.
 
     Declares itself a ``MatrixSetupPreconditioner`` conservatively: it can't
     promise matrix-agnosticism unless both ``primary`` and ``fallback`` are,
@@ -110,6 +113,7 @@ class ScheduledPreconditioner(NonLinearPreconditioner, MatrixSetupPreconditioner
             raise ValueError("start_iter must be non-negative")
         if limit_iters is not None and limit_iters < 0:
             raise ValueError("limit_iters must be non-negative")
+        nn.Module.__init__(self)
         self._primary = primary
         self._fallback = fallback
         self._limit_iters = limit_iters

@@ -490,7 +490,7 @@ def adaptive_sa_hierarchy(
         candidates = (x / x.abs().max()).unsqueeze(1)
         num_candidates -= 1
     else:
-        candidates = initial_candidates.to(matrix.dtype)
+        candidates = initial_candidates.to(device=matrix.device, dtype=matrix.dtype)
         num_candidates -= candidates.shape[1]
         levels = _smoothed_aggregation_levels(matrix, candidates, params, None)
         if len(levels) > 1:
