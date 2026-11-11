@@ -11,10 +11,6 @@ internal branch"):
 - ``torchalg.sparse.preconditioners``: complete algorithms with their own
   correctness/breakdown story (AMG smoothers/coarsening/aggregation/
   transfer, IC0, ILU).
-- ``torchalg.sparse.device_policy``: ``recommend_device``, an advisory
-  CPU/CUDA recommendation over measured operation-shape/size thresholds -
-  consulted by callers and, per pipeline stage, by sparse orchestrators
-  themselves; never used to silently migrate a tensor's device.
 
 No class anywhere in dense ``torchalg.*`` may import from this package;
 ``tach.toml`` enforces that boundary structurally. The caller - whatever

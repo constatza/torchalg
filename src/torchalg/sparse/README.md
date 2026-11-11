@@ -8,9 +8,9 @@ algorithm based on the matrix representation they already own.
   Galerkin formation, graph operations, and triangular solves.
 - `preconditioners/` contains complete sparse algorithms, including AMG,
   IC(0), ICholesky, ILU, and Jacobi implementations.
-- `device_policy.py` supplies internal, advisory CPU/CUDA recommendations
-  derived from a particular benchmark environment. It never moves tensors and
-  is not a cross-hardware performance guarantee.
+- Device-specific implementations are chosen by per-operation registries keyed
+  by device type (`kernels.triangular.TRIANGULAR_SOLVER_BY_DEVICE`,
+  `LEVEL_SCHEDULER_BY_DEVICE`), never by device checks at call sites.
 
 Re-run the opt-in experiments in `benchmarks/sparse_dense/` when a device,
 PyTorch version, or matrix family changes materially.

@@ -209,11 +209,8 @@ depends_on = ["torchalg.sparse.preconditioners.pod.coarsening"]
 path = "torchalg.sparse.preconditioners"
 depends_on = ["torchalg.sparse.preconditioners.amg", "torchalg.sparse.preconditioners.ic0", "torchalg.sparse.preconditioners.icholesky", "torchalg.sparse.preconditioners.ilu", "torchalg.sparse.preconditioners.jacobi", "torchalg.sparse.preconditioners.pod"]
 [[modules]]
-path = "torchalg.sparse.device_policy"
-depends_on = []
-[[modules]]
 path = "torchalg.sparse"
-depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.device_policy", "torchalg.sparse.kernels", "torchalg.sparse.preconditioners"]
+depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels", "torchalg.sparse.preconditioners"]
 
 # Monitoring and solver policies.
 [[modules]]
