@@ -28,6 +28,7 @@ from benchmarks.algorithms.registry import (
 )
 from benchmarks.harness import Level, Params
 from torchalg import pcg
+from torchalg.models import SolverResult
 from torchalg.preconditioners.base import MatrixSetupPreconditioner
 
 APPLY_REPEATS = 10
@@ -110,7 +111,7 @@ def test_preconditioner(
 
     iteration_cap = spec.max_iterations(problem.case.n)
 
-    def solve() -> tuple[torch.Tensor, object]:
+    def solve() -> tuple[torch.Tensor, SolverResult]:
         return pcg(
             problem.matrix,
             problem.rhs,
