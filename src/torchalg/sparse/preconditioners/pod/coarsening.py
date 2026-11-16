@@ -78,7 +78,12 @@ class PODCoarseningStrategy(nn.Module):
         nn.Module.__init__(self)
         self._rank = rank
 
-    def fit(self, snapshots: torch.Tensor, row_scales: torch.Tensor | None = None) -> None:
+    def fit(
+        self,
+        snapshots: torch.Tensor,
+        row_scales: torch.Tensor | None = None,
+        inner_product: torch.Tensor | None = None,
+    ) -> None:
         """Fit the POD basis from the snapshot ensemble (one-shot closed-form SVD).
 
         Args:
@@ -88,15 +93,25 @@ class PODCoarseningStrategy(nn.Module):
                 shape (n_samples,), forwarded to ``compute_pod_basis`` -
                 see its docstring. ``None`` (default) fits the unweighted
                 basis.
+            inner_product (torch.Tensor | None): Optional dense SPD weight
+                ``W`` for ``W``-norm POD, forwarded to ``compute_pod_basis``
+                (dense only: ``O(n_dofs^2)`` memory, ``O(n_dofs^3)`` time).
+                ``None`` (default) fits the Euclidean basis.
 
         Raises:
             ValueError: If ``rank`` is an int exceeding
                 ``min(n_samples, n_dofs)`` - only knowable once snapshots
-                exist, unlike the float-range check in ``__init__``.
+                exist, unlike the float-range check in ``__init__`` - or if
+                ``inner_product`` is not a dense symmetric square matrix.
+            torch.linalg.LinAlgError: If ``inner_product`` is not positive
+                definite.
         """
         self._basis: torch.Tensor
         self.register_buffer(
-            "_basis", compute_pod_basis(snapshots, self._rank, row_scales=row_scales)
+            "_basis",
+            compute_pod_basis(
+                snapshots, self._rank, row_scales=row_scales, inner_product=inner_product
+            ),
         )
 
     def is_fitted(self) -> bool:

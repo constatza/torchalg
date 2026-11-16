@@ -42,6 +42,7 @@ def compute_pod_basis(
     rank: float,
     dtype: torch.dtype | None = None,
     row_scales: torch.Tensor | None = None,
+    inner_product: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Build a truncated POD basis from a snapshot ensemble (snapshot method).
 
@@ -97,6 +98,20 @@ def compute_pod_basis(
             ``preconditioners.implementations.pod.weighting`` for schemes
             that compute this vector (raw/L2/A-normalized,
             smoother-persistence).
+        inner_product (torch.Tensor | None): Optional dense SPD weight ``W``,
+            shape (n_dofs, n_dofs). When given, POD minimizes the snapshot
+            projection error in the ``W``-norm instead of the Euclidean norm
+            (``W = A`` is energy-weighted POD). With the Cholesky factor
+            ``W = L L^T``, the SVD of ``snapshots @ L`` gives right singular
+            vectors ``V`` and the modes ``Phi_r = L^{-T} V_r``, which are
+            ``W``-orthonormal up to rounding of order ``eps * sqrt(cond(W))``
+            (``Phi_r^T W Phi_r = I``); the singular values, and so an
+            energy-threshold ``rank``, are those of the weighted problem, so a
+            threshold tuned for the Euclidean basis does not carry over (the
+            energy norm moves energy toward high-frequency modes). ``W`` must
+            be a dense (strided) symmetric matrix: the factorization costs
+            ``O(n_dofs^3)`` time and ``O(n_dofs^2)`` memory. ``None`` (default)
+            keeps the Euclidean basis exactly.
 
     Returns:
         torch.Tensor: POD basis Phi_r, shape (n_dofs, r), in the resolved
@@ -104,8 +119,10 @@ def compute_pod_basis(
 
     Raises:
         ValueError: If ``rank`` is a float outside (0, 1], an int exceeding
-            ``min(n_samples, n_dofs)``, or ``row_scales`` has a length other
-            than ``n_samples``.
+            ``min(n_samples, n_dofs)``, ``row_scales`` has a length other
+            than ``n_samples``, or ``inner_product`` is not a dense, symmetric
+            ``(n_dofs, n_dofs)`` matrix.
+        torch.linalg.LinAlgError: If ``inner_product`` is not positive definite.
 
     References:
         - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos,
@@ -124,10 +141,30 @@ def compute_pod_basis(
             )
         snapshots_t = snapshots_t * row_scales.to(dtype=snapshots_t.dtype).unsqueeze(-1)
 
-    _, s, vh = torch.linalg.svd(snapshots_t, full_matrices=False)  # vh: (max_rank, n_dofs)
-    resolved_rank = _resolve_rank(s, rank, max_rank)
-    # Contiguous copy, not a transposed view: transfers multiply by it every cycle
-    # (1.4-3x faster than the view) and the rest of ``vh`` is released.
-    basis = vh[:resolved_rank].T.contiguous()  # (n_dofs, r), orthonormal columns
+    if inner_product is None:
+        _, s, vh = torch.linalg.svd(snapshots_t, full_matrices=False)  # vh: (max_rank, n_dofs)
+        resolved_rank = _resolve_rank(s, rank, max_rank)
+        # Contiguous copy, not a transposed view: transfers multiply by it every cycle
+        # (1.4-3x faster than the view) and the rest of ``vh`` is released.
+        return vh[:resolved_rank].T.contiguous()  # (n_dofs, r), orthonormal columns
 
-    return basis
+    if inner_product.layout != torch.strided:
+        raise ValueError(
+            f"inner_product must be a dense (strided) tensor, got layout {inner_product.layout}"
+        )
+    if inner_product.shape != (n_dofs, n_dofs):
+        raise ValueError(
+            f"inner_product must have shape ({n_dofs}, {n_dofs}), got {tuple(inner_product.shape)}"
+        )
+    weight = inner_product.to(device=snapshots_t.device, dtype=snapshots_t.dtype)
+    # Cholesky reads only the lower triangle, so an asymmetric W would be accepted silently.
+    if not torch.allclose(weight, weight.mT):
+        raise ValueError("inner_product must be symmetric")
+    factor = torch.linalg.cholesky(weight)  # W = L L^T
+    _, s, vh = torch.linalg.svd(snapshots_t @ factor, full_matrices=False)
+    resolved_rank = _resolve_rank(s, rank, max_rank)
+    # Phi_r = L^{-T} V_r: solve L^T Phi_r = V_r. The solve returns a column-major array;
+    # copy it row-major like the Euclidean branch, since transfers multiply by it every cycle.
+    return torch.linalg.solve_triangular(
+        factor.mT, vh[:resolved_rank].T, upper=True
+    ).contiguous()  # (n_dofs, r), W-orthonormal columns
