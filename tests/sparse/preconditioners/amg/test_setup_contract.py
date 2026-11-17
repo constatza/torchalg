@@ -18,6 +18,7 @@ import torch
 
 from torchalg.multigrid import AMGPreconditioner, VCycle
 from torchalg.preconditioners.base import MatrixSetupPreconditioner
+from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.kernels import triangular as triangular_kernel
 from torchalg.sparse.preconditioners.amg import _gauss_seidel
 from torchalg.sparse.preconditioners.amg._dense_gauss_seidel import DenseBackedSymmetricGaussSeidel
@@ -31,7 +32,6 @@ from torchalg.sparse.preconditioners.amg.coarse_solve import dense_lu_coarse_sol
 from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelSmoother, JacobiSmoother
 from torchalg.sparse.preconditioners.amg.transfer import SparseTransferOperator
 from torchalg.sparse.preconditioners.amg.variants import vcycle_amg, wcycle_amg
-from torchalg.sparse.preconditioners.pod.coarsening import PODCoarseningStrategy
 
 _SPECTRAL_NAME = "approximate_spectral_radius"
 _POD_RANK = 5
@@ -63,11 +63,9 @@ def pod_snapshots_large(poisson_1d_large_dense: torch.Tensor, test_seed: int) ->
 
 
 def _pod2g(matrix: torch.Tensor, snapshots: torch.Tensor) -> AMGPreconditioner:
-    coarsening = PODCoarseningStrategy(rank=_POD_RANK)
-    coarsening.fit(snapshots)
     return AMGPreconditioner(
         matrix=matrix,
-        coarsening=coarsening,
+        coarsening=PODCoarseningStrategy(compute_pod_basis(snapshots, _POD_RANK)),
         cycle=VCycle(JacobiSmoother(), coarse_solver_factory=dense_lu_coarse_solver),
         n_levels=2,
         linear=True,

@@ -627,3 +627,55 @@ def test_vectors_3(aggregate_map: torch.Tensor, torch_dtype: torch.dtype) -> tor
     """Seeded random (13, 3) test-vector block matching ``aggregate_map``."""
     generator = torch.Generator().manual_seed(0)
     return torch.randn(aggregate_map.shape[0], 3, generator=generator, dtype=torch_dtype)
+
+
+@pytest.fixture(params=["strided", "sparse_csr"])
+def poisson_1d_any_layout(request: pytest.FixtureRequest, poisson_1d: torch.Tensor) -> torch.Tensor:
+    """``poisson_1d`` as a strided tensor and as sparse CSR.
+
+    Args:
+        request: Parametrization request carrying the layout name.
+        poisson_1d: The 20x20 Poisson matrix fixture.
+
+    Returns:
+        torch.Tensor: ``poisson_1d`` in the requested layout.
+    """
+    return poisson_1d if request.param == "strided" else poisson_1d.to_sparse_csr()
+
+
+@pytest.fixture(params=["one_dimensional", "no_columns", "sparse_csr"])
+def invalid_pod_basis(request: pytest.FixtureRequest, pod_basis: torch.Tensor) -> torch.Tensor:
+    """A tensor ``PODCoarseningStrategy`` must reject as a basis.
+
+    Args:
+        request: Parametrization request carrying the defect name.
+        pod_basis: Valid (20, 10) POD basis fixture.
+
+    Returns:
+        torch.Tensor: A 1-D column, a (20, 0) basis, or a sparse-CSR basis.
+    """
+    if request.param == "one_dimensional":
+        return pod_basis[:, 0]
+    if request.param == "no_columns":
+        return pod_basis[:, :0]
+    return pod_basis.to_sparse_csr()
+
+
+@pytest.fixture
+def pod_transfer_vectors(
+    pod_basis: torch.Tensor, test_seed: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Seeded coarse and fine vectors sized for ``pod_basis``.
+
+    Args:
+        pod_basis: The (20, 10) POD basis fixture.
+        test_seed: Fixed random seed for reproducibility.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: ``(coarse, fine)`` of shapes (10,) and (20,).
+    """
+    generator = torch.Generator().manual_seed(test_seed)
+    n_dofs, rank = pod_basis.shape
+    coarse = torch.randn(rank, dtype=pod_basis.dtype, generator=generator)
+    fine = torch.randn(n_dofs, dtype=pod_basis.dtype, generator=generator)
+    return coarse, fine

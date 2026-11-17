@@ -6,10 +6,9 @@ dense ``torch.Tensor`` and does plain ``P @ x`` / ``P.T @ x`` - nothing about
 it assumes anything about any other tensor in the system (not the fine-grid
 matrix ``A``, not any result format). That makes it format-agnostic in
 exactly the same sense as ``torchalg.utils.spectral``'s Arnoldi routine, so
-it lives here as a dependency-free leaf consumed by both the dense AMG/POD
-trees and (via ``torchalg.sparse.preconditioners.pod.coarsening``, whose POD
-basis ``Phi_r`` is always dense even when the fine-grid matrix is sparse CSR)
-the sparse tree.
+it lives here as a dependency-free leaf consumed by the AMG and POD trees
+(``PODCoarseningStrategy``'s basis ``Phi_r`` is always dense, even when the
+fine-grid matrix is sparse CSR).
 """
 
 from __future__ import annotations

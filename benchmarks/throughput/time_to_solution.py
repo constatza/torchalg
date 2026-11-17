@@ -21,6 +21,7 @@ from benchmarks.harness import time_callable
 from torchalg import pcg
 from torchalg.multigrid import AMGPreconditioner, VCycle
 from torchalg.preconditioners.base import MatrixSetupPreconditioner
+from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.preconditioners.amg.adaptive import AdaptiveSAPreconditioner
 from torchalg.sparse.preconditioners.amg.bootstrap import BootstrapAMGPreconditioner
 from torchalg.sparse.preconditioners.amg.coarse_solve import dense_lu_coarse_solver
@@ -29,7 +30,6 @@ from torchalg.sparse.preconditioners.amg.variants import vcycle_amg
 from torchalg.sparse.preconditioners.ic0 import IC0Preconditioner
 from torchalg.sparse.preconditioners.ilu import ILUPreconditioner
 from torchalg.sparse.preconditioners.jacobi import JacobiPreconditioner
-from torchalg.sparse.preconditioners.pod.coarsening import PODCoarseningStrategy
 
 CASES = (lap2d_case(10000), box3d_case(27000), lap2d_case(90000))
 RTOL = 1e-8
@@ -41,11 +41,10 @@ SKIP_BOOTSTRAP_ABOVE_N = 30000
 
 
 def _pod(matrix: torch.Tensor, case: MatrixCase) -> MatrixSetupPreconditioner:
-    coarsening = PODCoarseningStrategy(rank=POD_RANK)
-    coarsening.fit(make_snapshots(case, torch.float64, CPU))
+    basis = compute_pod_basis(make_snapshots(case, torch.float64, CPU), POD_RANK)
     return AMGPreconditioner(
         matrix=matrix,
-        coarsening=coarsening,
+        coarsening=PODCoarseningStrategy(basis),
         cycle=VCycle(
             resolve_jacobi_default(None, None),
             n_pre=2,

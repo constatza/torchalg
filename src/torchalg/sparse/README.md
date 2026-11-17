@@ -7,7 +7,9 @@ algorithm based on the matrix representation they already own.
 - `kernels/` provides reusable sparse primitives such as diagonal extraction,
   Galerkin formation, graph operations, and triangular solves.
 - `preconditioners/` contains complete sparse algorithms, including AMG,
-  IC(0), ICholesky, ILU, and Jacobi implementations.
+  IC(0), ICholesky, ILU, and Jacobi implementations. POD has no sparse
+  sibling: `torchalg.preconditioners.implementations.pod.PODCoarseningStrategy`
+  takes a CSR matrix directly, since its basis and coarse matrix are dense.
 - Device-specific implementations are chosen by per-operation registries keyed
   by device type (`kernels.triangular.TRIANGULAR_SOLVER_BY_DEVICE`,
   `LEVEL_SCHEDULER_BY_DEVICE`), never by device checks at call sites.

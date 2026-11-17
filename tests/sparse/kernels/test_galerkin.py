@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.sparse.kernels.galerkin import form_sparse_dense, form_sparse_sparse
+from torchalg.sparse.kernels.galerkin import form_sparse_sparse
 
 _RANK = 4
 
@@ -46,29 +46,4 @@ class TestFormSparseSparse:
         hierarchy keeps every non-coarsest level sparse (see ``docs/plan.md``)."""
         actual = form_sparse_sparse(aggregation_prolongation_dense.to_sparse_csr(), poisson_1d_csr)
         assert actual.layout == torch.sparse_csr
-        assert actual.shape == (_RANK, _RANK)
-
-
-class TestFormSparseDense:
-    """``form_sparse_dense`` matches the dense Galerkin product ``Phi.T @ A @ Phi``."""
-
-    def test_matches_dense_reference(
-        self,
-        poisson_1d_dense: torch.Tensor,
-        poisson_1d_csr: torch.Tensor,
-        aggregation_prolongation_dense: torch.Tensor,
-    ) -> None:
-        """Sparse-dense formation equals the dense triple product within tolerance."""
-        expected = (
-            aggregation_prolongation_dense.T @ poisson_1d_dense @ aggregation_prolongation_dense
-        )
-        actual = form_sparse_dense(poisson_1d_csr, aggregation_prolongation_dense)
-        torch.testing.assert_close(actual, expected)
-
-    def test_returns_dense_tensor(
-        self, poisson_1d_csr: torch.Tensor, aggregation_prolongation_dense: torch.Tensor
-    ) -> None:
-        """The (small) coarse operator is returned dense."""
-        actual = form_sparse_dense(poisson_1d_csr, aggregation_prolongation_dense)
-        assert actual.layout == torch.strided
         assert actual.shape == (_RANK, _RANK)

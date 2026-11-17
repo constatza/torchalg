@@ -24,11 +24,13 @@ Public API:
           solve-time relaxation strategies.
 
     Core (for custom wiring, e.g. via AMGPreconditioner directly):
-        - PODCoarseningStrategy: Builds a POD-reduced coarse level from a
-          snapshot ensemble; satisfies the ``CoarseningStrategy`` protocol.
-        - compute_pod_basis: Pure function computing the truncated POD basis
+        - PODCoarseningStrategy: Built from a fitted basis ``Phi_r``; projects a
+          strided or sparse-CSR fine-grid matrix onto it. Satisfies the
+          ``CoarseningStrategy`` protocol and has no unfitted state.
+        - compute_pod_basis: Pure function fitting the truncated POD basis
           (snapshot method) from a snapshot ensemble, with an optional
-          per-snapshot ``row_scales`` for weighted POD.
+          per-snapshot ``row_scales`` for weighted POD and an optional SPD
+          ``inner_product`` for energy-weighted POD.
 
     Snapshot weighting (``.weighting``, for the ``row_scales`` argument
     above):

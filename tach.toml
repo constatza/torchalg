@@ -183,7 +183,7 @@ path = "torchalg.sparse.preconditioners.amg"
 depends_on = ["torchalg.sparse.preconditioners.amg._gauss_seidel", "torchalg.sparse.preconditioners.amg._jacobi_omega", "torchalg.sparse.preconditioners.amg._node_strength", "torchalg.sparse.preconditioners.amg._presets", "torchalg.sparse.preconditioners.amg._prolongation", "torchalg.sparse.preconditioners.amg.adaptive", "torchalg.sparse.preconditioners.amg.aggregation", "torchalg.sparse.preconditioners.amg.coarse_solve", "torchalg.sparse.preconditioners.amg.coarsening", "torchalg.sparse.preconditioners.amg.smoothers", "torchalg.sparse.preconditioners.amg.transfer", "torchalg.sparse.preconditioners.amg.variants"]
 [[modules]]
 path = "torchalg.sparse.preconditioners._protocol_conformance"
-depends_on = ["torchalg.multigrid.protocols", "torchalg.sparse.preconditioners.amg.coarsening", "torchalg.sparse.preconditioners.amg.transfer", "torchalg.sparse.preconditioners.pod.coarsening"]
+depends_on = ["torchalg.multigrid.protocols", "torchalg.sparse.preconditioners.amg.coarsening", "torchalg.sparse.preconditioners.amg.transfer"]
 [[modules]]
 path = "torchalg.sparse.preconditioners._triangular"
 depends_on = ["torchalg.sparse.kernels.triangular"]
@@ -200,14 +200,8 @@ depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangul
 path = "torchalg.sparse.preconditioners.jacobi"
 depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.diagonal"]
 [[modules]]
-path = "torchalg.sparse.preconditioners.pod.coarsening"
-depends_on = ["torchalg.sparse.kernels.galerkin", "torchalg.utils.pod_basis", "torchalg.utils.dense_transfer"]
-[[modules]]
-path = "torchalg.sparse.preconditioners.pod"
-depends_on = ["torchalg.sparse.preconditioners.pod.coarsening"]
-[[modules]]
 path = "torchalg.sparse.preconditioners"
-depends_on = ["torchalg.sparse.preconditioners.amg", "torchalg.sparse.preconditioners.ic0", "torchalg.sparse.preconditioners.icholesky", "torchalg.sparse.preconditioners.ilu", "torchalg.sparse.preconditioners.jacobi", "torchalg.sparse.preconditioners.pod"]
+depends_on = ["torchalg.sparse.preconditioners.amg", "torchalg.sparse.preconditioners.ic0", "torchalg.sparse.preconditioners.icholesky", "torchalg.sparse.preconditioners.ilu", "torchalg.sparse.preconditioners.jacobi"]
 [[modules]]
 path = "torchalg.sparse"
 depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels", "torchalg.sparse.preconditioners"]
@@ -284,13 +278,13 @@ depends_on = ["torchalg.multigrid", "torchalg.preconditioners.base", "torchalg.p
 # POD is an AMG client; AMG may never depend on POD.
 [[modules]]
 path = "torchalg.preconditioners.implementations.pod.coarsening"
-depends_on = ["torchalg.utils.dense_transfer", "torchalg.utils.pod_basis"]
+depends_on = ["torchalg.utils.dense_transfer"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.pod.weighting"
 depends_on = ["torchalg.preconditioners.implementations.amg._test_vectors", "torchalg.utils.energy"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.pod.variants"
-depends_on = ["torchalg.preconditioners.implementations.amg.amg", "torchalg.preconditioners.implementations.amg.cycle", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.preconditioners.implementations.pod.coarsening"]
+depends_on = ["torchalg.preconditioners.implementations.amg.amg", "torchalg.preconditioners.implementations.amg.cycle", "torchalg.preconditioners.implementations.amg.smoothers", "torchalg.preconditioners.implementations.pod.coarsening", "torchalg.utils.pod_basis"]
 [[modules]]
 path = "torchalg.preconditioners.implementations.pod"
 depends_on = ["torchalg.preconditioners.implementations.pod.coarsening", "torchalg.preconditioners.implementations.pod.variants", "torchalg.preconditioners.implementations.pod.weighting", "torchalg.utils.pod_basis"]

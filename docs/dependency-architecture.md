@@ -146,7 +146,11 @@ Only representation-sensitive operations belong under `torchalg.sparse`:
 sparse storage validation, index manipulation, factorization, triangular
 solves, sparse Galerkin products, and sparse-specific preconditioners. Models,
 convergence policy, diagnostics, and representation-independent Krylov control
-flow remain shared rather than being copied into a sparse mirror.
+flow remain shared rather than being copied into a sparse mirror. An
+algorithm whose only contact with the matrix is a product that `torch`
+already forms for both layouts has no sparse sibling: POD coarsening keeps
+its basis, coarse matrix and transfer dense, so the one
+`PODCoarseningStrategy` takes a strided or sparse-CSR matrix.
 
 Sparse preconditioner siblings may share private sparse-local solve-state
 helpers when they execute the same kernel lifecycle. In particular, IC(0),

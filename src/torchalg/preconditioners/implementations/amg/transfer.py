@@ -11,9 +11,9 @@ format-agnostic - see that module's docstring) and is re-exported here so
 every existing ``from ...amg.transfer import DenseTransferOperator`` call
 site keeps working unchanged. The name also anticipated Stage 6 (POD), whose
 reference README already calls its own dense-P/R wrapper
-``DenseTransferOperator`` - and indeed the sparse POD sibling
-(``torchalg.sparse.preconditioners.pod.coarsening``) reuses the very same
-promoted class, since a POD basis is always dense.
+``DenseTransferOperator`` - and ``PODCoarseningStrategy`` reuses the very
+same promoted class for dense and sparse-CSR matrices alike, since a POD
+basis is always dense.
 """
 
 from __future__ import annotations

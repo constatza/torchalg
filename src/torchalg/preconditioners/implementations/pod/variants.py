@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from torchalg.utils.pod_basis import compute_pod_basis
+
 from ..amg.amg import AMGPreconditioner
 from ..amg.cycle import VCycle
 from ..amg.smoothers import resolve_jacobi_default
@@ -98,11 +100,9 @@ def pod2g_preconditioner(
           V. (2022). AI-enhanced iterative solvers for accelerating the
           solution of large-scale parametrized systems. arXiv:2207.02543.
     """
-    coarsening = PODCoarseningStrategy(rank=rank)
-    coarsening.fit(snapshots)
     return AMGPreconditioner(
         matrix=matrix,
-        coarsening=coarsening,
+        coarsening=PODCoarseningStrategy(compute_pod_basis(snapshots, rank)),
         cycle=VCycle(
             resolve_jacobi_default(smoother, smoother_omega),
             n_pre=n_pre,

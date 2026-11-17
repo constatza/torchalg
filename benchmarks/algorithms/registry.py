@@ -37,6 +37,7 @@ from torchalg.preconditioners.implementations import (
 from torchalg.preconditioners.implementations._masked_factorization import dense_ic0
 from torchalg.preconditioners.implementations.amg import vcycle_amg
 from torchalg.preconditioners.implementations.amg.bootcmatch import BootCMatchPreconditioner
+from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner as SparseAdaptiveSAPreconditioner,
 )
@@ -57,9 +58,6 @@ from torchalg.sparse.preconditioners.icholesky import (
 from torchalg.sparse.preconditioners.ilu import ILUPreconditioner as SparseILUPreconditioner
 from torchalg.sparse.preconditioners.jacobi import (
     JacobiPreconditioner as SparseJacobiPreconditioner,
-)
-from torchalg.sparse.preconditioners.pod.coarsening import (
-    PODCoarseningStrategy as SparsePODCoarseningStrategy,
 )
 
 ALGORITHM_SEED = 0
@@ -154,11 +152,9 @@ def _fixed_cap(iterations: int) -> Callable[[int], int]:
 
 
 def _pod_amg(problem: Problem) -> AMGPreconditioner:
-    coarsening = SparsePODCoarseningStrategy(rank=POD_RANK)
-    coarsening.fit(problem.snapshots)
     return AMGPreconditioner(
         matrix=problem.matrix,
-        coarsening=coarsening,
+        coarsening=PODCoarseningStrategy(compute_pod_basis(problem.snapshots, POD_RANK)),
         cycle=VCycle(
             resolve_jacobi_default(None, None),
             n_pre=2,

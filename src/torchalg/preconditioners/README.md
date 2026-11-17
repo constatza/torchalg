@@ -18,17 +18,17 @@ loading (`PredictorAdapter`) is the caller's job. Ownership follows from that:
 the caller releases the predictor, and the preconditioner never calls
 `cleanup()`, so a predictor can be shared by several preconditioners.
 
-`PODCoarseningStrategy` splits construction from fitting: `__init__(rank)`
-stores the target rank without registering a basis buffer, and `fit(snapshots)`
-runs the one-shot SVD and registers it. This lets an instance exist before
-snapshot data does (e.g. a checkpointed training-job definition) and be
-reconstructed from a `state_dict` without recomputing the SVD - the resolved
-mode count is readable afterward via the `rank` property. `build_transfer`
-and `rank` both raise `RuntimeError` if called before `fit()`.
-`pod2g_preconditioner` still takes `snapshots` in one call and fits internally,
-so its public signature is unchanged.
+`PODCoarseningStrategy(basis)` is built from an already fitted basis, so an
+instance has no unfitted state: fitting is the pure function
+`compute_pod_basis`, and `rank` is the basis column count. The basis is a
+registered buffer, so a checkpointed strategy is rebuilt with
+`PODCoarseningStrategy(torch.empty(n_dofs, rank))` plus `load_state_dict`,
+without recomputing the SVD. One class serves dense and sparse-CSR matrices:
+the basis, the coarse matrix `Phi^T (A Phi)` and the transfer are dense
+whatever the layout of `A`, so there is no sparse POD sibling.
+`pod2g_preconditioner` takes `snapshots` and fits the basis internally.
 
-`compute_pod_basis`/`PODCoarseningStrategy.fit` take an optional `row_scales`
+`compute_pod_basis` takes an optional `row_scales`
 (shape `(n_samples,)`), multiplied into each snapshot row before the SVD.
 Because row scaling only touches the sample axis, `snapshots'^T snapshots' =
 sum_k row_scales_k^2 e_k e_k^T` - a weighted covariance - without ever

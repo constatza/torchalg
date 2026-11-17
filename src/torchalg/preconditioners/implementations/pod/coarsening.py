@@ -2,215 +2,107 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+import torch
 from torch import nn
 
 from torchalg.utils.dense_transfer import DenseTransferOperator
-from torchalg.utils.pod_basis import compute_pod_basis
-
-if TYPE_CHECKING:
-    import torch
 
 
 class PODCoarseningStrategy(nn.Module):
-    """Coarsening via a POD basis fit to a snapshot ensemble (POD-2G).
+    """Coarsening onto a fitted POD basis (POD-2G), for dense or sparse-CSR matrices.
 
-    Subclasses ``nn.Module`` (buffer only, no learnable parameters - same
-    rationale as ``JacobiPreconditioner``/``AMGPreconditioner``, see
-    ``docs/plan.md``) purely so the fitted basis follows ``.to(device/dtype)``.
-    Unlike ``AggregationCoarsening`` (plain class - it holds no tensor state,
-    only scalar hyperparameters), this class owns a real tensor computed once
-    at fit time, which is exactly the case ``register_buffer`` is for.
-    Assigning an ``nn.Module``-typed ``coarsening`` argument to
-    ``AMGPreconditioner._coarsening`` auto-registers it as a submodule, so no
-    changes to ``AMGPreconditioner`` are needed for this to participate in its
-    owning preconditioner's ``.to()`` calls.
+    Built from an already fitted basis ``Phi_r`` (see ``compute_pod_basis``), so an
+    instance is always ready: there is no unfitted state, and ``rank`` is always the
+    basis column count. Fitting is the pure function ``compute_pod_basis``; this class
+    only projects a fine-grid matrix onto the basis.
 
-    Builds a single reduced level using a POD basis Phi_r fit to an ensemble
-    of high-fidelity solution snapshots, instead of algebraic aggregation.
-    The Galerkin coarse matrix K_r = Phi_r^T K Phi_r (eq. 28) has shape
-    (rank x rank), with rank << n_dofs.
+    Subclasses ``nn.Module`` (one buffer, no learnable parameters) purely so the basis
+    follows ``.to(device/dtype)``: assigned to ``AMGPreconditioner._coarsening`` it is
+    auto-registered as a submodule and moves with its owning preconditioner.
 
-    Implements the same ``CoarseningStrategy`` protocol as
-    ``amg.AggregationCoarsening`` (see
-    ``preconditioners.implementations.amg.protocols``), so it plugs directly
-    into the generic ``AMGPreconditioner`` engine - this class only decides
-    *how* one coarse level is built, never how the multigrid cycle around it
-    runs. The basis itself is built via the thin-SVD "snapshot method"
-    rather than eigendecomposing a Gram matrix - see ``compute_pod_basis``
-    for the full numerical-stability rationale (avoiding the
-    condition-number squaring that a Gram-matrix formation would introduce).
+    One class serves both matrix layouts. The basis, the Galerkin coarse matrix
+    ``K_r = Phi_r^T K Phi_r`` (Nikolopoulos et al. 2022, eq. 28) and the transfer
+    operator are dense whatever the layout of ``A``; only the product ``A @ Phi_r``
+    sees ``A``, and ``torch`` forms it for a strided or a sparse-CSR ``A`` alike (an
+    SpMM for CSR). That is why POD has no sparse sibling, unlike aggregation, whose
+    prolongation and coarse matrix are themselves sparse.
 
-    The snapshot ensemble is a plain tensor - where it comes from (FEM
-    archive files today, a neural snapshot generator later) is entirely a
-    composition-layer concern; this class does not care.
-
-    Construction is split from fitting so an instance can exist before
-    snapshot data does (e.g. a training-job definition authored ahead of
-    time) and be reconstructed from a checkpoint without re-running the SVD:
-
-        >>> strategy = PODCoarseningStrategy(rank=10)
-        >>> strategy.fit(snapshots)  # one-shot closed-form SVD, not gradient descent
-        >>> strategy.is_fitted()
-        True
-
-    Reconstruction from a checkpoint must always know the exact final shape
-    up front - the resolved ``rank`` and ``n_dofs`` are both recoverable
-    without the original snapshots - so it never has to touch an
-    ``nn.Module`` buffer that is ``None`` or the wrong shape (both break
-    ``load_state_dict(strict=True)``):
-
-        >>> reloaded = PODCoarseningStrategy(rank=resolved_rank)
-        >>> reloaded.register_buffer("_basis", torch.zeros(n_dofs, resolved_rank))
-        >>> reloaded.load_state_dict(state_dict, strict=True)
+        >>> strategy = PODCoarseningStrategy(compute_pod_basis(snapshots, rank=10))
+        >>> a_coarse, transfer = strategy.build_transfer(A)  # A strided or CSR
 
     Args:
-        rank (int | float): Fixed mode count (int) or minimum cumulative
-            captured energy (float in (0, 1]) - see ``compute_pod_basis``.
-            Resolved to an actual mode count by ``fit()`` and exposed
-            afterward via the ``rank`` property.
+        basis (torch.Tensor): Fitted basis ``Phi_r``, shape ``(n_dofs, r)``, strided.
+
+    Raises:
+        ValueError: If ``basis`` is not a strided 2-D tensor with at least one column.
 
     References:
-        - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos,
-          V. (2022). AI-enhanced iterative solvers for accelerating the
-          solution of large-scale parametrized systems. arXiv:2207.02543.
+        - Nikolopoulos, S., Kalogeris, I., Stavroulakis, G., & Papadopoulos, V. (2022).
+          AI-enhanced iterative solvers for accelerating the solution of large-scale
+          parametrized systems. arXiv:2207.02543.
 
-    Complexity (``m`` = snapshot count, ``n`` = ``n_dofs``, ``r`` = ``rank``):
-        - ``fit()``: dominated by ``compute_pod_basis``'s thin SVD,
-          ``O(min(m, n) * m * n)`` — cheap when ``m << n`` (few high-fidelity
-          solves relative to DOF count, the usual regime this class targets).
-        - ``build_transfer()``: the Galerkin coarse matrix
-          ``Phi_r.T @ A @ Phi_r`` is two dense matmuls against the full
-          ``(n, n)`` ``A`` — ``O(r * n^2)`` (the ``Phi_r.T @ A`` step; the
-          following ``@ Phi_r`` is the cheaper ``O(r^2 * n)``) — this runs
-          once per fit *and* once per reconstruction from a checkpoint
-          (unlike the SVD, which only runs when fitting from scratch),
-          since it depends on ``A``, not on the fitted basis alone.
-        - Per-iteration application (``DenseTransferOperator.prolongate``/
-          ``.restrict``, i.e. ``Phi_r @ x`` / ``Phi_r.T @ x``): ``O(r * n)``,
-          cheap relative to whatever multigrid cycle wraps it — see
-          ``AMGPreconditioner``'s own complexity note for why the
-          surrounding cycle's dense fine-level work (``O(n^2)`` per V-cycle)
-          dominates the total per-iteration cost, not this basis projection.
+    Complexity (``n`` = ``n_dofs``, ``r`` = ``rank``, ``nnz`` = stored entries of ``A``):
+        - ``build_transfer()``: ``Phi_r.T @ (A @ Phi_r)``, once per matrix. Dense ``A``:
+          ``O(r * n^2)``; CSR ``A``: ``O(r * nnz + r^2 * n)``. Evaluated right to left so
+          the sparse product never needs a dense-times-sparse kernel.
+        - Per application (``prolongate``/``restrict``): ``O(r * n)``.
     """
 
-    def __init__(self, rank: float) -> None:
-        """Store the target rank; the basis is not fit until ``fit()`` runs.
+    def __init__(self, basis: torch.Tensor) -> None:
+        """Hold the fitted basis as a buffer.
 
         Args:
-            rank (int | float): Fixed mode count (int) or minimum cumulative
-                captured energy (float in (0, 1]).
+            basis (torch.Tensor): Fitted basis ``Phi_r``, shape ``(n_dofs, r)``, strided.
 
         Raises:
-            ValueError: If ``rank`` is a float outside (0, 1] - the one part
-                of rank validation that needs no snapshot data, so it is
-                checked eagerly here rather than deferred to ``fit()``.
+            ValueError: If ``basis`` is not a strided 2-D tensor with at least one column.
         """
-        if isinstance(rank, float) and not (0.0 < rank <= 1.0):
-            raise ValueError(f"rank as an energy threshold must be in (0, 1], got {rank}")
+        if basis.layout != torch.strided or basis.ndim != 2 or basis.shape[1] < 1:
+            raise ValueError(
+                "basis must be a strided (n_dofs, r) tensor with r >= 1, got layout "
+                f"{basis.layout} and shape {tuple(basis.shape)}"
+            )
         nn.Module.__init__(self)
-        self._rank = rank
-
-    def fit(
-        self,
-        snapshots: torch.Tensor,
-        row_scales: torch.Tensor | None = None,
-        inner_product: torch.Tensor | None = None,
-    ) -> None:
-        """Fit the POD basis from the snapshot ensemble (one-shot closed-form SVD).
-
-        Args:
-            snapshots (torch.Tensor): Solution snapshot ensemble, shape
-                (n_samples, n_dofs).
-            row_scales (torch.Tensor | None): Optional per-snapshot scale,
-                shape (n_samples,), forwarded to ``compute_pod_basis`` -
-                see its docstring. ``None`` (default) fits the unweighted
-                basis, unchanged from before this parameter existed.
-            inner_product (torch.Tensor | None): Optional dense SPD weight
-                ``W`` for ``W``-norm POD, forwarded to ``compute_pod_basis``
-                (dense only: ``O(n_dofs^2)`` memory, ``O(n_dofs^3)`` time).
-                ``None`` (default) fits the Euclidean basis.
-
-        Raises:
-            ValueError: If ``rank`` is an int exceeding
-                ``min(n_samples, n_dofs)`` - only knowable once snapshots
-                exist, unlike the float-range check in ``__init__`` - or if
-                ``inner_product`` is not a dense symmetric square matrix.
-            torch.linalg.LinAlgError: If ``inner_product`` is not positive
-                definite.
-        """
         self._basis: torch.Tensor
-        self.register_buffer(
-            "_basis",
-            compute_pod_basis(
-                snapshots, self._rank, row_scales=row_scales, inner_product=inner_product
-            ),
-        )
+        self.register_buffer("_basis", basis)
 
-    def is_fitted(self) -> bool:
-        """Whether ``fit()`` has registered the basis buffer.
+    @property
+    def basis(self) -> torch.Tensor:
+        """The fitted basis ``Phi_r``, shape ``(n_dofs, r)``.
 
         Returns:
-            bool: ``True`` once ``fit()`` (or a successful
-                ``load_state_dict``) has populated ``_basis``.
+            torch.Tensor: The basis buffer.
         """
-        return "_basis" in self._buffers and self._buffers["_basis"] is not None
+        return self._basis
 
     @property
     def rank(self) -> int:
-        """The resolved mode count of the fitted basis.
-
-        Unlike the constructor's ``rank`` argument (which may be a
-        fractional energy threshold), this is always the actual integer
-        column count of the fitted basis - the value a reconstruction
-        caller needs to rebuild an empty buffer of the right shape.
+        """The mode count ``r``: the coarse dimension.
 
         Returns:
-            int: Resolved mode count.
-
-        Raises:
-            RuntimeError: If called before ``fit()``.
+            int: Number of basis columns.
         """
-        if not self.is_fitted():
-            raise RuntimeError("PODCoarseningStrategy must be fit() before rank is available.")
         return self._basis.shape[1]
 
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
-        """Build the POD-reduced coarse level from the fine-grid matrix A.
+        """Build the POD-reduced coarse level from the fine-grid matrix ``A``.
 
         Args:
-            A (torch.Tensor): Fine-grid matrix (n_dofs x n_dofs). Named to
-                match the ``CoarseningStrategy`` protocol's parameter name
-                exactly (structural typing checks parameter names for
-                positional-or-keyword parameters).
+            A (torch.Tensor): Fine-grid matrix, shape ``(n_dofs, n_dofs)``, strided or
+                sparse CSR. Named to match the ``CoarseningStrategy`` protocol.
 
         Returns:
-            tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse,
-                transfer)`` - A_coarse is the Galerkin coarse matrix
-                (rank x rank); transfer applies Phi_r/Phi_r^T. Reuses
-                ``amg.DenseTransferOperator`` directly (see
-                ``preconditioners.implementations.pod``'s module docstring
-                for why this is a genuine reuse, not a coincidental name
-                collision): its prolongate/restrict (``P @ x`` /
-                ``P.T @ x``) is exactly the Phi_r/Phi_r^T pair the POD-2G
-                paper defines, with Phi_r simply passed in as ``P``.
-
-        Raises:
-            RuntimeError: If called before ``fit()``.
+            tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse, transfer)`` -
+                ``A_coarse`` is the dense Galerkin matrix ``(r, r)``; ``transfer``
+                applies ``Phi_r`` / ``Phi_r^T``.
         """
-        if not self.is_fitted():
-            raise RuntimeError("PODCoarseningStrategy must be fit() before build_transfer().")
-        A_coarse = self._basis.T @ A @ self._basis
+        A_coarse = self._basis.mT @ (A @ self._basis)
         return A_coarse, DenseTransferOperator(self._basis)
 
     def __str__(self) -> str:
         """Human-readable structural summary.
 
         Returns:
-            str: ``"POD-2G(rank=<n>)"`` once fit, or
-                ``"POD-2G(not yet fit)"`` before ``fit()`` has run.
+            str: ``"POD-2G(rank=<r>)"``.
         """
-        if not self.is_fitted():
-            return "POD-2G(not yet fit)"
         return f"POD-2G(rank={self.rank})"

@@ -29,10 +29,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.preconditioners.implementations.amg import MultigridSmoother
+from torchalg.preconditioners.implementations.amg import CoarseningStrategy, MultigridSmoother
 from torchalg.preconditioners.implementations.pod import (
     PODCoarseningStrategy,
-    compute_pod_basis,
     pod2g_preconditioner,
 )
 
@@ -42,55 +41,59 @@ from torchalg.preconditioners.implementations.pod import (
 
 
 class TestPODCoarseningStrategy:
-    def test_returns_smaller_matrix(
-        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
+    def test_matches_dense_galerkin_for_either_layout(
+        self,
+        poisson_1d: torch.Tensor,
+        poisson_1d_any_layout: torch.Tensor,
+        pod_basis: torch.Tensor,
+        pod_transfer_vectors: tuple[torch.Tensor, torch.Tensor],
     ) -> None:
-        """Coarse matrix must have fewer dofs than the fine matrix."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots)
-        a_c, _ = strategy.build_transfer(poisson_1d)
-        assert a_c.shape == (10, 10)
+        """Strided and CSR ``A`` give ``Phi^T A Phi`` and the ``Phi`` / ``Phi^T`` transfers."""
+        # Annotated to pin protocol conformance under ``ty check``.
+        strategy: CoarseningStrategy = PODCoarseningStrategy(pod_basis)
+        coarse, fine = pod_transfer_vectors
 
-    def test_coarse_matrix_spd(
-        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
-    ) -> None:
+        a_coarse, transfer = strategy.build_transfer(poisson_1d_any_layout)
+
+        torch.testing.assert_close(a_coarse, pod_basis.T @ poisson_1d @ pod_basis)
+        torch.testing.assert_close(transfer.prolongate(coarse), pod_basis @ coarse)
+        torch.testing.assert_close(transfer.restrict(fine), pod_basis.T @ fine)
+
+    def test_coarse_matrix_spd(self, poisson_1d: torch.Tensor, pod_basis: torch.Tensor) -> None:
         """Galerkin coarse matrix (Phi_r^T A Phi_r) must be SPD for SPD fine matrix."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots)
-        a_c, _ = strategy.build_transfer(poisson_1d)
+        a_c, _ = PODCoarseningStrategy(pod_basis).build_transfer(poisson_1d)
         eigenvalues = torch.linalg.eigvalsh(a_c)
         assert torch.all(eigenvalues > 0)
 
-    def test_transfer_shapes_consistent(
-        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """Prolongate/restrict sizes must match the coarse and fine matrix shapes."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots)
-        a_c, transfer = strategy.build_transfer(poisson_1d)
-        n_fine = poisson_1d.shape[0]
-        n_coarse = a_c.shape[0]
-        assert transfer.prolongate(torch.ones(n_coarse, dtype=poisson_1d.dtype)).shape == (n_fine,)
-        assert transfer.restrict(torch.ones(n_fine, dtype=poisson_1d.dtype)).shape == (n_coarse,)
+    def test_invalid_basis_raises(self, invalid_pod_basis: torch.Tensor) -> None:
+        """Only a strided ``(n_dofs, r)`` basis with ``r >= 1`` is accepted."""
+        with pytest.raises(ValueError, match="basis"):
+            PODCoarseningStrategy(invalid_pod_basis)
 
-    def test_to_dtype_moves_the_basis_buffer(self, poisson_snapshots: torch.Tensor) -> None:
-        """The fitted POD basis is a registered buffer, so ``.to()`` must move it.
+    def test_str_reports_rank(self, pod_basis: torch.Tensor) -> None:
+        """``str()`` reports the basis column count."""
+        assert str(PODCoarseningStrategy(pod_basis)) == "POD-2G(rank=10)"
 
-        Regression test for a gap flagged during Stage 6: ``PODCoarseningStrategy``
-        owns real tensor state (the fitted basis) computed once at construction,
-        the same shape of state that motivated ``nn.Module``+``register_buffer``
-        for ``JacobiPreconditioner``/``AMGPreconditioner``. Without registering
-        it as a buffer, ``.to(dtype=...)`` on an owning ``POD2GPreconditioner``
-        would silently leave the basis at its original dtype, causing a dtype
-        mismatch on the next ``apply()``.
+    def test_state_dict_round_trip(self, pod_basis: torch.Tensor) -> None:
+        """A checkpointed basis loads into a strategy built from a placeholder of its shape."""
+        reconstructed = PODCoarseningStrategy(torch.empty_like(pod_basis))
+
+        reconstructed.load_state_dict(PODCoarseningStrategy(pod_basis).state_dict())
+
+        torch.testing.assert_close(reconstructed.basis, pod_basis)
+
+    def test_to_dtype_moves_the_basis_buffer(self, pod_basis: torch.Tensor) -> None:
+        """The basis is a registered buffer, so ``.to()`` must move it.
+
+        Without registering it as a buffer, ``.to(dtype=...)`` on an owning
+        ``POD2GPreconditioner`` would silently leave the basis at its original
+        dtype, causing a dtype mismatch on the next ``apply()``.
         """
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots.double())
-        assert strategy._basis.dtype == torch.float64
+        strategy = PODCoarseningStrategy(pod_basis.double())
 
         strategy.to(dtype=torch.float32)
 
-        assert strategy._basis.dtype == torch.float32
+        assert strategy.basis.dtype == torch.float32
 
     def test_owning_amg_preconditioner_moves_the_basis_too(
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
@@ -109,116 +112,7 @@ class TestPODCoarseningStrategy:
 
         coarsening = precond._coarsening
         assert isinstance(coarsening, PODCoarseningStrategy)
-        assert coarsening._basis.dtype == torch.float32
-
-    def test_str_before_fit_says_not_yet_fit(self) -> None:
-        """`str()` before `fit()` reports the unfit state, doesn't raise."""
-        strategy = PODCoarseningStrategy(rank=10)
-        assert str(strategy) == "POD-2G(not yet fit)"
-
-    def test_str_after_fit_reports_resolved_rank(self, poisson_snapshots: torch.Tensor) -> None:
-        """`str()` after `fit()` reports the actual resolved rank."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots)
-        assert str(strategy) == f"POD-2G(rank={strategy.rank})"
-
-
-# ---------------------------------------------------------------------------
-# PODCoarseningStrategy construct/fit lifecycle
-# ---------------------------------------------------------------------------
-
-
-class TestPODCoarseningStrategyLifecycle:
-    def test_is_fitted_false_before_fit(self) -> None:
-        """A freshly constructed, unfit strategy reports ``is_fitted() is False``."""
-        strategy = PODCoarseningStrategy(rank=10)
-        assert strategy.is_fitted() is False
-
-    def test_is_fitted_true_after_fit(self, poisson_snapshots: torch.Tensor) -> None:
-        """Calling ``fit()`` registers the basis buffer and flips ``is_fitted()``."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots)
-        assert strategy.is_fitted() is True
-
-    def test_build_transfer_before_fit_raises(self, poisson_1d: torch.Tensor) -> None:
-        """``build_transfer`` on an unfit strategy must raise, not crash obscurely."""
-        strategy = PODCoarseningStrategy(rank=10)
-        with pytest.raises(RuntimeError, match="fit"):
-            strategy.build_transfer(poisson_1d)
-
-    def test_rank_before_fit_raises(self) -> None:
-        """The ``rank`` property is only meaningful once a basis has been fit."""
-        strategy = PODCoarseningStrategy(rank=10)
-        with pytest.raises(RuntimeError, match="fit"):
-            _ = strategy.rank
-
-    def test_rank_after_fixed_count_fit_matches_requested_rank(
-        self, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """A fixed-count fit resolves ``rank`` to exactly the requested count."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots)
-        assert strategy.rank == 10
-
-    def test_rank_after_energy_threshold_fit_reflects_actual_mode_count(
-        self, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """An energy-threshold fit resolves ``rank`` to the actual (smaller) mode count."""
-        strategy = PODCoarseningStrategy(rank=0.999)
-        strategy.fit(poisson_snapshots)
-        assert 0 < strategy.rank < poisson_snapshots.shape[0]
-
-    def test_out_of_range_float_rank_raises_at_construction(self) -> None:
-        """An invalid energy threshold is a self-contained error - fail at construction, not fit()."""
-        with pytest.raises(ValueError, match="energy threshold"):
-            PODCoarseningStrategy(rank=1.5)
-
-    def test_rank_exceeding_samples_raises_only_at_fit(
-        self, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """An int rank too large for the data can only be caught once data exists, at ``fit()``."""
-        strategy = PODCoarseningStrategy(rank=poisson_snapshots.shape[0] + 1)
-        with pytest.raises(ValueError, match="rank"):
-            strategy.fit(poisson_snapshots)
-
-    def test_reconstruction_from_state_dict_without_refit(
-        self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
-    ) -> None:
-        """A fitted strategy's state must be reloadable into a fresh instance without recomputing the SVD.
-
-        This is the exact reconstruction path the construct/fit split exists
-        for: a caller who knows the resolved ``rank`` and ``n_dofs`` (both
-        recoverable without the original snapshots) can rebuild the basis
-        buffer at its exact final shape and ``load_state_dict(strict=True)``
-        directly - never touching the ``None``/wrong-shape buffer edge cases
-        that motivated this design.
-        """
-        original = PODCoarseningStrategy(rank=10)
-        original.fit(poisson_snapshots)
-        state = original.state_dict()
-        resolved_rank = original.rank
-        n_dofs = poisson_snapshots.shape[1]
-
-        reconstructed = PODCoarseningStrategy(rank=resolved_rank)
-        reconstructed.register_buffer(
-            "_basis", torch.zeros(n_dofs, resolved_rank, dtype=poisson_snapshots.dtype)
-        )
-        reconstructed.load_state_dict(state)
-
-        assert reconstructed.is_fitted() is True
-        torch.testing.assert_close(reconstructed._basis, original._basis)
-
-        a_c, _ = reconstructed.build_transfer(poisson_1d)
-        assert a_c.shape == (resolved_rank, resolved_rank)
-
-    def test_fit_forwards_row_scales_to_compute_pod_basis(
-        self, poisson_snapshots: torch.Tensor, snapshot_row_scales: torch.Tensor
-    ) -> None:
-        """``fit(row_scales=...)`` must produce the same basis as calling ``compute_pod_basis`` directly."""
-        strategy = PODCoarseningStrategy(rank=10)
-        strategy.fit(poisson_snapshots, row_scales=snapshot_row_scales)
-        expected = compute_pod_basis(poisson_snapshots, rank=10, row_scales=snapshot_row_scales)
-        torch.testing.assert_close(strategy._basis, expected)
+        assert coarsening.basis.dtype == torch.float32
 
 
 # ---------------------------------------------------------------------------

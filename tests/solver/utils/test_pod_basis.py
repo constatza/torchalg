@@ -14,10 +14,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy
-from torchalg.sparse.preconditioners.pod.coarsening import (
-    PODCoarseningStrategy as SparsePODCoarseningStrategy,
-)
 from torchalg.utils.pod_basis import compute_pod_basis
 
 
@@ -220,19 +216,3 @@ class TestWeightedPodBasis:
     ) -> None:
         with pytest.raises(torch.linalg.LinAlgError):
             compute_pod_basis(poisson_snapshots, rank=5, inner_product=-pod_poisson_1d)
-
-    @pytest.mark.parametrize("strategy_cls", [PODCoarseningStrategy, SparsePODCoarseningStrategy])
-    def test_strategy_fit_forwards_the_weight(
-        self,
-        strategy_cls: type[PODCoarseningStrategy | SparsePODCoarseningStrategy],
-        poisson_snapshots: torch.Tensor,
-        pod_poisson_1d: torch.Tensor,
-    ) -> None:
-        strategy = strategy_cls(rank=5)
-
-        strategy.fit(poisson_snapshots, inner_product=pod_poisson_1d)
-
-        torch.testing.assert_close(
-            compute_pod_basis(poisson_snapshots, rank=5, inner_product=pod_poisson_1d),
-            strategy.state_dict()["_basis"],
-        )

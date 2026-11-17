@@ -32,11 +32,9 @@ if TYPE_CHECKING:
         TargetDimensionCoarsening,
     )
     from torchalg.sparse.preconditioners.amg.transfer import SparseTransferOperator
-    from torchalg.sparse.preconditioners.pod.coarsening import PODCoarseningStrategy
 
     _aggregation_coarsening: CoarseningStrategy = AggregationCoarsening()
     _target_dimension_coarsening: CoarseningStrategy = TargetDimensionCoarsening(
         target_coarse_dim=4, theta_min=0.1, theta_max=0.9, step=0.1
     )
-    _pod_coarsening_strategy: CoarseningStrategy = PODCoarseningStrategy(rank=4)
     _sparse_transfer_operator: TransferOperator = SparseTransferOperator(torch.empty(0))
