@@ -113,6 +113,35 @@ def single_dominant_row_scales(poisson_snapshots: torch.Tensor) -> torch.Tensor:
     return scales
 
 
+@pytest.fixture(params=["strided", "sparse_csr"])
+def energy_weight(request: pytest.FixtureRequest, pod_poisson_1d: torch.Tensor) -> torch.Tensor:
+    """``pod_poisson_1d`` as an SPD POD inner product, strided and sparse CSR.
+
+    Args:
+        request: Parametrization request carrying the layout name.
+        pod_poisson_1d: The 20x20 Poisson matrix fixture.
+
+    Returns:
+        torch.Tensor: ``pod_poisson_1d`` in the requested layout.
+    """
+    return pod_poisson_1d if request.param == "strided" else pod_poisson_1d.to_sparse_csr()
+
+
+@pytest.fixture
+def asymmetric_weight(pod_poisson_1d: torch.Tensor) -> torch.Tensor:
+    """``pod_poisson_1d`` with one off-diagonal entry broken, so it is not symmetric.
+
+    Args:
+        pod_poisson_1d: The 20x20 Poisson matrix fixture.
+
+    Returns:
+        torch.Tensor: Shape (20, 20), entry ``[0, 5]`` set to 100.
+    """
+    weight = pod_poisson_1d.clone()
+    weight[0, 5] = 100.0
+    return weight
+
+
 # =============================================================================
 # stable_dot_product fixtures
 # =============================================================================

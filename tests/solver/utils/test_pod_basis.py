@@ -124,8 +124,13 @@ class TestComputePodBasis:
             compute_pod_basis(poisson_snapshots, rank=10, row_scales=wrong_length)
 
 
+def _projector(basis: torch.Tensor) -> torch.Tensor:
+    """The sign-free projector ``Phi Phi^T`` a basis defines."""
+    return basis @ basis.T
+
+
 class TestWeightedPodBasis:
-    """``inner_product=W``: POD in the ``W``-norm via ``W = L L^T`` and ``Phi_r = L^{-T} V_r``."""
+    """``inner_product=W``: POD in the ``W``-norm, fitted in the snapshot subspace."""
 
     def test_identity_weight_reproduces_euclidean_basis(
         self, poisson_snapshots: torch.Tensor
@@ -134,16 +139,42 @@ class TestWeightedPodBasis:
 
         weighted = compute_pod_basis(poisson_snapshots, rank=5, inner_product=identity)
 
-        assert torch.equal(weighted, compute_pod_basis(poisson_snapshots, rank=5))
+        torch.testing.assert_close(
+            _projector(weighted), _projector(compute_pod_basis(poisson_snapshots, rank=5))
+        )
 
     def test_modes_are_weight_orthonormal_and_contiguous(
-        self, poisson_snapshots: torch.Tensor, pod_poisson_1d: torch.Tensor
+        self,
+        poisson_snapshots: torch.Tensor,
+        energy_weight: torch.Tensor,
+        pod_poisson_1d: torch.Tensor,
     ) -> None:
-        basis = compute_pod_basis(poisson_snapshots, rank=5, inner_product=pod_poisson_1d)
+        basis = compute_pod_basis(poisson_snapshots, rank=5, inner_product=energy_weight)
 
         assert basis.is_contiguous()
         gram = basis.T @ pod_poisson_1d @ basis
         torch.testing.assert_close(gram, torch.eye(5, dtype=gram.dtype))
+
+    def test_matches_the_full_cholesky_reference(
+        self,
+        poisson_snapshots: torch.Tensor,
+        energy_weight: torch.Tensor,
+        pod_poisson_1d: torch.Tensor,
+    ) -> None:
+        """Same W-projector as ``Phi = L^{-T} V_r`` from ``W = L L^T``, ``svd(S L) = U S V^T``.
+
+        Run for a strided and a CSR ``W`` against one dense reference, so both layouts
+        also give the same projector.
+        """
+        lower = torch.linalg.cholesky(pod_poisson_1d)
+        _, _, vh = torch.linalg.svd(poisson_snapshots @ lower, full_matrices=False)
+        reference = torch.linalg.solve_triangular(lower.T, vh[:5].T, upper=True)
+
+        basis = compute_pod_basis(poisson_snapshots, rank=5, inner_product=energy_weight)
+
+        torch.testing.assert_close(
+            _projector(basis) @ pod_poisson_1d, _projector(reference) @ pod_poisson_1d
+        )
 
     def test_weighted_projection_error_is_the_trailing_weighted_energy(
         self, poisson_snapshots: torch.Tensor, pod_poisson_1d: torch.Tensor
@@ -177,39 +208,37 @@ class TestWeightedPodBasis:
         assert basis.shape[1] == expected
 
     def test_row_scales_combine_with_weight(
-        self, poisson_snapshots: torch.Tensor, pod_poisson_1d: torch.Tensor
+        self,
+        poisson_snapshots: torch.Tensor,
+        pod_poisson_1d: torch.Tensor,
+        snapshot_row_scales: torch.Tensor,
     ) -> None:
-        scales = torch.linspace(0.5, 2.0, poisson_snapshots.shape[0], dtype=torch.float64)
-
         combined = compute_pod_basis(
-            poisson_snapshots, rank=5, row_scales=scales, inner_product=pod_poisson_1d
+            poisson_snapshots, rank=5, row_scales=snapshot_row_scales, inner_product=pod_poisson_1d
         )
         prescaled = compute_pod_basis(
-            poisson_snapshots * scales.unsqueeze(-1), rank=5, inner_product=pod_poisson_1d
+            poisson_snapshots * snapshot_row_scales.unsqueeze(-1),
+            rank=5,
+            inner_product=pod_poisson_1d,
         )
 
-        torch.testing.assert_close(combined @ combined.T, prescaled @ prescaled.T)
+        torch.testing.assert_close(_projector(combined), _projector(prescaled))
 
     def test_wrong_weight_shape_is_rejected(self, poisson_snapshots: torch.Tensor) -> None:
         with pytest.raises(ValueError, match="inner_product must have shape"):
             compute_pod_basis(poisson_snapshots, rank=5, inner_product=torch.eye(3))
 
-    def test_sparse_weight_is_rejected(
+    def test_coo_weight_is_rejected(
         self, poisson_snapshots: torch.Tensor, pod_poisson_1d: torch.Tensor
     ) -> None:
-        with pytest.raises(ValueError, match="dense"):
-            compute_pod_basis(
-                poisson_snapshots, rank=5, inner_product=pod_poisson_1d.to_sparse_csr()
-            )
+        with pytest.raises(ValueError, match="strided or sparse CSR"):
+            compute_pod_basis(poisson_snapshots, rank=5, inner_product=pod_poisson_1d.to_sparse())
 
     def test_asymmetric_weight_is_rejected(
-        self, poisson_snapshots: torch.Tensor, pod_poisson_1d: torch.Tensor
+        self, poisson_snapshots: torch.Tensor, asymmetric_weight: torch.Tensor
     ) -> None:
-        asymmetric = pod_poisson_1d.clone()
-        asymmetric[0, 5] = 100.0
-
         with pytest.raises(ValueError, match="symmetric"):
-            compute_pod_basis(poisson_snapshots, rank=5, inner_product=asymmetric)
+            compute_pod_basis(poisson_snapshots, rank=5, inner_product=asymmetric_weight)
 
     def test_indefinite_weight_raises_linalg_error(
         self, poisson_snapshots: torch.Tensor, pod_poisson_1d: torch.Tensor
