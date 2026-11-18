@@ -427,11 +427,13 @@ def _triangle(matrix: torch.Tensor, direction: Literal["forward", "backward"]) -
     keep = col <= row if direction == "forward" else col >= row
     counts = torch.zeros(matrix.shape[0] + 1, dtype=torch.int64, device=matrix.device)
     counts[1:] = torch.bincount(row[keep], minlength=matrix.shape[0])
+    # A row-wise filter of a valid CSR is valid; checking it would add O(nnz) to the setup.
     return torch.sparse_csr_tensor(
         torch.cumsum(counts, 0),
         col[keep],
         matrix.values()[keep],
         matrix.shape,
+        check_invariants=False,
     )
 
 

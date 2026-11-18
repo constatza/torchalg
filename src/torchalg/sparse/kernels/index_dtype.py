@@ -33,9 +33,11 @@ def compact_csr_indices(matrix: torch.Tensor) -> torch.Tensor:
         return matrix
     if max(*matrix.shape, matrix.values().numel()) > INT32_INDEX_LIMIT:
         return matrix
+    # Same structure as the valid input; checking it would add O(nnz) to the setup.
     return torch.sparse_csr_tensor(
         matrix.crow_indices().to(torch.int32),
         matrix.col_indices().to(torch.int32),
         matrix.values(),
         matrix.shape,
+        check_invariants=False,
     )

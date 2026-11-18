@@ -199,5 +199,8 @@ def fit_candidates_csr(
     row_counts = torch.bincount(rows, minlength=entries.shape[0])
     crow = torch.zeros(entries.shape[0] + 1, dtype=torch.long, device=rows.device)
     crow[1:] = torch.cumsum(row_counts, 0)
-    q = torch.sparse_csr_tensor(crow, cols[order], values[order], entries.shape)
+    # Sorted rows with ascending columns form a valid CSR; checking it would add O(nnz).
+    q = torch.sparse_csr_tensor(
+        crow, cols[order], values[order], entries.shape, check_invariants=False
+    )
     return q, entries.coarse
