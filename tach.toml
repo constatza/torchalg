@@ -126,7 +126,7 @@ depends_on = ["torchalg.sparse.kernels.algebraic_distance", "torchalg.sparse.ker
 # function to the dense tree - never imported by it.
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg._gauss_seidel"
-depends_on = ["torchalg.utils.csr_index", "torchalg.sparse.kernels.triangular"]
+depends_on = ["torchalg.utils.csr_index", "torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.triangular"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.amg._jacobi_omega"
 depends_on = ["torchalg.sparse.kernels.diagonal", "torchalg.sparse.kernels.rowscale", "torchalg.utils.spectral"]

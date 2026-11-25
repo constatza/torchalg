@@ -21,6 +21,7 @@ from torchalg.preconditioners.base import MatrixSetupPreconditioner
 from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.kernels import triangular as triangular_kernel
 from torchalg.sparse.preconditioners.amg import smoothers
+from torchalg.sparse.preconditioners.amg._gauss_seidel import SweepProducts
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner,
     adaptive_sa_hierarchy,
@@ -145,12 +146,25 @@ class TestSetupStagesPrepareEachMatrixOnce:
         matrices: list[torch.Tensor] = []
         original = smoothers.prepare_csr_gauss_seidel
 
-        def recording(matrix: torch.Tensor):
+        def recording(matrix: torch.Tensor, products: SweepProducts):
             matrices.append(matrix)
-            return original(matrix)
+            return original(matrix, products)
 
         monkeypatch.setattr(smoothers, "prepare_csr_gauss_seidel", recording)
         return matrices
+
+    @pytest.fixture
+    def built_products(self, monkeypatch: pytest.MonkeyPatch) -> list[SweepProducts]:
+        """Strict-product kinds handed to the Gauss-Seidel preparer, in call order."""
+        products_seen: list[SweepProducts] = []
+        original = smoothers.prepare_csr_gauss_seidel
+
+        def recording(matrix: torch.Tensor, products: SweepProducts):
+            products_seen.append(products)
+            return original(matrix, products)
+
+        monkeypatch.setattr(smoothers, "prepare_csr_gauss_seidel", recording)
+        return products_seen
 
     @pytest.fixture
     def built_operators(self, monkeypatch: pytest.MonkeyPatch) -> list[torch.Tensor]:
@@ -196,6 +210,19 @@ class TestSetupStagesPrepareEachMatrixOnce:
         assert len({id(matrix) for matrix in built_matrices}) == len(built_matrices)
         assert built_operators
         assert len({id(p) for p in built_operators}) == len(built_operators)
+
+    def test_setup_stages_apply_explicit_strict_products(
+        self, poisson_1d_large_csr: torch.Tensor, built_products: list[SweepProducts]
+    ) -> None:
+        """Setup relaxation keeps explicit products, so setups are bit-identical across kinds."""
+        adaptive_sa_hierarchy(
+            poisson_1d_large_csr, num_candidates=3, candidate_iters=2, max_levels=3, max_coarse=4
+        )
+        BootstrapAMGPreconditioner(
+            k_r=6, eta=2, n_bootstrap_cycles=2, nu=3, caliber=3, max_levels=3, max_coarse=4, seed=5
+        ).setup(poisson_1d_large_csr)
+        assert built_products
+        assert set(built_products) == {SweepProducts.EXPLICIT}
 
     def test_setup_runs_do_not_share_prepared_state(
         self,

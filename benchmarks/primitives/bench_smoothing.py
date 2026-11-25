@@ -23,7 +23,10 @@ from torchalg.preconditioners.implementations.amg.smoothers import (
     JacobiSmoother as DenseJacobiSmoother,
 )
 from torchalg.sparse.kernels.triangular import PreparedTriangularSolve, level_schedule
-from torchalg.sparse.preconditioners.amg._gauss_seidel import prepare_csr_gauss_seidel
+from torchalg.sparse.preconditioners.amg._gauss_seidel import (
+    SweepProducts,
+    prepare_csr_gauss_seidel,
+)
 from torchalg.sparse.preconditioners.amg.smoothers import JacobiSmoother as SparseJacobiSmoother
 
 FIXED_OMEGA = 0.7
@@ -138,7 +141,7 @@ def test_sparse_symmetric_gauss_seidel(
     zero_guess: torch.Tensor,
     record: Record,
 ) -> None:
-    prepared = prepare_csr_gauss_seidel(csr_matrix_)
+    prepared = prepare_csr_gauss_seidel(csr_matrix_, SweepProducts.FROM_SOLVES)
     smoothed = prepared.smooth(rhs, zero_guess, SWEEPS)
     _assert_reduces_residual(csr_matrix_, rhs, zero_guess, smoothed)
     if case.n <= DENSE_N_CAP:
@@ -149,7 +152,7 @@ def test_sparse_symmetric_gauss_seidel(
         Level.PRIMITIVE,
         "smoothing.symmetric_gauss_seidel.prepare",
         params,
-        lambda: prepare_csr_gauss_seidel(csr_matrix_),
+        lambda: prepare_csr_gauss_seidel(csr_matrix_, SweepProducts.FROM_SOLVES),
         repeats=GAUSS_SEIDEL_REPEATS,
     )
     record(

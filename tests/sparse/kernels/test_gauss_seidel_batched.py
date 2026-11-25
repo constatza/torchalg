@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from torchalg.sparse.preconditioners.amg._gauss_seidel import prepare_csr_gauss_seidel
+from torchalg.sparse.preconditioners.amg._gauss_seidel import (
+    SweepProducts,
+    prepare_csr_gauss_seidel,
+)
 
 if TYPE_CHECKING:
     from tests.sparse.conftest import DenseSymmetricGaussSeidel
@@ -29,7 +32,7 @@ class TestSparseSymmetricGaussSeidelBatchedColumns:
         n = poisson_1d_csr.shape[0]
         x = torch.randn(n, _NUM_COLUMNS, dtype=poisson_1d_csr.dtype)
         rhs = torch.randn(n, _NUM_COLUMNS, dtype=poisson_1d_csr.dtype)
-        prepared = prepare_csr_gauss_seidel(poisson_1d_csr)
+        prepared = prepare_csr_gauss_seidel(poisson_1d_csr, SweepProducts.FROM_SOLVES)
 
         batched = prepared.smooth(rhs, x, _ITERATIONS)
 
@@ -49,5 +52,7 @@ class TestSparseSymmetricGaussSeidelBatchedColumns:
         rhs = torch.randn(n, _NUM_COLUMNS, dtype=poisson_1d_dense.dtype)
 
         expected = dense_symmetric_gauss_seidel(poisson_1d_dense, x, rhs, _ITERATIONS)
-        actual = prepare_csr_gauss_seidel(poisson_1d_csr).smooth(rhs, x, _ITERATIONS)
+        actual = prepare_csr_gauss_seidel(poisson_1d_csr, SweepProducts.FROM_SOLVES).smooth(
+            rhs, x, _ITERATIONS
+        )
         torch.testing.assert_close(actual, expected)

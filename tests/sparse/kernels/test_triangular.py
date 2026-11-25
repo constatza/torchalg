@@ -438,3 +438,83 @@ class TestPrepareTriangularSolve:
         solver = prepare_triangular_solve(zero_pivot_csr, "forward")
 
         assert isinstance(solver, PreparedTriangularSolve)
+
+
+@pytest.fixture
+def prepared_solve_builds(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count ``PreparedTriangularSolve`` constructions made by the kernel module."""
+    import torchalg.sparse.kernels.triangular as kernel
+
+    builds: list[int] = []
+
+    class CountingPreparedSolve(PreparedTriangularSolve):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            builds.append(1)
+            super().__init__(*args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+    monkeypatch.setattr(kernel, "PreparedTriangularSolve", CountingPreparedSolve)
+    return builds
+
+
+@pytest.fixture
+def differentiable_csr(poisson_2d_csr: torch.Tensor) -> torch.Tensor:
+    """``poisson_2d_csr`` whose stored values require grad."""
+    return torch.sparse_csr_tensor(
+        poisson_2d_csr.crow_indices(),
+        poisson_2d_csr.col_indices(),
+        poisson_2d_csr.values().clone().requires_grad_(True),
+        poisson_2d_csr.shape,
+        check_invariants=False,
+    )
+
+
+class TestLibraryTriangularSolveAutogradFallback:
+    """A target that requires grad goes through a level-scheduled fallback."""
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_fallback_is_built_once_for_a_constant_triangle(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_target: torch.Tensor,
+        direction: Literal["forward", "backward"],
+        prepared_solve_builds: list[int],
+    ) -> None:
+        solver = LibraryTriangularSolve(poisson_2d_csr, direction)
+
+        for _ in range(2):
+            solver.solve(poisson_2d_target.clone().requires_grad_(True))
+
+        assert len(prepared_solve_builds) == 1
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_cached_fallback_gradients_match_level_scheduled(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_target: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        solver = LibraryTriangularSolve(poisson_2d_csr, direction)
+        oracle = PreparedTriangularSolve(poisson_2d_csr, direction)
+        expected_target = poisson_2d_target.clone().requires_grad_(True)
+        oracle.solve(expected_target).square().sum().backward()
+        expected = expected_target.grad
+        assert expected is not None
+
+        for _ in range(2):
+            target = poisson_2d_target.clone().requires_grad_(True)
+            solver.solve(target).square().sum().backward()
+
+            assert target.grad is not None
+            assert torch.equal(target.grad, expected)
+
+    def test_fallback_is_rebuilt_per_call_for_a_differentiable_triangle(
+        self, differentiable_csr: torch.Tensor, prepared_solve_builds: list[int]
+    ) -> None:
+        """The graph to ``values`` is captured at construction, so each call needs its own."""
+        solver = LibraryTriangularSolve(differentiable_csr, "forward")
+        target = torch.ones(differentiable_csr.shape[0], dtype=differentiable_csr.dtype)
+
+        for _ in range(2):
+            assert solver.solve(target).requires_grad
+
+        assert len(prepared_solve_builds) == 2

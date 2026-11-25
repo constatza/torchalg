@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from tests.solver.conftest import DispatchCounter
+from tests.support.dispatch_counter import DispatchCounter
 from torchalg.strategies.convergence import CombinedToleranceCriterion
 from torchalg.strategies.norms import energy_norm, euclidean_norm
 

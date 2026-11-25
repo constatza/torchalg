@@ -21,7 +21,7 @@ from torchalg.preconditioners.base import Placement
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
 from torchalg.utils.csr_index import compact_csr_indices
 
-from ._gauss_seidel import PreparedSymmetricGaussSeidel, prepare_csr_gauss_seidel
+from ._gauss_seidel import PreparedSymmetricGaussSeidel, SweepProducts, prepare_csr_gauss_seidel
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 
 if TYPE_CHECKING:
@@ -151,7 +151,9 @@ class GaussSeidelSmoother:
     ``preconditioners.implementations.amg.smoothers.GaussSeidelSmoother``.
     No factorization step: each sweep is a direct triangular solve against
     ``A``'s own entries; ``prepare`` splits ``A`` and prepares the vendor
-    triangular solves once.
+    triangular solves once. Its sweeps take their strict-triangle products from
+    the solves (``SweepProducts.FROM_SOLVES``), within rounding of the explicit
+    products.
 
     Attributes:
         placement (Placement): ``SEQUENTIAL_SWEEP``; each sweep is a chain of dependent
@@ -169,7 +171,7 @@ class GaussSeidelSmoother:
         Returns:
             PreparedSymmetricGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
         """
-        return prepare_csr_gauss_seidel(A)
+        return prepare_csr_gauss_seidel(A, SweepProducts.FROM_SOLVES)
 
 
 class GaussSeidelMemo:
@@ -187,7 +189,11 @@ class GaussSeidelMemo:
     It is a ``MultigridSmoother``: compatible relaxation, test-vector
     relaxation and the setup cycle all bind it to level matrices with ``prepare``,
     so that protocol verb is memoized rather than renamed; the result is the
-    same kind of frozen object a fresh ``GaussSeidelSmoother().prepare(A)`` returns.
+    same kind of frozen object a fresh ``GaussSeidelSmoother().prepare(A)`` returns,
+    except that its sweeps apply the strict-triangle products explicitly
+    (``SweepProducts.EXPLICIT``): setup coarsening and fitting amplify the
+    ``1e-16`` rounding of products read off the solves to ``1e-10`` in the
+    hierarchy, so explicit products keep every setup bit-identical.
     """
 
     placement = Placement.SEQUENTIAL_SWEEP
@@ -210,7 +216,7 @@ class GaussSeidelMemo:
         if entry is None:
             # The matrix is stored beside its preparation so its id cannot be reused
             # while the entry lives.
-            entry = (A, prepare_csr_gauss_seidel(A))
+            entry = (A, prepare_csr_gauss_seidel(A, SweepProducts.EXPLICIT))
             self._prepared[key] = entry
         return entry[1]
 

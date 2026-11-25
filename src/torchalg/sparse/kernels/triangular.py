@@ -23,6 +23,9 @@ from torch import nn
 
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
 
+ZERO_PIVOT_TOL = 1e-14
+"""Diagonal magnitude at or below which a triangular row counts as a zero pivot (frozen)."""
+
 
 @dataclass(frozen=True, slots=True)
 class LevelSchedule:
@@ -335,7 +338,7 @@ class PreparedTriangularSolve(nn.Module):
         self,
         matrix: torch.Tensor,
         direction: Literal["forward", "backward"] = "forward",
-        diagonal_tol: float = 1e-14,
+        diagonal_tol: float = ZERO_PIVOT_TOL,
         *,
         schedule: LevelSchedule | None = None,
         row_index: torch.Tensor | None = None,
@@ -488,7 +491,11 @@ class LibraryTriangularSolve(nn.Module):
     level-scheduled loop. It has no zero-pivot freeze and no ``active`` masking, so build
     it through ``prepare_triangular_solve``, which only picks it when every pivot is
     nonzero. Gradients are not supported by the library call: a target that requires
-    grad is solved by a lazily built ``PreparedTriangularSolve`` instead.
+    grad is solved by a ``PreparedTriangularSolve`` on the same triangle instead. That
+    fallback is built on the first such call and reused, because its level schedule is an
+    ``O(n + nnz)`` host recurrence. A triangle that itself requires grad is the exception:
+    the fallback captures its values, and so its graph, at construction, so it is rebuilt
+    on every call.
 
     Cost:
         One ``solve``, ``k`` columns, ``T`` the stored triangle with
@@ -518,6 +525,16 @@ class LibraryTriangularSolve(nn.Module):
         self.triangle: torch.Tensor
         self.register_buffer("triangle", _triangle(matrix, direction), persistent=False)
         self._direction: Literal["forward", "backward"] = direction
+        # A submodule once built, so ``.to()`` moves it with the triangle.
+        self._autograd_fallback: PreparedTriangularSolve | None = None
+
+    def _fallback(self) -> PreparedTriangularSolve:
+        """The level-scheduled solve on ``triangle`` that carries gradients."""
+        if self.triangle.requires_grad:
+            return PreparedTriangularSolve(self.triangle, self._direction)
+        if self._autograd_fallback is None:
+            self._autograd_fallback = PreparedTriangularSolve(self.triangle, self._direction)
+        return self._autograd_fallback
 
     def solve(self, target: torch.Tensor) -> torch.Tensor:
         """Solve the triangular system for ``target`` (``(n,)`` or ``(n, k)``).
@@ -529,7 +546,7 @@ class LibraryTriangularSolve(nn.Module):
             torch.Tensor: Solution, same shape as ``target``.
         """
         if target.requires_grad or self.triangle.requires_grad:
-            return PreparedTriangularSolve(self.triangle, self._direction).solve(target)
+            return self._fallback().solve(target)
         # The library call misreads a strided target (a column view of a block): copy it.
         column = target if target.ndim == 2 else target.unsqueeze(-1)
         column = column.contiguous()
@@ -580,7 +597,7 @@ call (gfx1030, rocm7.2). Callers never branch on the device; they call
 def prepare_triangular_solve(
     matrix: torch.Tensor,
     direction: Literal["forward", "backward"] = "forward",
-    diagonal_tol: float = 1e-14,
+    diagonal_tol: float = ZERO_PIVOT_TOL,
 ) -> TriangularSolver:
     """Prepare the substitution registered for ``matrix``'s device type.
 

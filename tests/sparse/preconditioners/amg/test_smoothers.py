@@ -84,11 +84,6 @@ def rhs_block(dense_matrix: torch.Tensor, test_seed: int) -> torch.Tensor:
     )
 
 
-def _even_rows(matrix: torch.Tensor) -> torch.Tensor:
-    """Masked-sweep row subset: only masked sweeps build level schedules."""
-    return torch.arange(0, matrix.shape[0], 2)
-
-
 @pytest.fixture
 def count_level_schedules(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Counter list; ``len`` is the number of ``level_schedule`` calls made by Gauss-Seidel."""
@@ -302,7 +297,7 @@ class TestPreparedGaussSeidel:
         GaussSeidelSmoother().prepare(csr_matrix).smooth(rhs, x0, 2)
         torch.testing.assert_close(x0, before, rtol=0, atol=0)
 
-    def test_schedules_are_built_once_across_many_sweeps(
+    def test_no_sweep_builds_a_level_schedule(
         self,
         csr_matrix: torch.Tensor,
         rhs: torch.Tensor,
@@ -310,47 +305,27 @@ class TestPreparedGaussSeidel:
         count_level_schedules: list[int],
     ) -> None:
         prepared = GaussSeidelSmoother().prepare(csr_matrix)
-        assert count_level_schedules == []  # unmasked sweeps run on the vendor solves
         x = x0
         for _ in range(4):
             x = prepared.smooth(rhs, x, 3)
         prepared.smooth_from_zero(rhs, 3)
-        assert count_level_schedules == []
-        masked_rows = torch.arange(0, csr_matrix.shape[0], 2)
-        prepared.smooth(rhs, x0, 2, rows=masked_rows)
-        built_by_first_masked_sweep = len(count_level_schedules)
-        assert built_by_first_masked_sweep == 2  # forward and backward, independently
-        prepared.smooth(rhs, x0, 2, rows=masked_rows)
-        assert len(count_level_schedules) == built_by_first_masked_sweep
+        prepared.smooth(rhs, x0, 2, rows=torch.arange(0, csr_matrix.shape[0], 2))
+        assert count_level_schedules == []  # masked sweeps also run on the vendor solves
 
 
 class TestGaussSeidelMemo:
     """Stage-scoped cache: each distinct matrix is prepared once per stage."""
 
-    def test_repeated_calls_on_one_matrix_build_schedules_once(
-        self,
-        csr_matrix: torch.Tensor,
-        rhs: torch.Tensor,
-        x0: torch.Tensor,
-        count_level_schedules: list[int],
+    def test_repeated_calls_on_one_matrix_share_one_preparation(
+        self, csr_matrix: torch.Tensor
     ) -> None:
         stage = smoothers.GaussSeidelMemo()
-        for _ in range(5):
-            stage.prepare(csr_matrix).smooth(rhs, x0, 1, rows=_even_rows(csr_matrix))
-        assert len(count_level_schedules) == 2
+        first = stage.prepare(csr_matrix)
+        assert all(stage.prepare(csr_matrix) is first for _ in range(4))
 
-    def test_distinct_matrices_are_prepared_separately(
-        self,
-        csr_matrix: torch.Tensor,
-        rhs: torch.Tensor,
-        x0: torch.Tensor,
-        count_level_schedules: list[int],
-    ) -> None:
+    def test_distinct_matrices_are_prepared_separately(self, csr_matrix: torch.Tensor) -> None:
         stage = smoothers.GaussSeidelMemo()
-        other = csr_matrix.clone()
-        stage.prepare(csr_matrix).smooth(rhs, x0, 1, rows=_even_rows(csr_matrix))
-        stage.prepare(other).smooth(rhs, x0, 1, rows=_even_rows(other))
-        assert len(count_level_schedules) == 4
+        assert stage.prepare(csr_matrix) is not stage.prepare(csr_matrix.clone())
 
     def test_matches_prepared_smoother(
         self, csr_matrix: torch.Tensor, rhs: torch.Tensor, x0: torch.Tensor
@@ -364,17 +339,10 @@ class TestGaussSeidelMemo:
     def test_stages_do_not_share_state(
         self,
         csr_matrix: torch.Tensor,
-        rhs: torch.Tensor,
-        x0: torch.Tensor,
-        count_level_schedules: list[int],
     ) -> None:
-        smoothers.GaussSeidelMemo().prepare(csr_matrix).smooth(
-            rhs, x0, 1, rows=_even_rows(csr_matrix)
+        assert smoothers.GaussSeidelMemo().prepare(csr_matrix) is not (
+            smoothers.GaussSeidelMemo().prepare(csr_matrix)
         )
-        smoothers.GaussSeidelMemo().prepare(csr_matrix).smooth(
-            rhs, x0, 1, rows=_even_rows(csr_matrix)
-        )
-        assert len(count_level_schedules) == 4
 
 
 class TestResolveJacobiDefault:

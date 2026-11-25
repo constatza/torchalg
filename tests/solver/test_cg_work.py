@@ -18,7 +18,7 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from tests.solver.conftest import DispatchCounter
+from tests.support.dispatch_counter import DispatchCounter
 from torchalg import flexible_cg, pcg
 from torchalg.base import DEFAULT_RTOL
 from torchalg.strategies.orthogonalization import DEFAULT_M_MAX

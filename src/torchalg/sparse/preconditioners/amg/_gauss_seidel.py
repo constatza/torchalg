@@ -1,31 +1,49 @@
 """Sparse-CSR symmetric Gauss-Seidel, prepared once per matrix.
 
-No factorization step: each sweep is a direct triangular solve against
-``A``'s own entries, split by position relative to the diagonal - see
-``docs/plan.md``'s "AMG/POD smoother constraint" section. Mirrors the dense
-``_relaxation.py``'s D/L/U convention: forward sweep solves ``(D + L)
-x_new = rhs - U @ x_old``, backward solves ``(D + U) x_new = rhs - L @
-x_old``, one iteration = one forward sweep followed by one backward sweep.
+No factorization step: each sweep is a direct triangular solve against ``A``'s own
+entries, split by position relative to the diagonal. Mirrors the dense
+``_relaxation.py``'s D/L/U convention: forward sweep solves ``(D + L) x_new = rhs - U @
+x_old``, backward solves ``(D + U) x_new = rhs - L @ x_old``, one iteration = one forward
+sweep followed by one backward sweep.
 
-``prepare_csr_gauss_seidel`` does every computation on the matrix once and returns
-the frozen ``PreparedSymmetricGaussSeidel``; ``smooth``/``smooth_from_zero`` then
-only sweep. An unmasked sweep is two vendor triangular solves
-(``kernels.triangular.prepare_triangular_solve``, resolved per device through
-``TRIANGULAR_SOLVER_BY_DEVICE``) plus two strict-triangle SpMVs. A masked sweep
-(``rows=``, compatible relaxation) has no vendor form, so it runs on the level-scheduled
-``PreparedTriangularSolve``, built on the first masked sweep of a matrix. Callers that
-relax the same matrix many times (smoothers, compatible relaxation, adaptive setup
-stages) hold one prepared object per matrix instead of rebuilding per call.
+``prepare_csr_gauss_seidel`` does every computation on the matrix once and returns the
+frozen ``PreparedSymmetricGaussSeidel``; ``smooth``/``smooth_from_zero`` then only sweep.
+Every sweep is a vendor triangular solve (``kernels.triangular.prepare_triangular_solve``,
+resolved per device through ``TRIANGULAR_SOLVER_BY_DEVICE``) on int32-indexed triangles.
+
+The caller picks how a sweep gets its strict-triangle products (``SweepProducts``).
+With ``FROM_SOLVES`` and every pivot nonzero, each solve satisfies its triangular system,
+so the products come from the solves themselves: ``(D + L) x_f = rhs - U x_old`` gives
+``rhs - L x_f = U x_old + D x_f``, and ``(D + U) x_b = t_b`` gives ``U x_b = t_b - D x_b``.
+A call then applies ``U`` once (to the incoming iterate) and no strict product per step;
+the results agree with the explicit products to rounding (about ``1e-16``). ``EXPLICIT``
+applies ``L`` and ``U`` every sweep. Setup stages (compatible relaxation, adaptive and
+bootstrap test-vector relaxation, their setup cycles) use ``EXPLICIT``: their coarsening
+and fitting amplify that rounding to ``1e-10`` in the built hierarchy, so explicit
+products keep setups bit-identical to the textbook sweep. The solve-time smoother uses
+``FROM_SOLVES``, where the rounding stays at ``1e-16``. A zero pivot freezes its row to
+the target, which breaks both identities, so such a matrix always applies the products
+explicitly.
+
+A masked sweep (``rows=``, the adaptive smoothed-aggregation general stage) runs on
+triangles whose frozen rows are identity rows, solved for the target ``current`` on those
+rows - the same construction as the dense ``_relaxation._prepare_sweep``, so it also goes
+through the vendor solve. Callers that relax the same matrix many times (smoothers,
+compatible relaxation, adaptive setup stages) hold one prepared object per matrix
+instead of rebuilding per call.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Literal
 
 import torch
 
+from torchalg.sparse.kernels.diagonal import sparse_diagonal
 from torchalg.sparse.kernels.triangular import (
-    PreparedTriangularSolve,
+    ZERO_PIVOT_TOL,
     TriangularSolver,
     _expand_row_index,
     _require_csr,
@@ -61,30 +79,82 @@ def _strict_triangle(
     return compact_csr_indices(triangle)
 
 
-@dataclass(slots=True)
-class _MaskedSolves:
-    """Level-scheduled sweeps of one matrix, built when its first masked sweep needs them.
+def _frozen_row_solve(
+    matrix: torch.Tensor, direction: Literal["forward", "backward"], frozen: torch.Tensor
+) -> TriangularSolver:
+    """Vendor substitution of ``matrix``'s ``direction`` triangle with ``frozen`` identity rows.
 
-    Mutable on purpose: the schedules cost a host pass over the matrix, which the many
-    matrices that are only ever swept unmasked must not pay.
+    A frozen row keeps only a unit diagonal, so the solve returns its target there and the
+    other rows read that value through their own entries - PyAMG's
+    ``gauss_seidel_indexed`` skip, expressed as one triangular system.
+
+    Cost: ``I = O(nnz log nnz)`` for the filtered triangle (one coalesce), plus the
+    library's analysis inside each solve; built once per masked call and reused by every
+    step of that call.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
+        direction (Literal["forward", "backward"]): Lower (forward) or upper (backward) half.
+        frozen (torch.Tensor): Boolean mask of rows replaced by identity rows, shape ``(n,)``.
+
+    Returns:
+        TriangularSolver: Substitution for the filtered triangle.
+    """
+    row = _expand_row_index(matrix)
+    col = matrix.col_indices().to(torch.int64)
+    in_triangle = col <= row if direction == "forward" else col >= row
+    keep = in_triangle & ~frozen[row]
+    frozen_rows = torch.nonzero(frozen).flatten()
+    values = matrix.values()
+    # The kept entries and the identity rows never share a row, so ``coalesce`` only sorts.
+    triangle = torch.sparse_coo_tensor(
+        torch.stack([torch.cat([row[keep], frozen_rows]), torch.cat([col[keep], frozen_rows])]),
+        torch.cat([values[keep], values.new_ones(frozen_rows.numel())]),
+        matrix.shape,
+        check_invariants=False,
+    )
+    return prepare_triangular_solve(
+        compact_csr_indices(triangle.coalesce().to_sparse_csr()), direction
+    )
+
+
+class SweepProducts(Enum):
+    """How a sweep gets the strict-triangle products ``L x`` and ``U x``.
 
     Attributes:
-        matrix (torch.Tensor): The sparse CSR matrix ``A``.
-        solves (tuple[PreparedTriangularSolve, PreparedTriangularSolve] | None): The
-            ``(D + L)`` and ``(D + U)`` substitutions, ``None`` until first use.
+        FROM_SOLVES: Read them off the triangular solves (solve-time smoothing).
+        EXPLICIT: Apply ``L`` and ``U`` every sweep (setup stages, bit-identical setups).
     """
 
-    matrix: torch.Tensor
-    solves: tuple[PreparedTriangularSolve, PreparedTriangularSolve] | None = None
+    FROM_SOLVES = auto()
+    EXPLICIT = auto()
 
-    def get(self) -> tuple[PreparedTriangularSolve, PreparedTriangularSolve]:
-        """Return the forward and backward substitutions, building them on first call."""
-        if self.solves is None:
-            self.solves = (
-                PreparedTriangularSolve(self.matrix, "forward"),
-                PreparedTriangularSolve(self.matrix, "backward"),
-            )
-        return self.solves
+
+@dataclass(frozen=True, slots=True)
+class _ProductsFromSolves:
+    """Every pivot is nonzero and ``FROM_SOLVES`` was chosen: sweeps skip strict products.
+
+    Attributes:
+        diagonal (torch.Tensor): ``D``, the diagonal of ``A``, shape ``(n,)``.
+    """
+
+    diagonal: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class _ExplicitProducts:
+    """Sweeps apply ``L`` and ``U``: ``EXPLICIT`` was chosen or some pivot is zero.
+
+    Attributes:
+        frozen (torch.Tensor): Boolean mask of the zero-pivot rows, which freeze to the
+            target, shape ``(n,)``; all ``False`` when every pivot is nonzero.
+    """
+
+    frozen: torch.Tensor
+
+
+def _as_column(diagonal: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
+    return diagonal.unsqueeze(-1) if like.ndim == 2 else diagonal
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,33 +166,34 @@ class PreparedSymmetricGaussSeidel:
 
     Attributes:
         matrix (torch.Tensor): The sparse CSR matrix ``A``, shape ``(n, n)``, with
-            int32 indices where it fits (used only for residuals).
+            int32 indices where it fits.
         upper (torch.Tensor): Strict upper triangle ``U`` as sparse CSR.
-        lower (torch.Tensor): Strict lower triangle ``L`` as sparse CSR.
+        lower (torch.Tensor): Strict lower triangle ``L`` as sparse CSR (explicit and
+            masked sweeps only).
         forward (TriangularSolver): ``(D + L)`` substitution of the forward sweep.
         backward (TriangularSolver): ``(D + U)`` substitution of the backward sweep.
-        masked (_MaskedSolves): Level-scheduled substitutions for masked sweeps.
+        products (_ProductsFromSolves | _ExplicitProducts): How a sweep gets its
+            strict-triangle products.
 
     Cost:
         One symmetric iteration (forward plus backward sweep), ``k`` columns,
         ``z = nnz``, ``V = 8`` bytes per ``float64``, ``w`` the index width,
         ``lv_f`` and ``lv_b`` the dependency levels of ``D + L`` and ``D + U``.
-        Unmasked, vendor substitutions: ``W = (4z + 2n)k`` (two triangular
-        solves ``2(z + n)``, two strict-triangle SpMVs ``2(z - n)``, two
-        right-hand-side updates ``2n``), ``Q = 2z(V + w)`` plus ``O(Vnk)``
-        vector passes, ``D = lv_f + lv_b`` (each solve is a recurrence over
-        its levels), ``L = 4`` and ``S = 0``. This is the algorithmic minimum.
-        Masked (``rows=``), level-scheduled: the same ``W`` up to the frozen
-        rows, but ``D = lv_f + lv_b`` with one small gather, segment sum and
-        divide per level, so ``L = O(lv_f + lv_b)`` and ``Q`` is the
-        touched-row bytes plus those per-kernel temporaries. Launches, not
-        flops, dominate it, and it is the slower path.
-        Roofline: ``W/Q`` is about 0.16 flop per byte unmasked (memory-bound)
-        and an order of magnitude lower masked.
-        Work-depth: ``W/D = (4z + 2n)k / (lv_f + lv_b)``, about ``10^3`` at
+        Products from the solves: ``W = (2(z + n) + 4n)k`` per iteration (two
+        triangular solves plus three ``O(n)`` vector updates), plus ``(z - n)k``
+        once per ``smooth`` call for ``U x``; ``smooth_from_zero`` applies no
+        strict product. ``Q = (z + n)(V + w)`` per iteration plus ``O(Vnk)``
+        vector passes, ``D = lv_f + lv_b`` (each solve is a recurrence over its
+        levels), ``L`` a small constant and ``S = 0``.
+        Explicit products (setup stages, zero pivots) or ``rows=``: two
+        strict-triangle products per iteration, ``W = (4z + 2n)k``,
+        ``Q = 2z(V + w)`` per iteration, one product fewer for
+        ``smooth_from_zero``; a masked call also builds its two identity-row
+        triangles once (``O(z log z)`` index work).
+        Roofline: ``W/Q`` is about 0.16 flop per byte (memory-bound).
+        Work-depth: ``W/D = (2z + 6n)k / (lv_f + lv_b)``, about ``10^3`` at
         ``nnz/n`` near 37, far below SpMV and Jacobi: the depth, not the
-        flops, limits parallel speed-up. The cost is independent of ``n^2``
-        (unlike the dense-backed sweep).
+        flops, limits parallel speed-up.
     """
 
     matrix: torch.Tensor
@@ -130,7 +201,7 @@ class PreparedSymmetricGaussSeidel:
     lower: torch.Tensor
     forward: TriangularSolver
     backward: TriangularSolver
-    masked: _MaskedSolves
+    products: _ProductsFromSolves | _ExplicitProducts
 
     def residual(self, rhs: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """Return ``rhs - A x`` with the bound level matrix.
@@ -154,11 +225,9 @@ class PreparedSymmetricGaussSeidel:
     ) -> torch.Tensor:
         """Apply ``steps`` symmetric Gauss-Seidel iterations from ``x``.
 
-        Cost: per iteration two vendor triangular solves and two strict-triangle
-        SpMVs, ``W = (4 nnz + 2n)k`` at the algorithmic minimum, with launches independent
-        of the dependency depth. A masked call executes the level-scheduled substitution
-        instead, one gather, segment sum and divide per level (class ``Cost:`` has the
-        depth and launch terms).
+        Cost: per iteration two vendor triangular solves; ``U x`` once per call with products
+        from the solves, two strict-triangle products per iteration otherwise (class
+        ``Cost:``).
 
         Args:
             rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
@@ -174,13 +243,13 @@ class PreparedSymmetricGaussSeidel:
         """
         if steps == 0:
             return x.clone()
-        active = None
         if rows is not None:
-            active = torch.zeros(self.matrix.shape[0], dtype=torch.bool, device=self.matrix.device)
-            active[rows] = True
-        for _ in range(steps):
-            x = self._sweep_pair(rhs, rhs - self.upper @ x, x, active)
-        return x
+            return self._smooth_masked(rhs, x, steps, rows)
+        match self.products:
+            case _ProductsFromSolves(diagonal=diagonal):
+                return self._exact_sweeps(rhs, self.upper @ x, steps, diagonal)
+            case _ExplicitProducts():
+                return self._explicit_sweeps(rhs, x, steps)
 
     def smooth_from_zero(self, rhs: torch.Tensor, steps: int) -> torch.Tensor:
         """Apply ``steps`` symmetric iterations from the zero guess.
@@ -197,46 +266,108 @@ class PreparedSymmetricGaussSeidel:
         """
         if steps == 0:
             return torch.zeros_like(rhs)
-        x = self._sweep_pair(rhs, rhs, None, None)
-        return x if steps == 1 else self.smooth(rhs, x, steps - 1)
+        match self.products:
+            case _ProductsFromSolves(diagonal=diagonal):
+                return self._exact_sweeps(rhs, None, steps, diagonal)
+            case _ExplicitProducts():
+                x = self.backward.solve(rhs - self.lower @ self.forward.solve(rhs))
+                return self._explicit_sweeps(rhs, x, steps - 1)
 
-    def _sweep_pair(
+    def _exact_sweeps(
         self,
         rhs: torch.Tensor,
-        forward_target: torch.Tensor,
-        current: torch.Tensor | None,
-        active: torch.Tensor | None,
+        upper_x: torch.Tensor | None,
+        steps: int,
+        diagonal: torch.Tensor,
     ) -> torch.Tensor:
-        """One forward sweep followed by one backward sweep.
+        """Sweep pairs whose strict-triangle products come from the solves.
 
         Args:
-            rhs (torch.Tensor): Right-hand side of the system.
-            forward_target (torch.Tensor): ``rhs - U @ x_old`` for the forward solve.
-            current (torch.Tensor | None): ``x_old``; needed only to freeze inactive rows.
-            active (torch.Tensor | None): Boolean mask of updatable rows, or ``None``.
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            upper_x (torch.Tensor | None): ``U x_old``, or ``None`` for the zero iterate.
+            steps (int): Number of symmetric iterations, at least one.
+            diagonal (torch.Tensor): ``D``, shape ``(n,)``.
 
         Returns:
-            torch.Tensor: Iterate after the forward and backward sweeps.
+            torch.Tensor: Iterate after ``steps`` iterations.
         """
-        if active is None:
-            x = self.forward.solve(forward_target)
-            return self.backward.solve(rhs - self.lower @ x)
-        forward, backward = self.masked.get()
-        x = forward.solve(forward_target, active=active, current=current)
-        return backward.solve(rhs - self.lower @ x, active=active, current=x)
+        d = _as_column(diagonal, rhs)
+        x = rhs
+        for _ in range(steps):
+            if upper_x is None:
+                # ``rhs - L x_f = D x_f`` when ``x_old = 0``.
+                x_forward = self.forward.solve(rhs)
+                backward_target = d * x_forward
+            else:
+                # ``rhs - L x_f = U x_old + D x_f``.
+                x_forward = self.forward.solve(rhs - upper_x)
+                backward_target = torch.addcmul(upper_x, d, x_forward)
+            x = self.backward.solve(backward_target)
+            # ``U x_b = t_b - D x_b``: the next forward sweep's strict product.
+            upper_x = torch.addcmul(backward_target, d, x, value=-1)
+        return x
+
+    def _explicit_sweeps(self, rhs: torch.Tensor, x: torch.Tensor, steps: int) -> torch.Tensor:
+        """Sweep pairs with explicit strict-triangle products.
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape.
+            steps (int): Number of symmetric iterations.
+
+        Returns:
+            torch.Tensor: Iterate after ``steps`` iterations.
+        """
+        for _ in range(steps):
+            x_forward = self.forward.solve(rhs - self.upper @ x)
+            x = self.backward.solve(rhs - self.lower @ x_forward)
+        return x
+
+    def _smooth_masked(
+        self, rhs: torch.Tensor, x: torch.Tensor, steps: int, rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Sweep only ``rows``; every other row keeps its value from ``x``.
+
+        Inactive rows and zero-pivot rows become identity rows of both triangles; the
+        target on an inactive row is its current value, on a zero-pivot row the sweep's own
+        target (the unmasked freeze).
+
+        Args:
+            rhs (torch.Tensor): Right-hand side, shape ``(n,)`` or ``(n, k)``.
+            x (torch.Tensor): Current iterate, same shape.
+            steps (int): Number of symmetric iterations, at least one.
+            rows (torch.Tensor): Indices of the updatable rows.
+
+        Returns:
+            torch.Tensor: Iterate after ``steps`` iterations.
+        """
+        inactive = torch.ones(self.matrix.shape[0], dtype=torch.bool, device=x.device)
+        inactive[rows] = False
+        frozen = inactive
+        if isinstance(self.products, _ExplicitProducts):
+            frozen = frozen | self.products.frozen
+        forward = _frozen_row_solve(self.matrix, "forward", frozen)
+        backward = _frozen_row_solve(self.matrix, "backward", frozen)
+        keep = _as_column(inactive, x)
+        for _ in range(steps):
+            x_forward = forward.solve(torch.where(keep, x, rhs - self.upper @ x))
+            x = backward.solve(torch.where(keep, x_forward, rhs - self.lower @ x_forward))
+        return x
 
 
-# Rounding differs from the level-scheduled substitution it replaced (adaptive SA applications
-# differ by up to 2e-10 on lap2d n = 10 000, the size at which the old tree differs from itself
-# between thread counts); hierarchy sizes and PCG iterations are identical.
-def prepare_csr_gauss_seidel(matrix: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+def prepare_csr_gauss_seidel(
+    matrix: torch.Tensor, products: SweepProducts
+) -> PreparedSymmetricGaussSeidel:
     """Split ``matrix`` into its strict triangles and prepare both vendor substitutions.
 
     Cost: ``W = O(nnz)`` for the split and the library's triangular analysis, ``Q`` one
-    pass over the stored entries, no level schedule (``L = 1``).
+    pass over the stored entries, no level schedule (``L = 1``), ``S`` a few reads (the
+    pivot test in ``prepare_triangular_solve``, and here for ``FROM_SOLVES``).
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
+        products (SweepProducts): How a sweep gets its strict-triangle products; a zero
+            pivot forces ``EXPLICIT``.
 
     Returns:
         PreparedSymmetricGaussSeidel: Reusable sweeps over ``matrix``.
@@ -245,13 +376,20 @@ def prepare_csr_gauss_seidel(matrix: torch.Tensor) -> PreparedSymmetricGaussSeid
         ValueError: If ``matrix`` is not sparse CSR.
     """
     _require_csr(matrix, "prepare_csr_gauss_seidel")
+    # int32 triangles: the CPU library solve otherwise narrows int64 indices on every call.
+    compact = compact_csr_indices(matrix)
     row_index = _expand_row_index(matrix)
     col = matrix.col_indices()
+    diagonal = sparse_diagonal(matrix)
+    zero_pivot = diagonal.abs() <= ZERO_PIVOT_TOL
+    sweep_products: _ProductsFromSolves | _ExplicitProducts = _ExplicitProducts(zero_pivot)
+    if products is SweepProducts.FROM_SOLVES and not bool(zero_pivot.any()):
+        sweep_products = _ProductsFromSolves(diagonal)
     return PreparedSymmetricGaussSeidel(
-        matrix=compact_csr_indices(matrix),
+        matrix=compact,
         upper=_strict_triangle(row_index, matrix, col > row_index),
         lower=_strict_triangle(row_index, matrix, col < row_index),
-        forward=prepare_triangular_solve(matrix, "forward"),
-        backward=prepare_triangular_solve(matrix, "backward"),
-        masked=_MaskedSolves(matrix),
+        forward=prepare_triangular_solve(compact, "forward"),
+        backward=prepare_triangular_solve(compact, "backward"),
+        products=sweep_products,
     )

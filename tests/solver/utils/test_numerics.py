@@ -14,7 +14,7 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from tests.solver.conftest import DispatchCounter
+from tests.support.dispatch_counter import DispatchCounter
 from torchalg.utils.numerics import (
     _overflow_scale_threshold,
     both_finite,
