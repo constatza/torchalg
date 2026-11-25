@@ -1,6 +1,6 @@
 """Numerically stable primitives shared by every iterative solver.
 
-Ported from ``neuralls.domain.solver.utils.numerics`` (see ``docs/plan.md``)
+Ported from ``neuralls.domain.solver.utils.numerics``
 with ``numpy``/``scipy`` operations translated to their ``torch`` equivalents.
 The algorithm and tolerance are unchanged from the reference; the only
 deliberate deviation is that the overflow threshold below is derived from
@@ -15,9 +15,9 @@ identical for the ``float64`` case this repo runs by default (see
 dtypes too.
 
 ``compute_curvature``/``check_breakdown`` (a curvature-based CG breakdown
-gate, ported from the reference's own dead code — see ``docs/plan.md``'s
-"``ConjugateGradientSolver._iterate_step`` does not gate on
-``compute_curvature``'s breakdown flag" for why it was never wired in) and
+gate, ported from the reference's own dead code, never wired in because
+the reference never calls it either: it divides by the curvature unconditionally and
+lets breakdown surface in ``check_solution_validity``) and
 the ``breakdown_tol`` parameter that was threaded through the entire solver
 API to feed it were removed entirely rather than left as unreachable dead
 code: nothing in this package ever called them, and a parameter accepted by

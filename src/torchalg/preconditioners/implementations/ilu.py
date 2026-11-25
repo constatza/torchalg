@@ -3,8 +3,9 @@
 Dense masked port of the reference's `scipy.sparse.linalg.spilu`-backed
 factorization: a natural-ordering, no-pivoting ILU(0) (Saad Algorithm 10.4)
 computed on a dense ``torch.Tensor`` clone of ``A``, restricted to ``A``'s
-original non-zero pattern - see ``_masked_factorization.py`` and
-``docs/plan.md``'s dense-only directive.
+original non-zero pattern - see ``_masked_factorization.py``;
+the dense tree stays dense-only; sparse CSR lives in the separate
+``torchalg.sparse`` tree.
 
 Capability reduction from the reference, disclosed explicitly: the
 reference's `scipy.sparse.linalg.spilu` accepted `drop_tol`/`fill_factor`,

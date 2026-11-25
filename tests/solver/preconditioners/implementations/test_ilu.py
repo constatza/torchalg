@@ -4,8 +4,7 @@ Tests the dense masked incomplete LU factorization preconditioner to
 ensure:
 - Its combined ``L``/``U`` factorization approximately satisfies
   ``A ≈ LU``, checked against ``scipy.sparse.linalg.spilu`` as an
-  independent test-only oracle (see ``docs/plan.md``'s dense-only
-  directive: scipy stays a legitimate *test* dependency for exactly this
+  independent test-only oracle (scipy stays a legitimate *test* dependency for exactly this
   kind of ground-truth comparison, even though ``src/`` is scipy-free).
 - Accepts dense matrices and produces finite, correctly shaped output.
 - Preserves the working dtype.

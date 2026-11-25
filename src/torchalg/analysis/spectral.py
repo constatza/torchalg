@@ -29,8 +29,9 @@ Root cause of that failure (see the reference's
    reported against a cube/soft-sphere stiffness matrix.
 
 This module replaces the approximate iterative estimator with the exact
-textbook definition instead: ``torchalg`` is dense-only throughout (see
-``docs/plan.md``), so there is no matrix-free constraint forcing an
+textbook definition instead: ``torchalg`` is dense-only throughout
+(sparse CSR lives in the separate ``torchalg.sparse`` tree), so there is no matrix-free
+constraint forcing an
 iterative approximation in the first place. For a real symmetric matrix,
 the 2-norm condition number is ``|lambda_max| / |lambda_min|`` computed
 from the *full* eigendecomposition (Golub & Van Loan, "Matrix

@@ -1,16 +1,15 @@
 """Preconditioner interface and base abstractions.
 
-Ported from ``neuralls.domain.solver.preconditioners.base`` (see
-``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``.
+Ported from ``neuralls.domain.solver.preconditioners.base``
+with ``NDArray`` translated to ``torch.Tensor``.
 
 ``Preconditioner`` stays a plain ``ABC`` here — just the interface. Concrete
 subclasses that actually own precomputed tensor state (``JacobiPreconditioner``
 onward: ILU/IC0/ICholesky/AMG/POD in later stages) additionally inherit
 ``torch.nn.Module`` and use ``register_buffer`` for that state, purely to
 reuse ``nn.Module``'s ``.to(device/dtype)`` propagation — never
-``register_parameter``, since none of this is learnable/autograd-tracked. See
-``docs/plan.md``'s "``nn.Module`` usage" architecture decision for the full
-rationale. This module itself has no ``nn.Module`` dependency: the interface
+``register_parameter``, since none of this is learnable/autograd-tracked. This module
+itself has no ``nn.Module`` dependency: the interface
 is framework-agnostic by design.
 
 Design Principles:
@@ -60,7 +59,7 @@ import torch
 class Placement(Enum):
     """What bounds one application of a preconditioner, hence which device suits it.
 
-    The cost audit (``docs/implementations/cost-model.md``) shows that the three
+    The cost audit shows that the three
     classes behave differently on an accelerator, so the solver chooses the device
     from this closed set rather than moving everything to CUDA:
 

@@ -20,8 +20,9 @@ strategies, or preconditioners.
 - `VectorHistory` stores immutable `torch.Tensor` sequences, always moved to
   CPU the moment each vector is added (`add`/`prepend`), regardless of the
   solve device - this bounds device memory during a `FULL`-traced solve to
-  the algorithm's own working set; see
-  `docs/bug-full-trace-history-exhausts-gpu-memory.md`. `to_tensor()` stacks
+  the algorithm's own working set (keeping every iterate on the solve device grows
+  device memory as `O(3 * iterations * n)`, which exhausted GPU memory in `FULL`
+  trace mode). `to_tensor()` stacks
   the (CPU) sequence.
 - `IterationHistory` is a small mutable container that applies trace-mode
   policy by appending to private lists (amortized `O(1)` per iteration); its

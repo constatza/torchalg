@@ -3,8 +3,8 @@
 Run: ``uv run python -m benchmarks.throughput.device_crossover`` on a machine with a GPU.
 The CPU side uses the paths torchalg picks there (int32 CSR SpMV, MKL triangular solve);
 the GPU side uses COO SpMV and the level-scheduled triangular solve, because on gfx1030
-with the rocm7.2 wheels CSR SpMV and the CSR library triangular solve fault (see
-``docs/implementations/device-and-gpu.md``). Times are medians in milliseconds, with the
+with the rocm7.2 wheels CSR SpMV and the CSR library triangular solve fault. Times are
+medians in milliseconds, with the
 GPU synchronized around every call.
 
 Ops:

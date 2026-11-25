@@ -2,8 +2,9 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg.adaptive`` (dense; kept unmodified
-for comparison - see ``docs/plan.md``'s "Correction: dense and sparse must
-be separate implementations, not an internal branch"). Follows the dense
+for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). Follows the dense
 module's port of PyAMG's ``adaptive_sa_solver`` step by step
 (``_initial_setup_stage`` = Algorithm 3, ``_general_setup_stage`` =
 Algorithm 4 of Brezina et al. 2005) with every format-committing piece

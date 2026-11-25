@@ -10,7 +10,7 @@ dataclasses, plus the structural Protocols used to type-check against them:
   ``IterationContext``).
 - ``config``: Solver configuration (``SolverConfig``, ``SolverParams``).
 - ``diagnostics``: One-shot termination facts (``TerminationDiagnostics``),
-  replacing the reference's ``EventLog`` (see ``docs/plan.md``).
+  replacing the reference's ``EventLog`` (see ``torchalg.models.diagnostics`` for why).
 - ``protocols``: Structural typing contracts (``HasVectors``,
   ``HasDirectionHistory``, ``SolverProtocol``) - imported directly from
   ``torchalg.models.protocols``, not re-exported here (matches the

@@ -1,4 +1,4 @@
-"""LS/LSR interpolation and caliber-bounded set-selection tests (Bootstrap AMG, docs/bootstrap-amg.md Sec. 3).
+"""LS/LSR interpolation and caliber-bounded set-selection tests (Bootstrap AMG, [STATUS14] Sec. 3).
 
 Fixtures live in this module, matching ``test_algebraic_distance.py``'s and
 ``test_compatible_relaxation.py``'s precedent: each ``implementations/amg/``

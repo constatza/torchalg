@@ -3,8 +3,9 @@
 Dense masked port of the reference's numba-JIT IC(0) kernel: computes
 updates only on entries within the original sparsity pattern of the lower
 triangle of ``A`` (the IC(0) property), using plain dense ``torch.Tensor``
-operations instead of a sparse/JIT kernel - see ``_masked_factorization.py``
-and ``docs/plan.md``'s dense-only directive.
+operations instead of a sparse/JIT kernel - see ``_masked_factorization.py``;
+the dense tree stays dense-only; sparse CSR lives in the separate
+``torchalg.sparse`` tree.
 """
 
 from __future__ import annotations

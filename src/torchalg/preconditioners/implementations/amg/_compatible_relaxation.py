@@ -3,11 +3,10 @@
 Pure functions with no coarsening-strategy state, following the module
 style of ``_aggregation.py``: the HCR relaxation operator, its
 convergence-rate estimate, and the CR coarsening outer loop, each a
-transcription of one piece of ``docs/bootstrap-amg.md`` Sec. 2.1.
+transcription of one piece of [AD11]'s compatible-relaxation coarsening.
 
-``docs/bootstrap-amg.md`` Sec. 2.1 is the authoritative spec (transcribed
-directly from the primary papers, not a secondary summary); every equation
-number cited below refers to it.
+Transcribed directly from the primary papers below, not a secondary summary;
+every equation number cited refers to the paper it is listed under.
 
 References:
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). An algebraic

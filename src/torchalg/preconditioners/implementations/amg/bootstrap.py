@@ -1,14 +1,13 @@
 """Bootstrap AMG (BAMG): coarsening strategy, bootstrap setup loop, preconditioner preset.
 
-Wires together the pure kernels of ``_compatible_relaxation.py`` (Sec. 2.1),
-``_algebraic_distance.py`` (Sec. 2.2) and ``_least_squares.py`` (Sec. 3) into
+Wires together the pure kernels of ``_compatible_relaxation.py`` ([AD11] Algorithm 1),
+``_algebraic_distance.py`` ([AD11] Sec. 4) and ``_least_squares.py`` ([STATUS14] Sec. 3) into
 a working ``CoarseningStrategy``/preconditioner pair, following
-``docs/bootstrap-amg.md`` Sec. 5's setup algorithm and the "prebuilt
+the Bootstrap AMG setup of [BAMG11]/[STATUS14] and the "prebuilt
 hierarchy" preset pattern ``adaptive.py`` already established for alpha-SA.
 
-``docs/bootstrap-amg.md`` Sec. 5 is the authoritative per-level/outer-loop
-recipe; every section number cited below refers to it (or, for MGE, to
-Sec. 4.2, implemented in ``_mge.py`` and opt-in via ``k_e`` - see below).
+Every section number cited below refers to the paper it is tagged with. MGE
+is implemented in ``_mge.py`` and opt-in via ``k_e`` - see below.
 
 References:
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). Bootstrap
@@ -20,8 +19,7 @@ References:
       algebraic multigrid: status report, open problems, and outlook. Numer.
       Math. Theor. Meth. Appl. 8(1). arXiv:1406.1819. Cited as [STATUS14].
 
-Scope decisions (v1, matching ``docs/amg-integration-architecture.md`` Sec.
-3.2/Sec. 7). Each is tagged against what [BAMG11]/[STATUS14] themselves say:
+Scope decisions (v1). Each is tagged against what [BAMG11]/[STATUS14] themselves say:
 **mandatory** means the paper describes no sanctioned variant without it, so
 skipping it is a correctness gap, not a style choice; **optional** means the
 paper itself presents the omitted piece as an add-on enhancement over an
@@ -31,7 +29,7 @@ knob, not to silently hardcode one setting.
 - **Multigrid eigensolver (MGE, [STATUS14] Sec. 4) - RESOLVED: implemented
   in ``_mge.py``, opt-in via ``k_e``.** Bootstrap cycles improve test
   vectors by running the current AMG cycle on ``A x = 0`` alone by default
-  ([STATUS14] Sec. 4, confirmed - ``docs/bamg/status14_raw.md``: "the
+  ([STATUS14] Sec. 4, confirmed: "the
   algorithm begins with relaxation applied to the homogeneous system,
   A_l x_l = 0, (4.1)... this overall process is then repeated with the
   current AMG method applied in addition to (or replacing) relaxation");
@@ -70,7 +68,7 @@ knob, not to silently hardcode one setting.
   directly against [STATUS14] Sec. 4 (arXiv:1406.1819) - that part is
   solid. **What is NOT confirmed:** that ``omega_kappa`` (the LS/LSR fit
   weight this ``T`` now feeds) is actually supposed to use this same
-  ``T_l``. That specific link rests only on ``docs/bootstrap-amg.md``'s own
+  ``T_l``. That specific link rests only on an earlier secondary
   transcription, attributed to [BAMG11] Sec. 2/eq. 4.1 - a paper that could
   not be fetched from any mirror tried this session. A direct [STATUS14]
   check of ``omega_kappa`` itself found it described only as ``||v||_A^2 =
@@ -78,7 +76,7 @@ knob, not to silently hardcode one setting.
   no statement linking this T operator to the omega_kappa weights" in that
   paper - not a contradiction (STATUS14's own tables are MGE-free, so it may
   simply not need the fuller formula), but not confirmation either, and
-  ``docs/bootstrap-amg.md`` has already been shown wrong once this session
+  that transcription has already been shown wrong once
   on an unverifiable [BAMG11]-attributed claim (the LSR single-vector
   schedule). TODO: get [BAMG11] itself (or other independent confirmation)
   before treating this wiring as more than plausible; until then it is
@@ -88,7 +86,7 @@ knob, not to silently hardcode one setting.
   **Known limitation, not a deviation from [BAMG11]/[STATUS14]:** at small
   problem sizes with ``k_e`` comparable to ``k_r`` (e.g. ``k_r=k_e=8`` on
   ``N=31`` 1D Poisson), the enriched test-vector set can occasionally push
-  compatible-relaxation coarsening (Sec. 2.1) to a degenerate single-level
+  compatible-relaxation coarsening ([AD11] Algorithm 1) to a degenerate single-level
   outcome (measured: 2 of 8 setup seeds at ``N=31``; seed-sensitive, not
   deterministic - CR's own coarsening ratio is inherently less predictable
   than the papers' geometric mesh-doubling coarsening, a pre-existing
@@ -115,7 +113,7 @@ knob, not to silently hardcode one setting.
   as the independent-set loop proceeds - this module already matches that.
 - **Every-level test-vector improvement (RESOLVED: no longer finest-only).**
   [STATUS14] Sec. 4's own description of the base bootstrap loop
-  (independent of MGE, confirmed directly - ``docs/bamg/status14_raw.md``),
+  (independent of MGE, confirmed directly),
   improves the test vectors on *every* level; the paper offers no
   finest-only variant as a sanctioned alternative, so this was a mandatory
   fix, not an optional knob. A prior read of this module attributed the
@@ -147,7 +145,7 @@ knob, not to silently hardcode one setting.
   fix closes for a single vector's row selection would otherwise resurface
   one level up, across vectors.
 
-  An earlier version of this module instead read [docs/bootstrap-amg.md]'s
+  An earlier version of this module instead read a secondary transcription's
   (itself claiming to transcribe [BAMG11] 2011, a PDF that could not be
   independently fetched or verified in this session - every mirror tried
   failed) description of a "single TV with the largest weight" schedule,
@@ -255,7 +253,7 @@ confirmed, since [BAMG11] could not be fetched this session."""
 
 
 class BAMGCoarsening:
-    """One coarse level of Bootstrap AMG (``docs/bootstrap-amg.md`` Sec. 5's per-level block).
+    """One coarse level of Bootstrap AMG ([BAMG11]/[STATUS14] per-level setup block).
 
     This CR-based coarsening (and its sparse sibling,
     ``torchalg.sparse.preconditioners.amg.bootstrap.BAMGCoarsening``) is this
@@ -270,18 +268,17 @@ class BAMGCoarsening:
 
     Stateful ``CoarseningStrategy``: holds the current test vectors keyed by
     matrix dimension (coarsening strictly shrinks ``n``, so the dimension
-    identifies the level - ``docs/amg-integration-architecture.md`` Sec.
-    3.2's dimension-keyed-dict pattern). ``BootstrapSetup`` relaxes/improves
+    identifies the level, so a dimension-keyed dict suffices). ``BootstrapSetup`` relaxes/improves
     the stored vectors between levels and bootstrap cycles via
     ``set_test_vectors``; ``build_transfer`` reads them, coarsens, and
     stores the restricted vectors under the coarse dimension for the next
     level.
 
-    One ``build_transfer(A)`` call implements CR-coarsening (Sec. 2.1,
-    guided by the algebraic-distance strength graph of Sec. 2.2 - see the
+    One ``build_transfer(A)`` call implements CR-coarsening ([AD11]
+    Algorithm 1, guided by the [AD11] Sec. 4 algebraic-distance strength graph - see the
     module docstring's guidance-graph note), per-F-point interpolatory-set
-    selection (Sec. 3.3), LS/LSR fitting (Sec. 3.1-3.2) and the Galerkin
-    coarse operator - everything in Sec. 5's per-level block except the
+    selection ([AD11] Sec. 4.3), LS/LSR fitting ([STATUS14] eq. 3.1-3.2) and the Galerkin
+    coarse operator - everything in the per-level setup block except the
     leading ``eta``-sweep relaxation, which is ``BootstrapSetup``'s
     responsibility (the same relaxed vectors also seed the CR loop itself).
 
@@ -305,15 +302,15 @@ class BAMGCoarsening:
             ``(n, k)``.
         relaxation (MultigridSmoother): Smoother CR binds to the level matrix
             once per coarsening (e.g. ``GaussSeidelSmoother()``).
-        nu (int): CR sweeps per stage (Sec. 2.1 default ``5``).
-        delta (float): CR stopping tolerance (Sec. 2.1 default ``0.7``).
-        theta_ad (float): Algebraic-distance strength threshold (Sec. 2.2
-            default ``0.5``).
+        nu (int): CR sweeps per stage (default ``5``).
+        delta (float): CR stopping tolerance (default ``0.7``).
+        theta_ad (float): Algebraic-distance strength threshold
+            (default ``0.5``).
         caliber (int): Maximum interpolatory-set size ``c``.
         gamma (float): Interpolatory-set caliber-growth penalization
-            exponent (Sec. 3.3 default ``1.5``).
-        use_lsr (bool): Apply the LSR residual correction (Sec. 3.2) before
-            fitting; plain LS (Sec. 3.1) if ``False``.
+            exponent (default ``1.5``).
+        use_lsr (bool): Apply the LSR residual correction ([STATUS14] eq. 3.2)
+            before fitting; plain LS ([STATUS14] eq. 3.1) if ``False``.
         depth (int): Algebraic-distance search depth ``d``; the LS-ring
             candidate neighborhood uses ``d_LS = d + 2`` (eq. 4.5).
         draw (Callable[[int], torch.Tensor] | None): Uniform ``[0, 1)``
@@ -730,7 +727,7 @@ class BAMGCoarsening:
 
 
 class BootstrapAMGPreconditioner(AMGPreconditioner):
-    """Bootstrap AMG preconditioner (BAMG), ``docs/bootstrap-amg.md``.
+    """Bootstrap AMG preconditioner (BAMG), [BAMG11]/[STATUS14].
 
     This codebase's dense-recommended Bootstrap AMG - see ``BAMGCoarsening``
     above for why its sparse sibling (``torchalg.sparse.preconditioners.amg
@@ -742,7 +739,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     V(1,1)-cycle with weighted-Jacobi smoothing by default and a
     pseudo-inverse coarse solve - a fixed symmetric linear operator, so plain
     PCG is valid (same reasoning as ``AdaptiveSAPreconditioner``). Setup cost
-    is several multiples of a classical-AMG setup (Sec. 8), so it pays off
+    is several multiples of a classical-AMG setup, so it pays off
     when one matrix is reused across many solves (call ``setup()`` once,
     then ``apply()`` many times). Compatible-relaxation
     coarsening keeps symmetric Gauss-Seidel unconditionally: CR's relaxation

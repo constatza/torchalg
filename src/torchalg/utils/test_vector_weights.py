@@ -1,9 +1,9 @@
 """Per-test-vector weighting for Bootstrap AMG, shared by the dense and sparse trees.
 
 Promoted out of ``preconditioners.implementations.amg._algebraic_distance``
-(see ``docs/plan.md``'s "Correction: dense and sparse must be separate
-implementations" - same "one legitimate shared edge" precedent as
-``torchalg.utils.spectral``'s ``approximate_spectral_radius``): the only
+(same "one legitimate shared edge" precedent as
+``torchalg.utils.spectral``'s ``approximate_spectral_radius``, which both trees
+import while the sparse tree never imports the dense one): the only
 format-dependent operations here are ``matrix @ test_vectors``/``T @
 test_vectors``, plain matrix-vector products that dispatch correctly
 whether ``matrix``/``T`` are dense or sparse CSR, so the function itself
@@ -32,7 +32,7 @@ def test_vector_weights(
 
     ``omega_kappa = <T v^(kappa), v^(kappa)> / <A v^(kappa), v^(kappa)>``.
     ``T = C^T C`` is the composite-interpolation Gram operator ``P_l^H P_l``
-    (``docs/bootstrap-amg.md`` Sec. 4.2) of the composite interpolation ``C``;
+    ([STATUS14] Sec. 4) of the composite interpolation ``C``;
     ``<T v, v> = ||C v||^2``, so the weights take ``C`` and never form the
     ``(n, n)`` matrix ``T``. ``composite = None`` uses the ``T = I``
     reduction to a pure ``A``-energy weighting, valid "on the finest level,

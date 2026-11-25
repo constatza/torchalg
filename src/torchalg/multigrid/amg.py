@@ -1,9 +1,9 @@
 """AMG preconditioner.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.amg``
-(see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``.
+with ``NDArray`` translated to ``torch.Tensor``.
 Promoted from ``torchalg.preconditioners.implementations.amg.amg`` into this
-shared, format-agnostic package (see ``docs/plan.md``) - nothing in this
+shared, format-agnostic package - nothing in this
 class commits to dense or sparse storage; see ``torchalg.multigrid``'s
 package docstring.
 

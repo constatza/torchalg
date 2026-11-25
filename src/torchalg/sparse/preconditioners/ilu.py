@@ -1,13 +1,11 @@
 """Incomplete LU (ILU(0)) preconditioner, sparse-CSR sibling.
 
 Sparse-CSR counterpart of ``preconditioners.implementations.ilu
-.ILUPreconditioner`` (dense; kept unmodified for comparison - see
-``docs/plan.md``'s "Correction: dense and sparse must be separate
-implementations, not an internal branch"). Row-oriented ("left-looking")
+.ILUPreconditioner`` (dense; kept unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). Row-oriented ("left-looking")
 level-scheduled factorization - see ``sparse.preconditioners.ic0``'s module
-docstring and ``docs/plan.md``'s "Correction: the row-oriented recurrence
-sparse_ic0/sparse_ilu0 actually need" section for the shared design
-rationale.
+docstring for the shared design rationale.
 
 Everything that depends only on the stored structure (schedule, gather
 positions, the split into the two solve triangles) is planned once by

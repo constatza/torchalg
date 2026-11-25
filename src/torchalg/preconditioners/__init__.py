@@ -1,7 +1,7 @@
 """Preconditioner abstractions and implementations for iterative solvers.
 
-Ported from ``neuralls.domain.solver.preconditioners`` (see
-``docs/plan.md``), populated incrementally, stage by stage:
+Ported from ``neuralls.domain.solver.preconditioners`` and
+populated incrementally, stage by stage:
 
 - ``base``: ``Preconditioner`` interface, ``PreconditionerContext``,
   ``BindableInputs``, ``LinearPreconditioner``, ``NonLinearPreconditioner``
@@ -17,8 +17,8 @@ Ported from ``neuralls.domain.solver.preconditioners`` (see
 
 Deliberately no re-exports here (unlike ``models``/``strategies``): ``base``
 and ``implementations`` are separate ``tach`` modules with different
-``depends_on`` lists (see ``docs/plan.md``'s "Dependency architecture
-(tach)" section) - the DIP boundary between the preconditioner *interface*
+``depends_on`` lists (see ``docs/dependency-architecture.md``) - the DIP boundary between
+the preconditioner *interface*
 and its *concrete implementations* is real, not just documented, so this
 package's own ``__init__.py`` stays free of any import that would collapse
 it. Import directly from the submodule you need, e.g.::

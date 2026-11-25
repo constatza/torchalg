@@ -2,8 +2,8 @@
 
 A leaf primitive - no standalone breakdown/convergence story of its own,
 consumed by the SA-AMG algorithm in
-``torchalg.sparse.preconditioners.amg.aggregation``. See ``docs/plan.md``'s
-"Correction: strength-of-connection/aggregation must be sparse-native too".
+``torchalg.sparse.preconditioners.amg.aggregation``. Sparse-native like
+strength of connection and aggregation, so the fine-grid matrix is never densified.
 """
 
 from __future__ import annotations

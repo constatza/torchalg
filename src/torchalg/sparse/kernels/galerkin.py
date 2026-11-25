@@ -1,8 +1,8 @@
 """Sparse Galerkin coarse-operator formation for AMG coarsening.
 
 Promotes ``benchmarks.sparse_dense.operations``' already-validated
-``form_galerkin_spgemm`` into production (see
-``docs/plan.md``): it computes ``A_coarse = P.T @ A @ P`` without ever
+``form_galerkin_spgemm`` into production:
+it computes ``A_coarse = P.T @ A @ P`` without ever
 materializing the fine-grid ``(n, n)`` matrix densely.
 
 ``form_sparse_sparse`` (AMG shape, both operands sparse) returns a sparse

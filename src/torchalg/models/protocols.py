@@ -1,11 +1,10 @@
 """Structural type protocols for solver state fields and solver objects.
 
 ``HasVectors``/``HasDirectionHistory`` are ported from
-``neuralls.domain.solver.models.protocols`` (see ``docs/plan.md``) with
+``neuralls.domain.solver.models.protocols`` with
 ``NDArray`` fields translated to ``torch.Tensor``.
 
-``SolverProtocol`` is new - not a port. See ``docs/plan.md``'s
-"Architectural corrections" section: the reference's
+``SolverProtocol`` is new - not a port: the reference's
 ``SciPyCGSolver`` is duck-typed against ``IterativeSolverBase`` ("does not
 inherit ``IterativeSolverBase``... compatible ``.solve()`` signature, not
 enforced by an ABC"). Since the scipy oracle now lives in test-support only
@@ -190,7 +189,7 @@ class SolverProtocol(Protocol):
     scipy oracle (``tests/support/scipy_reference/scipy_wrapper.py::SciPyCGSolver``)
     satisfy this shape, so tests parametrized over ``[fcg, pcg, scipy_cg]``
     can be typed against one interface rather than relying on untyped duck
-    typing (see ``docs/plan.md``'s "Architectural corrections" section).
+    typing.
 
     Deliberately minimal: only the call shape needed to type the
     parametrized ``solver_factories`` test fixture, not a full solver

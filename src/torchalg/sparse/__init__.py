@@ -1,8 +1,8 @@
 """Sparse (``torch.sparse`` CSR) package: full parallel tree to dense ``torchalg.*``.
 
-Mirrors ``torchalg.*``'s own internal shape (see ``docs/plan.md``'s
-"Correction: dense and sparse must be separate implementations, not an
-internal branch"):
+Mirrors ``torchalg.*``'s own internal shape - same algorithms, separate
+implementations, tested against the dense results; the sparse tree never
+imports the dense tree (enforced by ``tach.toml``):
 
 - ``torchalg.sparse.kernels``: primitives with no standalone correctness
   story of their own, consumed by multiple algorithms (diagonal, row-scale,

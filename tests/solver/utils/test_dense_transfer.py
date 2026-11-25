@@ -2,7 +2,7 @@
 
 Promoted alongside the source class out of
 ``tests/solver/preconditioners/implementations/test_pod.py``'s
-``TestDenseTransferOperator`` (see ``docs/plan.md``): the class was already
+``TestDenseTransferOperator``: the class was already
 fully format-agnostic (only ever requires a dense ``P``), so its tests live
 here, mirroring ``tests/solver/utils/test_spectral.py``'s convention for the
 other promoted leaf (``torchalg.utils.spectral``). Reuses the ``pod_basis``

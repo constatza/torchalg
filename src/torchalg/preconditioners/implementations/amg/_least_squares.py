@@ -8,9 +8,8 @@ relaxation" correction to test vectors before that fit (``lsr_correction``),
 and grow a caliber-bounded interpolatory set greedily under the
 algebraic-distance penalization rule (``select_interpolatory_set``).
 
-``docs/bootstrap-amg.md`` Sec. 3 is the authoritative spec (transcribed
-directly from the primary papers, not a secondary summary); every equation
-number cited below refers to it.
+Transcribed directly from the primary papers below, not a secondary summary;
+every equation number cited refers to the paper it is listed under.
 
 References:
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2015). Bootstrap
@@ -34,8 +33,7 @@ References:
       same material: the *content* matches what [STATUS14] confirms above,
       but [BAMG11] could not be fetched this session, so its own section/
       equation numbering (plausibly its own Sec. 2, differently numbered
-      from [STATUS14]'s restatement in Sec. 3) is unconfirmed. See
-      ``docs/bootstrap-amg.md`` Sec. 9.
+      from [STATUS14]'s restatement in Sec. 3) is unconfirmed.
 
 Real-SPD substitution: [BAMG11]'s formulas use Hermitian-transpose notation
 (``V^H``) since the paper allows complex test vectors; torchalg is real-SPD

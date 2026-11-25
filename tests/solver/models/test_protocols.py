@@ -2,8 +2,8 @@
 
 ``HasVectors``/``HasDirectionHistory`` are ported protocols (structural
 checks translated from the reference's numpy-typed versions).
-``SolverProtocol`` has no reference equivalent (see ``docs/plan.md``'s
-"Architectural corrections" section), so its tests are written fresh,
+``SolverProtocol`` has no reference equivalent (the
+reference duck-types its scipy solver), so its tests are written fresh,
 checking that both the test-support scipy oracle and a future
 ``IterativeSolverBase``-shaped object satisfy it structurally, and that an
 unrelated object does not.
@@ -54,8 +54,7 @@ class TestSolverProtocol:
 
         This is the concrete case the protocol exists for: it lets
         ``SciPyCGSolver`` be typed against the same interface as the future
-        production solvers without either one inheriting from the other
-        (see docs/plan.md's "Architectural corrections" section).
+        production solvers without either one inheriting from the other.
         """
         from tests.support.scipy_reference.scipy_wrapper import SciPyCGSolver
 

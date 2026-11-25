@@ -3,8 +3,7 @@
 New in ``torchalg`` - not a port. Replaces the reference's
 ``EventLog``/``SolverEvent``/``EventType`` machinery
 (``neuralls.domain.solver.monitoring.events``/``event_log``) with a single
-frozen dataclass. See ``docs/plan.md``'s "Architectural corrections" section
-for the full rationale; summarized here:
+frozen dataclass, for these reasons:
 
 The reference frames ``EventLog`` as "Event Sourcing" - a replayable log
 used to reconstruct state. But nothing in the solver ever replays or

@@ -13,7 +13,7 @@ Cartesian-product reductions applied before any cell runs (see
    18.5s already at N=3000), dense "eigvalsh" (O(N^3) full eigendecomposition),
    and the native sparse triangular ``torch.sparse.spsolve`` leg (superseded
    here by torchalg's level-scheduled implementation) all have well-established,
-   previously measured results (see ``docs/plan.md``'s "At-scale evidence") that a
+   previously measured results that a
    future benchmark run gains nothing by re-confirming; keeping them in the
    grid only burns wall-clock time reaching the same already-known
    conclusion (or, for "spsolve", produces nothing but an "unsupported" skip
@@ -29,8 +29,7 @@ With ``--compile``, every cell in a parallel-kernel-shaped family (``mv``,
 ``galerkin_form``, ``triangular_apply`` - see ``COMPILABLE_FAMILIES``) gets a
 second, ``torch.compile``-wrapped sibling cell alongside its normal eager
 one, recorded as a ``mode`` column in the output CSV (``"eager"`` vs.
-``"compiled"``). Per ``docs/plan.md``'s "Next steps" (re-benchmark under
-``torch.compile()``): scoped to these families specifically because
+``"compiled"``). Scoped to these families specifically because
 compilation can shift the calculus for parallel-kernel ops (kernel fusion
 changes per-call overhead), while the sequential-graph-construction-style
 ops this script measures elsewhere (e.g. ``factorize``'s Python-level
@@ -261,9 +260,8 @@ def run_cell(cell: Cell, *, timeout_s: float, device_for_memory: torch.device) -
 
 
 COMPILABLE_FAMILIES = {"mv", "galerkin_form", "triangular_apply"}
-"""Parallel-kernel-shaped families scoped for a compiled-vs-eager comparison
-(``docs/plan.md``'s "Next steps": "a compiled-vs-eager dimension for the
-parallel-kernel-shaped ops specifically"). Every other family this script
+"""Parallel-kernel-shaped families scoped for a compiled-vs-eager comparison. Every other
+family this script
 measures is either sequential-graph-construction-shaped (``factorize``'s
 Python-level per-level loop) or a single BLAS/LAPACK/scipy call
 (``eigh``/``svd``/``transfer``/``convert``) that ``torch.compile`` has

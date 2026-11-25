@@ -109,8 +109,8 @@ def test_fcg_pcg_histories_match_with_finite_truncation_window(
     """FCG(m_max=3) matches PCG to machine precision for a fixed preconditioner.
 
     Regression test for the ``PeriodicRestartOrthogonalization`` window-size
-    off-by-one fixed in ``strategies/orthogonalization.py`` (see
-    ``.claude/plan.md``): unlike every other FCG/PCG-equivalence test in this
+    off-by-one fixed in ``strategies/orthogonalization.py``: unlike every other
+    FCG/PCG-equivalence test in this
     suite, ``m_max=3`` here is small relative to the ~15 iterations this
     system takes to converge, so the periodic-restart cycle
     (``m_i = (i mod m_max) + 1``) actually wraps around multiple times

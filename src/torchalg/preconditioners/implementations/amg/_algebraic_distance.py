@@ -7,15 +7,14 @@ measure ``r_ij`` and the pruned strength graph ``M_d`` that feeds Task 4's
 ``BAMGCoarsening`` in place of ``_compatible_relaxation.py``'s placeholder
 matrix-graph independent-set guide.
 
-``docs/bootstrap-amg.md`` Sec. 2.2 is the authoritative spec (transcribed
-directly from the primary paper, not a secondary summary); every equation
-number cited below refers to it.
+Transcribed directly from the primary papers below, not a secondary summary;
+every equation number cited refers to the paper it is listed under.
 
 References:
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2011). An algebraic
       distances measure of AMG strength of connection. arXiv:1106.5990.
       Cited as [AD11] (all four directly confirmed against
-      ``docs/bamg/ad11_raw.md``): eq. 4.2 (algebraic d-neighborhood
+      the paper's text): eq. 4.2 (algebraic d-neighborhood
       ``V_i := {j : (A^d)_ij != 0}`` - defined via the nonzero *pattern* of
       ``A^d``, not its values, which is what ``depth_neighborhood`` below
       computes), eq. 4.3 (the caliber-one LS distance ``r_ij``, whose own
@@ -40,7 +39,7 @@ References:
       ``test_vector_weights``'s own TODO below and ``_mge.py``'s module
       docstring. A prior read of this module attributed this formula to
       "[BAMG11] eq. 4.1"; [BAMG11] could not be fetched this session to
-      confirm that attribution either. See ``docs/bootstrap-amg.md`` Sec. 9.
+      confirm that attribution either.
 
 ``r_ij`` is a **one-sided, directional** measure, not a distance in the
 metric sense: [AD11] describes eq. 4.3 explicitly as "the simplified variant
@@ -48,7 +47,7 @@ of the algebraic distance notion of strength of connection based on
 one-sided interpolation" (the paper's own wording, right after eq. 4.3).
 ``r_ij != r_ji`` in general - directional in the same spirit as classical
 AMG's own strength test, ``-a_ij >= theta * max_{k!=i}(-a_ik)``
-(``docs/boomeramg.md`` Sec. 2.1), which is likewise a per-row threshold and
+(the classical Ruge-Stueben test BoomerAMG uses), which is likewise a per-row threshold and
 not symmetric in ``i, j``. Nothing in [AD11] claims or requires
 ``r_ij == r_ji``; callers must not assume symmetry.
 
@@ -58,8 +57,8 @@ not symmetric in ``i, j``. Nothing in [AD11] claims or requires
 it was already fully format-agnostic (only ``matrix @ test_vectors``/``T @
 test_vectors``, which dispatch correctly for dense or sparse CSR), the same
 "one legitimate shared edge" precedent as ``torchalg.utils.spectral``'s
-``approximate_spectral_radius`` - see ``docs/plan.md``'s "Correction: dense
-and sparse must be separate implementations" section. ``algebraic_distance``/
+``approximate_spectral_radius``: both trees import it, and the sparse tree never
+imports the dense tree (enforced by ``tach.toml``). ``algebraic_distance``/
 ``strength_graph`` themselves remain dense-only here; their sparse siblings
 live in ``torchalg.sparse.kernels``.
 """

@@ -5,7 +5,8 @@ matrix, build the strength-of-connection graph, a VMB96 three-pass
 aggregation of its nodes (``standard_aggregation``, transliterated from
 PyAMG's field-standard implementation), and the resulting (tentative, then
 smoothed) prolongation matrix - with dense ``torch.Tensor`` storage instead
-of CSR, per ``docs/plan.md``'s dense-only directive.
+of CSR, since the dense tree stays dense-only; sparse CSR lives in the separate
+``torchalg.sparse`` tree.
 
 Isolated here, separate from ``AggregationCoarsening`` (``coarsening.py``),
 per the project's helpers-isolated-in-their-own-file convention established
@@ -99,8 +100,8 @@ def standard_aggregation(strength: torch.Tensor) -> torch.Tensor:
     implementation of Vanek, Mandel & Brezina (1996)'s aggregation phase -
     onto a dense boolean strength matrix instead of CSR. Cross-validated
     against the compiled PyAMG library itself on 500 random symmetric
-    strength graphs (n=3..40) with zero mismatches during development; see
-    ``.claude/plan.md``. Superseded the earlier single-pass
+    strength graphs (n=3..40) with zero mismatches during development. Superseded the
+    earlier single-pass
     ``greedy_aggregation`` here, which lacked Pass 1's neighbor-freeness
     safeguard and could produce order-dependent degenerate aggregates.
 

@@ -182,9 +182,9 @@ def pcg(
 
     ``alpha_k`` is computed unconditionally every iteration, with no
     curvature/breakdown gate before the division - this matches Notay
-    (2000)'s and Saad's published algorithm exactly; see
-    ``.claude/plan.md`` for why an earlier draft's breakdown gate was
-    reverted.
+    (2000)'s and Saad's published algorithm exactly. An earlier draft's breakdown gate was reverted
+    because the reference never gates either: breakdown surfaces later, in
+    ``check_solution_validity``.
 
     Args:
         A (LinearSystemOperator): SPD system matrix, or a callable computing

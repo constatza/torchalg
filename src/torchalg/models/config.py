@@ -1,20 +1,20 @@
 """Configuration models for solver execution.
 
-Ported from ``neuralls.domain.solver.models.config`` (see ``docs/plan.md``),
+Ported from ``neuralls.domain.solver.models.config``,
 made ``slots=True`` per this repo's immutability convention (the reference
 was plain ``frozen=True``).
 
 ``ComparisonData``/``ComparisonGeneral`` are not ported here: both exist
 solely to configure the multi-preconditioner comparison workflow
-(``torchalg.comparison``), which is the highest orchestration layer per
-``docs/plan.md``'s scope trim - porting them now would be dead weight until
+(``torchalg.comparison``), which is the highest orchestration layer and
+is not ported yet - porting them now would be dead weight until
 that workflow lands.
 
 ``SolverConfig.trace_mode`` is typed as the literal string values
 ``TraceMode`` uses (``"disabled" | "minimal" | "full"`` - see
 ``torchalg.monitoring.TraceMode``), rather than importing
 ``TraceMode`` itself: ``torchalg.models`` must not depend on
-``torchalg.monitoring`` (see the dependency DAG in ``docs/plan.md``),
+``torchalg.monitoring`` (enforced by ``tach.toml``),
 so this stays a plain string literal even though the real enum now exists.
 Revisit when Stage 9 wiring lands.
 """

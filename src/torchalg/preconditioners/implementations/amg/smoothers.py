@@ -1,7 +1,7 @@
 """Multigrid smoothers.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.smoothers``
-(see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor`` and
+with ``NDArray`` translated to ``torch.Tensor`` and
 dense ``torch`` ops replacing numpy. A smoother object holds only configuration
 (the Jacobi damping override); ``prepare(A)`` binds it to one level matrix and does
 every matrix-dependent one-off computation there (diagonal inverse, spectral-radius

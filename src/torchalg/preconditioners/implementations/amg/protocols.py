@@ -1,6 +1,6 @@
 """Re-export shim: AMG protocols now live in ``torchalg.multigrid.protocols``.
 
-Promoted (see ``docs/plan.md``) because these ``Protocol`` definitions never
+Promoted because these ``Protocol`` definitions never
 committed to dense or sparse storage. Kept here so every existing
 ``from .protocols import ...``/``from ...amg.protocols import ...`` call
 site keeps working unchanged - mirrors ``transfer.py``'s

@@ -1,8 +1,8 @@
 """Tests for ``torchalg.models.diagnostics``.
 
 No reference equivalent: ``TerminationDiagnostics`` is new code replacing
-the reference's ``EventLog``/``SolverEvent``/``EventType`` (see
-``docs/plan.md``'s "Architectural corrections" section), so these tests are
+the reference's ``EventLog``/``SolverEvent``/``EventType`` (nothing
+replays the log, see ``torchalg.models.diagnostics``), so these tests are
 written fresh rather than ported.
 """
 

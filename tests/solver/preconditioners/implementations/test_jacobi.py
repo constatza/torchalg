@@ -128,8 +128,7 @@ class TestJacobiIsNnModule:
 
     ``JacobiPreconditioner`` is the first preconditioner to multiply-inherit
     ``nn.Module`` specifically so its precomputed ``inv_diag`` tensor can
-    ride ``nn.Module``'s battle-tested ``.to(device/dtype)`` propagation
-    (see ``docs/plan.md``'s ``nn.Module`` architecture decision). These
+    ride ``nn.Module``'s battle-tested ``.to(device/dtype)`` propagation. These
     tests exist to prove that payoff is real, not just that ``.apply()``
     gives the right answer.
     """

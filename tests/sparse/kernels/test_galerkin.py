@@ -43,7 +43,7 @@ class TestFormSparseSparse:
         self, poisson_1d_csr: torch.Tensor, aggregation_prolongation_dense: torch.Tensor
     ) -> None:
         """The coarse operator stays sparse CSR, never densified - so a multi-level
-        hierarchy keeps every non-coarsest level sparse (see ``docs/plan.md``)."""
+        hierarchy keeps every non-coarsest level sparse."""
         actual = form_sparse_sparse(aggregation_prolongation_dense.to_sparse_csr(), poisson_1d_csr)
         assert actual.layout == torch.sparse_csr
         assert actual.shape == (_RANK, _RANK)

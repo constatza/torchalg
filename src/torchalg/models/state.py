@@ -1,6 +1,6 @@
 """Typed, immutable state classes for iterative solvers.
 
-Ported from ``neuralls.domain.solver.models.state`` (see ``docs/plan.md``)
+Ported from ``neuralls.domain.solver.models.state``
 with ``NDArray`` fields translated to ``torch.Tensor`` and every dataclass
 made ``slots=True`` (the reference only used plain ``frozen=True``) per this
 repo's immutability convention. This module defines a hierarchy of

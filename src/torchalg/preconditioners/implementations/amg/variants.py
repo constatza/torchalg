@@ -1,7 +1,7 @@
 """Concrete AMG preconditioner presets.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.variants``
-(see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``. Each
+with ``NDArray`` translated to ``torch.Tensor``. Each
 factory function bundles a fixed multigrid cycle and smoothed-aggregation
 coarsening with a weighted-Jacobi smoother by default, returning a plain
 ``AMGPreconditioner``. Use these parametrizable presets instead of wiring

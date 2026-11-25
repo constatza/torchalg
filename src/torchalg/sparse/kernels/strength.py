@@ -2,8 +2,8 @@
 
 Companion to the dense
 ``preconditioners.implementations.amg._aggregation.strength_of_connection``
-(kept unmodified for comparison - see ``docs/plan.md``'s "Correction:
-strength-of-connection/aggregation must be sparse-native too"):
+(kept unmodified for comparison; strength of connection and aggregation are
+sparse-native too, so the fine-grid matrix is never densified):
 ``strength_of_connection`` only ever touches ``A``'s own existing nonzero
 entries (no multi-hop neighborhood, no fill-in), so a sparse version is a
 pure vectorized gather/compare over CSR's flat arrays - O(nnz), no ``(n,

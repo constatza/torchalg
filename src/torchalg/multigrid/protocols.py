@@ -1,7 +1,7 @@
 """AMG protocols - minimal extension points for multigrid components.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.protocols``
-(see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``. These
+with ``NDArray`` translated to ``torch.Tensor``. These
 stay plain ``typing.Protocol`` definitions (structural typing, OCP extension
 points), matching the reference exactly - no ``nn.Module`` involvement here,
 since a ``Protocol`` never owns tensor state itself.

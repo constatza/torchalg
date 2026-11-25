@@ -232,7 +232,7 @@ def test_bamg_coarsening_stores_restricted_test_vectors_for_next_level(
     bamg_coarsening: BAMGCoarsening,
     seeded_test_vectors_16_3: torch.Tensor,
 ) -> None:
-    """After ``build_transfer``, the coarse-dimension test vectors are ``P^T @ V`` (dimension-keyed dict, amg-integration-architecture.md Sec. 3.2)."""
+    """After ``build_transfer``, the coarse-dimension test vectors are ``P^T @ V`` (dimension-keyed dict)."""
     coarse_matrix, transfer = bamg_coarsening.build_transfer(poisson_16)
 
     stored = bamg_coarsening.test_vectors_for(coarse_matrix)
@@ -576,7 +576,7 @@ def test_bootstrap_setup_run_prolongations_have_no_all_zero_rows(
 def anisotropic_2d_matrix_64(
     anisotropic_2d_factory: Callable[[int, float], torch.Tensor],
 ) -> torch.Tensor:
-    """64-node (8x8) strongly anisotropic 2D matrix, BAMG's payoff case (docs/bootstrap-amg.md Sec. 6)."""
+    """64-node (8x8) strongly anisotropic 2D matrix, BAMG's payoff case."""
     return anisotropic_2d_factory(8, 0.05)
 
 

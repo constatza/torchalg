@@ -2,9 +2,10 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg._algebraic_distance.algebraic_distance``
-(dense; kept unmodified for comparison - see ``docs/plan.md``'s "Correction:
-dense and sparse must be separate implementations, not an internal
-branch"). The dense version computes a full dense ``(n, n)`` ``cross``/
+(dense; kept unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). The dense version
+computes a full dense ``(n, n)`` ``cross``/
 ``coefficients``/``residual`` chain and only masks it by the neighborhood
 *after* computing every pair - ``O(n^2 * k)`` work to produce something
 that's provably sparse. This reformulates the identical [AD11] eq. 4.3

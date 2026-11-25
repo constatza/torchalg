@@ -1,8 +1,7 @@
 """Tests for POD snapshot row-weighting helpers.
 
 These implement the "how much does each snapshot vote in the SVD" axis from
-the POD-2G snapshot-metrics design (``dl-experiments``'s
-``docs/plan.md``/PR description for this feature): row-scaling a snapshot
+the POD-2G snapshot-metrics design in ``dl-experiments``: row-scaling a snapshot
 before an ordinary Euclidean SVD reproduces a weighted covariance
 ``sum_k scale_k^2 e_k e_k^T`` without changing the SVD's inner product, so
 these functions only ever compute a length-``n_samples`` scale vector -

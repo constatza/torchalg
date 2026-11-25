@@ -1,7 +1,7 @@
 """Predictor ports - framework-agnostic abstractions for neural preconditioners.
 
-Ported from ``neuralls.domain.solver.preconditioners.ports`` (see
-``docs/plan.md``'s Stage 7 entry), following the Ports & Adapters (Hexagonal
+Ported from ``neuralls.domain.solver.preconditioners.ports`` in Stage 7,
+following the Ports & Adapters (Hexagonal
 Architecture) pattern. Unlike the reference, this module is natively
 ``torch.Tensor``-typed rather than numpy: the reference's ``NDArray`` in/out
 signature exists partly to shield the solver from the *actual* PyTorch model

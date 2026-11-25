@@ -1,6 +1,6 @@
 """History tracking for iterative solvers.
 
-Ported from ``neuralls.domain.solver.models.history`` (see ``docs/plan.md``)
+Ported from ``neuralls.domain.solver.models.history``
 with ``NDArray`` fields translated to ``torch.Tensor``. This module defines:
 
 - ``DirectionHistory``: sliding window of search directions, matrix-vector

@@ -1,7 +1,8 @@
 """Every symbol whose cost drives a placement or algorithm choice documents it.
 
-The convention (``docs/implementations/cost-model.md``, "``Cost:`` docstring convention")
-puts a ``Cost:`` section in the docstring; this test keeps the documented symbols from
+The convention puts a ``Cost:`` section before ``Args:`` in the docstring, stating flops,
+bytes moved, depth, kernel launches and host synchronisations as formulas; this test keeps
+the documented symbols from
 losing it.
 """
 

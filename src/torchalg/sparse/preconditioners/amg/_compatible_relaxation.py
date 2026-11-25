@@ -2,8 +2,9 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg._compatible_relaxation`` (dense; kept
-unmodified for comparison - see ``docs/plan.md``'s "Correction: dense and
-sparse must be separate implementations, not an internal branch").
+unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``).
 
 ``hcr_operator``/``cr_rate``/``compatible_relaxation_coarsening``'s *outer*
 logic is format-agnostic in the dense module (confirmed by reading: it only

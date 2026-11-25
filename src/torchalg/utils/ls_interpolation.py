@@ -1,9 +1,9 @@
 """Weighted least-squares (LS) interpolation for Bootstrap AMG, shared by the dense and sparse trees.
 
-Promoted out of ``preconditioners.implementations.amg._least_squares`` (see
-``docs/plan.md``'s "Correction: dense and sparse must be separate
-implementations" - same "one legitimate shared edge" precedent as
-``torchalg.utils.spectral``'s ``approximate_spectral_radius``): every
+Promoted out of ``preconditioners.implementations.amg._least_squares`` (same
+"one legitimate shared edge" precedent as
+``torchalg.utils.spectral``'s ``approximate_spectral_radius``, which both trees
+import while the sparse tree never imports the dense one): every
 function here operates only on dense ``(n, k)`` test-vector row-gathers and
 small dense ``(|C_i|, |C_i|)`` Gram matrices built from those gathers -
 ``test_vectors`` is always dense regardless of the system matrix's format
@@ -13,9 +13,8 @@ for call-signature parity with other per-row AMG kernels - see its own
 docstring). So none of this needs a sparse sibling; both the dense and
 sparse ``BAMGCoarsening`` import the same implementation.
 
-``docs/bootstrap-amg.md`` Sec. 3 is the authoritative spec (transcribed
-directly from the primary papers, not a secondary summary); every equation
-number cited below refers to it.
+Transcribed directly from the primary papers below, not a secondary summary;
+every equation number cited refers to the paper it is listed under.
 
 References:
     - Brandt, A., Brannick, J., Kahl, K., & Livshits, I. (2015). Bootstrap

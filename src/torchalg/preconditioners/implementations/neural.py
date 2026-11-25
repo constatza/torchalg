@@ -42,8 +42,8 @@ class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
     not accumulated). It therefore stays a plain class, matching
     ``ScheduledPreconditioner``/``CallablePreconditioner`` (wrapper/delegator
     preconditioners that hold references to other objects, not their own
-    tensor buffers, do not need ``nn.Module`` - see ``docs/plan.md``'s
-    ``nn.Module`` architecture decision).
+    tensor buffers, do not need ``nn.Module``, which is inherited only to
+    propagate ``.to(device/dtype)`` to owned tensor buffers).
 
     Args:
         predictor (ExtraInputPredictorPort): Loaded predictor. Not released

@@ -2,8 +2,9 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.icholesky.ICholeskyPreconditioner`` (dense;
-kept unmodified for comparison - see ``docs/plan.md``'s "Correction: dense
-and sparse must be separate implementations, not an internal branch"). Same
+kept unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). Same
 name, disambiguated by package, never imported by the dense class. Like its
 dense sibling, no factorization happens here - the caller supplies the
 sparse CSR lower triangular factor ``L`` directly (e.g. from

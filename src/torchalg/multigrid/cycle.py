@@ -1,7 +1,7 @@
 """Multigrid cycle implementations.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.cycle``
-(see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor`` and
+with ``NDArray`` translated to ``torch.Tensor`` and
 ``numpy.linalg.solve`` replaced by a prepared (factor-once) coarsest direct solve. Both cycles are format-agnostic: every op is delegated to
 the injected ``MultigridSmoother``/``TransferOperator``/coarse-solver factory,
 so a sparse ``CoarseningStrategy`` keeps every non-coarsest level sparse CSR

@@ -1,7 +1,6 @@
 """Typing-only Protocol-conformance pins for ``torchalg.sparse``'s sibling classes.
 
-See ``docs/plan.md``'s "Next steps" (Protocol-conformance pins) / "SOLID
-review summary" (Interface Segregation): ``CoarseningStrategy``/
+These pins exist because ``CoarseningStrategy``/
 ``TransferOperator`` conformance for every sparse sibling class was asserted
 only in docstring prose - nothing imported ``torchalg.multigrid.protocols``
 from ``torchalg.sparse`` or its tests, so a signature drift in a sparse

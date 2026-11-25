@@ -12,15 +12,14 @@ Deviations from the reference:
       ``tests/solver/utils/test_pod_basis.py`` and
       ``tests/solver/utils/test_dense_transfer.py`` respectively, mirroring
       ``compute_pod_basis``/``DenseTransferOperator`` themselves being
-      promoted to dependency-free leaves under ``torchalg.utils`` (see
-      ``docs/plan.md``). This file keeps only the POD-2G-specific tests
+      promoted to dependency-free leaves under ``torchalg.utils``. This file keeps only
+      the POD-2G-specific tests
       (``PODCoarseningStrategy``, ``pod2g_preconditioner``).
     - ``TestPOD2GWithFCGSolver`` is active now that
       ``torchalg.flexible_cg`` has landed.
     - ``TestPOD2GConfigParsing``/``TestPOD2GFactory`` (TOML/Pydantic config
       parsing and the composition-layer factory) are not ported: both are
-      part of the explicit scope trim documented in ``docs/plan.md``'s
-      "Scope trim" section (the TOML-driven preconditioner factory is not
+      part of the explicit scope trim (the TOML-driven preconditioner factory is not
       part of this migration).
 """
 

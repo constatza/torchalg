@@ -7,7 +7,8 @@ the one deliberate, intentional sparse-aware branch in this whole sparse AMG tre
 coarsest level is small by construction (bounded coarsening ratio over ``n_levels - 1``
 steps), so densifying just that one matrix - once, when the hierarchy is prepared, not on
 every cycle - for the dense factorization is the correct, narrow adapter, not a violation
-of the sparse/dense separation enforced elsewhere (``docs/plan.md``). PyTorch has no
+of the sparse/dense separation (the sparse tree never imports the dense tree,
+enforced by ``tach.toml``). PyTorch has no
 sparse-CSR direct-solve path.
 """
 

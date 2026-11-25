@@ -105,7 +105,7 @@ def bootcmatch_parallel_matching(
     neg_inf = float("-inf")
 
     # Host syncs (the `bool(...)` pull below) are themselves a measured
-    # setup-time bottleneck at scale (see docs/plan.md): checking every
+    # setup-time bottleneck at scale: checking every
     # round forces one per round, and this loop runs once per coarsening
     # level per hierarchy. Checking only every `_SYNC_CHECK_STRIDE` rounds
     # cuts that by ~4x without changing `match_of`: once `active` is truly

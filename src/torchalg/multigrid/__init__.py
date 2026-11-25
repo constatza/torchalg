@@ -1,7 +1,7 @@
 """Format-agnostic multigrid engine, shared by the dense and sparse AMG trees.
 
-Promoted out of ``torchalg.preconditioners.implementations.amg`` (see
-``docs/plan.md``): after a full read, ``hierarchy.py``/``cycle.py``/``amg.py``/
+Promoted out of ``torchalg.preconditioners.implementations.amg`` because,
+after a full read, ``hierarchy.py``/``cycle.py``/``amg.py``/
 ``protocols.py`` were found to never commit to a dense or sparse matrix
 format anywhere except the coarsest-level direct solve (which is itself
 injectable via each cycle's ``coarse_solver`` parameter). ``build_hierarchy``

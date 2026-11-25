@@ -1,8 +1,8 @@
 """Tests for ``torchalg.utils.pod_basis.compute_pod_basis``.
 
 Promoted alongside the source module out of
-``tests/solver/preconditioners/implementations/test_pod.py`` (see
-``docs/plan.md``): ``compute_pod_basis`` is a dependency-free leaf that
+``tests/solver/preconditioners/implementations/test_pod.py`` because
+``compute_pod_basis`` is a dependency-free leaf that
 never touches the fine-grid matrix, so its tests live here, mirroring
 ``tests/solver/utils/test_spectral.py``'s convention for the other promoted
 leaf (``torchalg.utils.spectral``), rather than under the preconditioners

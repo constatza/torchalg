@@ -1,7 +1,7 @@
 """Norm functions for convergence checking.
 
-Ported from ``neuralls.domain.solver.strategies.norms`` (see
-``docs/plan.md``) with ``numpy`` operations translated to
+Ported from ``neuralls.domain.solver.strategies.norms``
+with ``numpy`` operations translated to
 ``torch.linalg.norm``/tensor ops.
 
 Design: ``Norm`` is a simple callable type alias. Factories create norm

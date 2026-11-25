@@ -1,7 +1,7 @@
 """AMG (Algebraic Multigrid) preconditioner package.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg``
-(see ``docs/plan.md``'s Stage 5 entry), dense-only throughout - no
+in Stage 5, dense-only throughout - no
 ``scipy.sparse``, no ``torch.sparse``. Two renames from the reference (both
 noted in the Stage 5 port report): ``SparseAggregationCoarsening`` ->
 ``AggregationCoarsening`` and ``SparseTransferOperator`` ->

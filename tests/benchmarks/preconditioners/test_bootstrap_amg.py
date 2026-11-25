@@ -1,4 +1,4 @@
-"""Benchmark: Bootstrap AMG paper-table reproduction (docs/bootstrap-amg.md Sec. 6).
+"""Benchmark: Bootstrap AMG paper-table reproduction ([STATUS14] Tables 1-2).
 
 **Primary fidelity target:** ``test_bootstrap_amg_matches_status14_table1_exact_setup``,
 below. It reproduces [STATUS14] (arXiv:1406.1819) Table 1's exact experimental
@@ -11,7 +11,7 @@ coarsening algorithm) that keeps its absolute numbers from matching the
 paper's exactly.
 
 Every other test below instead attempts to reproduce the *shape* of
-[STATUS14] Table 2 (confirmed directly - ``docs/bamg/status14_raw.md``:
+[STATUS14] Table 2 (confirmed directly:
 ``k_r=8``, ``eta=4``, ``h`` varying ``1/32..1/512``, ``rho`` rising with
 problem size) - LS degrading with problem size, LSR generally
 doing better - on this repo's own plain finite-difference Poisson problems
@@ -36,8 +36,8 @@ What is measured:
     ``rho`` formula directly reproducible without going through a CG loop
     that would only measure ``rho`` indirectly. ``nu=10`` (module constant
     ``_MG_ITERATIONS``) is a practical setup-time estimate, matching
-    ``cr_rate``'s own small-``nu`` convention and ``docs/bootstrap-amg.md``
-    Sec. 5's own "estimate ... rho; stop if rho <= target" - not the true
+    ``cr_rate``'s own small-``nu`` convention and the Bootstrap AMG
+    setup loop's own "estimate ... rho; stop if rho <= target" - not the true
     infinite-iteration limit.
 
 Why the absolute numbers will not match [STATUS14] Table 2:
@@ -61,7 +61,7 @@ Why the absolute numbers will not match [STATUS14] Table 2:
        V(1,1)-cycle (``_presets.PRESET_CYCLE``), not the paper's V(2,2).
     3. **No near-null-space seeding.** [STATUS14] Table 3's near-optimal LSR
        range (``rho`` from ``0.089`` to ``0.150`` across ``h=1/32..1/512``,
-       confirmed directly - ``docs/bamg/status14_raw.md``) requires seeding
+       confirmed directly) requires seeding
        the known constant vector ``1`` into the test-vector set alongside
        the ``k_r`` random ones; ``BootstrapAMGPreconditioner`` has no such
        seeding hook - its test vectors are purely ``k_r`` random draws
@@ -470,8 +470,8 @@ def test_bootstrap_amg_matches_status14_table1_exact_setup(
     implements compatible-relaxation + algebraic-distance coarsening ([AD11]'s
     generalization for problems without a structured grid), while the paper's own
     reported numbers use full geometric (mesh-doubling) coarsening for structured grids
-    like this one (``docs/bootstrap-amg.md`` Sec. 6 already documents this as a
-    deliberate scope choice). Closing it would mean implementing geometric coarsening
+    like this one (a deliberate scope choice). Closing it would mean implementing
+    geometric coarsening
     as a genuinely separate strategy - out of scope here, and not attempted by this
     test. What this test asserts is exactly what *is* verified reproducible with the
     setup above, no more and no less:

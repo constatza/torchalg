@@ -1,8 +1,8 @@
 """Sparse-backed transfer operator for multigrid prolongation and restriction.
 
 Second implementation of ``preconditioners.implementations.amg.protocols
-.TransferOperator`` (dense ``DenseTransferOperator`` is the first) - see
-``docs/plan.md``: uses ``torch.sparse.mm`` instead of a dense ``@`` so the
+.TransferOperator`` (dense ``DenseTransferOperator`` is the first):
+uses ``torch.sparse.mm`` instead of a dense ``@`` so the
 fine-grid-sized prolongation matrix ``P`` never needs a dense ``(n,
 n_coarse)`` materialization.
 """

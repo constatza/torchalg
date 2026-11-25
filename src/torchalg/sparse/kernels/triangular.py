@@ -3,11 +3,10 @@
 Generic machinery, not IC0-specific: consumed both by ``GaussSeidelSmoother``'s
 sparse path (triangular solve against ``A``'s own ``D``/``L``/``U`` split, no
 factorization) and, in a later phase, by IC0/ILU's apply step against a
-computed incomplete factor. See ``docs/plan.md``'s "Design" section and its
-"Correction: a reversed forward schedule is not a valid backward schedule"
-section - the latter is the authoritative spec this module implements:
-forward and backward level schedules must each be computed independently,
-never one derived from the other by reversal.
+computed incomplete factor. Forward and backward level schedules must each be
+computed independently, never one derived from the other by reversal: a reversed
+forward schedule is not a valid backward schedule (see
+``test_backward_schedule_is_not_reversed_forward_schedule`` for a counterexample).
 """
 
 from __future__ import annotations

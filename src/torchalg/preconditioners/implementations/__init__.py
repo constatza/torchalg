@@ -1,6 +1,6 @@
 """Concrete preconditioner implementations.
 
-Populated incrementally, stage by stage (see ``docs/plan.md``). So far
+Populated incrementally, stage by stage. So far
 (Stages 3-5):
 
 - ``Identity``: No preconditioning.

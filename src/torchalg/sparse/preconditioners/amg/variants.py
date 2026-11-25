@@ -3,11 +3,10 @@
 Sparse-CSR sibling of
 ``torchalg.preconditioners.implementations.amg.variants`` - same preset
 shape (a plain factory function wiring concrete domain objects into
-``AMGPreconditioner``, no new class, no behavior beyond constructor wiring -
-see ``docs/plan.md``'s "Correction: validation placement, and inheritance
-vs. composition for presets"), composed entirely from this package's own
+``AMGPreconditioner``, no new class, no behavior beyond constructor wiring,
+so composition rather than inheritance), composed entirely from this package's own
 sparse-native kernels/preconditioners plus the shared, format-agnostic
-``torchalg.multigrid`` engine (``docs/plan.md``). This function *is* "the
+``torchalg.multigrid`` engine. This function *is* "the
 sparse AMG orchestrator" - there is no separate sparse ``AMGPreconditioner``
 class, since ``torchalg.multigrid.AMGPreconditioner`` is already
 format-agnostic.

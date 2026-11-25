@@ -2,8 +2,8 @@
 
 Ported from ``neuralls.domain.solver.preconditioners.linear_operator``,
 which wraps a ``scipy.sparse.linalg.LinearOperator``. ``torchalg`` has no
-``LinearOperator``-equivalent type and no sparse dependency at all (see
-``docs/plan.md``'s dense-only directive): here, a plain
+``LinearOperator``-equivalent type and no sparse dependency at all (the
+dense tree stays dense-only): here, a plain
 ``Callable[[torch.Tensor], torch.Tensor]`` *is* the linear-operator
 abstraction, so this wraps that callable directly instead of a
 scipy-specific wrapper type.

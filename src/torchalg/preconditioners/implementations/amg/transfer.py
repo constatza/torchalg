@@ -1,7 +1,7 @@
 """Transfer operators for multigrid prolongation and restriction.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.transfer``
-(see ``docs/plan.md``'s dense-only directive). ``SparseTransferOperator``
+(the dense tree stays dense-only). ``SparseTransferOperator``
 (scipy-sparse-backed in the reference) was renamed to ``DenseTransferOperator``
 and now wraps a dense ``torch.Tensor`` prolongation matrix ``P`` instead of a
 ``scipy.sparse`` matrix - the algorithm (Galerkin restriction ``R = P.T``) is

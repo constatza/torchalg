@@ -1,4 +1,4 @@
-"""Compatible-relaxation coarsening tests (Bootstrap AMG, docs/bootstrap-amg.md Sec. 2.1).
+"""Compatible-relaxation coarsening tests (Bootstrap AMG, [AD11] Algorithm 1).
 
 Fixtures live in this module (not a subdirectory ``conftest.py``): this is
 currently the only test module in ``implementations/amg/``, matching the
@@ -124,8 +124,7 @@ def cr_rate_property_cases(
     property sweep across multiple fixture matrices, distinct from
     ``test_cr_rate_low_for_every_other_point``'s and
     ``test_cr_rate_high_for_empty_coarse_set``'s single-case numeric-bound
-    checks (``amg-integration-architecture.md`` Sec. 5's still-missing
-    ``cr_rate`` property, per the Task 5 brief).
+    checks.
     """
     poisson_12 = poisson_1d_factory(12)
     poisson_24 = poisson_1d_factory(24)

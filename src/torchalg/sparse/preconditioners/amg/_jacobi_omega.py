@@ -2,8 +2,9 @@
 
 Sparse-only counterpart of
 ``preconditioners.implementations.amg._jacobi_omega`` (dense; kept
-unmodified for comparison - see ``docs/plan.md``'s "Correction: dense and
-sparse must be separate implementations, not an internal branch"). Shares
+unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). Shares
 ``torchalg.utils.spectral.approximate_spectral_radius`` with the dense
 sibling - the one piece of code genuinely common to both trees, since it
 never itself branches on format (only ever calls ``matrix @ vector``, which

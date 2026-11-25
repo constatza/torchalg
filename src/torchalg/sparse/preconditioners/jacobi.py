@@ -2,8 +2,9 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.jacobi.JacobiPreconditioner`` (dense; kept
-unmodified for comparison - see ``docs/plan.md``'s "Correction: dense and
-sparse must be separate implementations, not an internal branch"). Same name,
+unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). Same name,
 disambiguated by package (``torch.mm`` vs. ``torch.sparse.mm`` convention),
 never imported by the dense class. The only behavioral difference from the
 dense sibling is how the diagonal is extracted: ``kernels.diagonal.

@@ -4,9 +4,10 @@ Deliberately separate from ``solve()``/``IterationHistory``: both functions
 here are explicit, opt-in calls the caller makes on their own schedule, never
 something a solve automatically runs. ``energy_norm_history`` needs ``A``
 back on a device, in bounded chunks the caller sizes; the Golub-Meurant bound
-needs a look-ahead ``delay`` only the caller can choose sensibly. See
-``docs/bug-full-trace-history-exhausts-gpu-memory.md`` for why this stays out
-of the solve's own device-memory budget.
+needs a look-ahead ``delay`` only the caller can choose sensibly. Both stay out
+of the solve's own device-memory budget: keeping every iterate on the solve device grows
+device memory as
+``O(3 * iterations * n)``, which exhausted GPU memory in ``FULL`` trace mode.
 """
 
 from __future__ import annotations

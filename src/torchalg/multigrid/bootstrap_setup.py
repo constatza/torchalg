@@ -2,10 +2,8 @@
 
 Promoted out of
 ``preconditioners.implementations.amg.bootstrap.{BootstrapSetup,
-BootstrapAMGResult,_hierarchy_of}`` (see ``docs/plan.md``'s "Correction:
-dense and sparse must be separate implementations" for the general
-promotion precedent, and its "Next steps" entry on this specific module for
-the design discussion that produced it). Confirmed by direct reading: this
+BootstrapAMGResult,_hierarchy_of}`` so both trees share it while the sparse
+tree never imports the dense tree (enforced by ``tach.toml``). Confirmed by direct reading: this
 outer loop (``run``, ``_build_levels``, ``_improve_levels``,
 ``_v_r_after_build``, ``_merge_level_vectors``, plus the module-level
 ``_random_test_vectors``/``_seeded_test_vectors``/``_relax_columns``/
@@ -19,7 +17,7 @@ dependency-injection pattern already used throughout this codebase
 caller picks which concrete relaxation/cycle/coarsening-class/transfer-
 operator-class to inject *before* any matrix exists, never by reading
 ``A.is_sparse_csr`` internally, so this is not the "format-follows-input
-router" pattern ``docs/plan.md`` already rejected once (that router had to
+router" pattern this project already rejected once (that router had to
 import both trees to decide; nothing here ever does):
 
 - ``relaxation`` (was: ``GaussSeidelSmoother()`` hardcoded in
@@ -36,7 +34,7 @@ import both trees to decide; nothing here ever does):
 eigensolver enrichment has its own un-ported dense-specific internals
 (``torch.linalg.cholesky``/``eigh`` directly on a level matrix, not just a
 coarsest-level densify-first adapter) - the same class of gap
-``docs/plan.md`` already scopes as part of the separately-deferred
+already scoped as part of the separately-deferred
 ``BAMGCoarsening`` sparse follow-on, not something to smuggle in here.
 ``eigensolver`` is therefore an optional field, ``None`` by default; a
 caller passing ``k_e > 0`` with no ``eigensolver`` configured gets a clear
@@ -280,7 +278,7 @@ class BootstrapAMGResult:
 class BootstrapSetup:
     """Bootstrap AMG setup: outer loop parameters plus injected format-specific factories.
 
-    Implements ``docs/bootstrap-amg.md`` Sec. 4.1/Sec. 5: builds one
+    Implements the Bootstrap AMG setup ([STATUS14] Sec. 4): builds one
     hierarchy from ``k_r`` random test vectors relaxed ``eta`` sweeps per
     level, coarsening while ``len(levels) < max_levels and
     levels[-1].shape[0] > max_coarse``, then for ``n_bootstrap_cycles``

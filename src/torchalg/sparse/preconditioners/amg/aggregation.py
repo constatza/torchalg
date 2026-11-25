@@ -1,8 +1,8 @@
 """Sparse-native SA-AMG aggregation algorithm: standard aggregation and prolongation smoothing.
 
 Companion to the dense ``preconditioners.implementations.amg._aggregation``
-module (kept unmodified for comparison - see ``docs/plan.md``'s "Correction:
-strength-of-connection/aggregation must be sparse-native too"):
+module (kept unmodified for comparison; strength of connection and aggregation are
+sparse-native too, so the fine-grid matrix is never densified):
 ``standard_aggregation``'s three-pass greedy algorithm is inherently
 sequential regardless of storage format (a genuinely new, independent
 transcription here, not a port, per the same "new code, not shared code"

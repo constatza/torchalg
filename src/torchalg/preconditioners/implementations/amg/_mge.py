@@ -7,9 +7,9 @@ level by solving a small generalized eigenproblem on the coarsest grid and
 propagating the result up through the hierarchy via interpolation and
 relaxation.
 
-``docs/bootstrap-amg.md`` Sec. 4.2 ("Algorithm 1") is the authoritative
-spec, transcribed directly from [BAMG11]/[STATUS14]; every equation number
-cited below refers to it.
+Implements the multigrid eigensolver of [STATUS14] Sec. 4 (also attributed to
+[BAMG11]); every equation number cited below refers to the paper it is
+tagged with.
 
 Index-convention note: the transcribed algorithm iterates "for l = L, ...,
 1" using the papers' own 1-indexed, finest-labeled-differently convention
@@ -24,7 +24,7 @@ been seeded from), which is that same full range translated to 0-indexing.
 
 Not implemented: [STATUS14] eq. 4.4's ``tau_lambda`` rebuild-or-skip test
 (``tau_lambda(l, l-1) = |lambda^(l) - lambda^(l-1)| / |lambda^(l-1)|``,
-directly confirmed - ``docs/bamg/status14_raw.md``). That measure belongs to
+directly confirmed against [STATUS14]). That measure belongs to
 the W-cycle setup scheme (rebuild the hierarchy at every coarser grid
 immediately, only when relaxing an eigenvector changed its Rayleigh quotient
 by more than a tolerance) - ``bootstrap.py`` only implements V^mu-style
@@ -34,17 +34,17 @@ regardless of how much any single eigenvector changed, so
 
 ``test_vector_weights`` (``_algebraic_distance.py``) computes ``omega_kappa``
 using the ``T = I`` reduction only where that precondition ("on the finest
-level, or before any MGE enrichment," ``docs/bootstrap-amg.md`` line 234)
-actually holds: ``BAMGCoarsening`` tracks the composite prolongation
+level, or before any MGE enrichment", where the composite interpolation is the
+identity) actually holds: ``BAMGCoarsening`` tracks the composite prolongation
 incrementally (``_composite`` in ``bootstrap.py``) and passes it, as the
 composite interpolation ``C`` with ``T_l = C^T C`` (this module's own ``T_l = P_l^H P_l`` and
 composite-prolongation-chaining formula, both directly confirmed against
-[STATUS14] Sec. 4, prose before eq. 4.2 - ``docs/bamg/status14_raw.md``)
+[STATUS14] Sec. 4, prose before eq. 4.2)
 into both ``test_vector_weights`` and ``algebraic_distance`` once ``k_e > 0``
 makes it genuinely differ from ``I`` at the levels this module enriches.
 **TODO(bamg-fidelity, needs-check), not yet resolved:** whether
 ``omega_kappa`` is actually meant to use this same ``T_l`` is unconfirmed.
-[STATUS14] Sec. 3 (``docs/bamg/status14_raw.md`` line 593) states
+[STATUS14] Sec. 3 states
 ``omega_kappa`` only via ``||v||_A^2 = <Av,v>``, with no ``T`` term and no
 equation number of its own; nothing in [STATUS14] or [AD11], as directly
 read from their raw text, links a ``T`` operator to these weights - not a
@@ -64,7 +64,7 @@ Measured effect (``k_r=8``, ``eta=4``, ``n_bootstrap_cycles=2``, GS smoother,
 ``seed=5``, this repo's 1D FD Poisson - the same harness as
 ``tests/benchmarks/preconditioners/test_bootstrap_amg.py``, which itself
 targets [STATUS14] Table 2's MGE-*free* baseline (confirmed:
-``docs/bamg/status14_raw.md`` - ``k_r=8``, ``eta=4``, varying ``h``) and so
+``k_r=8``, ``eta=4``, varying ``h``) and so
 does not exercise ``k_e``): ``k_e=8`` alongside the same ``k_r=8`` roughly
 halves the measured convergence factor at the larger sizes - ``rho`` from
 ``0.51 -> 0.20`` at N=127, ``0.72 -> 0.39`` at N=255, ``0.59 -> 0.31`` at
@@ -83,7 +83,7 @@ References:
       algebraic multigrid: status report, open problems, and outlook. Numer.
       Math. Theor. Meth. Appl. 8(1). arXiv:1406.1819. Cited as [STATUS14]:
       eq. 4.2 (the coarse/fine Rayleigh-quotient transfer identity
-      ``bootstrap-amg.md`` Sec. 4.2 follows). [STATUS14] describes the
+      this module's per-level step follows). [STATUS14] describes the
       composite-interpolation/``T_l = P_l^H P_l`` identity only in prose,
       immediately before eq. 4.2 - no explicit equation number - and never
       labels this procedure "Algorithm 1"; it appears only in prose and in
@@ -95,7 +95,7 @@ References:
       not be fetched this session (no arXiv listing, every mirror failed),
       so whether it actually uses that section/equation numbering, or a
       formal "Algorithm 1" label [STATUS14] does not use, is not verified
-      against the primary source. See ``docs/bootstrap-amg.md`` Sec. 9.
+      against the primary source.
 """
 
 from __future__ import annotations
@@ -129,8 +129,7 @@ def composite_transfer_metrics(
 
     ``P_l`` maps level ``l``'s space up to the finest level's space by
     chaining every prolongation from ``l`` to ``0``; ``P_0`` is the identity,
-    so ``T_0 = I`` (``docs/bootstrap-amg.md`` line 234: "on the finest level
-    ... T = I").
+    so ``T_0 = I``.
 
     Args:
         prolongations (list[torch.Tensor] | tuple[torch.Tensor, ...]):
@@ -198,7 +197,7 @@ def refine_eigenpair(
     ``relax on (A_l - lambda_l T_l) w_l = 0``, then ``lambda_l = <A_l w_l,
     w_l> / <T_l w_l, w_l>`` ([STATUS14] Sec. 4's per-level step). This
     "resembles inverse Rayleigh-quotient iteration with the inverse replaced
-    by relaxation sweeps" (``docs/bootstrap-amg.md`` Sec. 4.2) - and, like
+    by relaxation sweeps" ([STATUS14] Sec. 4) - and, like
     ordinary Rayleigh-quotient iteration, renormalizes to unit ``T``-norm
     after *every single sweep* (not once after all ``sweeps``). This is not
     an extra step beyond what "resembles RQI" already implies:

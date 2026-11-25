@@ -1,7 +1,7 @@
 """Convergence criteria abstractions for iterative solvers.
 
-Ported from ``neuralls.domain.solver.strategies.convergence`` (see
-``docs/plan.md``) with ``numpy`` operations translated to ``torch``
+Ported from ``neuralls.domain.solver.strategies.convergence``
+with ``numpy`` operations translated to ``torch``
 equivalents. Mathematically identical to the frozen numpy reference
 snapshot in ``tests/support/scipy_reference/strategies/convergence.py``
 (Stage 0) - the formula is what the scipy-equivalence benchmarks

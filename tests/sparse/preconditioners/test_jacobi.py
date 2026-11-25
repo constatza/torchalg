@@ -1,8 +1,8 @@
 """Tests for ``torchalg.sparse.preconditioners.jacobi`` (sparse-CSR Jacobi sibling).
 
-Dense-as-oracle, this project's standing testing rule (see ``docs/plan.md``'s
-"Next steps" item 1 and ``tests/sparse/preconditioners/test_ic0.py``'s own
-parity tests for the established pattern).
+Dense-as-oracle, this project's standing testing rule: same algorithm, separate
+implementation, tested against the dense result (see
+``tests/sparse/preconditioners/test_ic0.py``'s own parity tests for the established pattern).
 """
 
 from __future__ import annotations

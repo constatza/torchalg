@@ -1,9 +1,9 @@
 """Multigrid smoothers, sparse-CSR siblings.
 
 Sparse-only counterparts of ``preconditioners.implementations.amg.smoothers``'s
-``JacobiSmoother``/``GaussSeidelSmoother`` (dense; kept separate - see
-``docs/plan.md``'s "Correction: dense and sparse must be separate
-implementations, not an internal branch"). A smoother object holds only
+``JacobiSmoother``/``GaussSeidelSmoother`` (dense; kept separate).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). A smoother object holds only
 configuration; ``prepare(A)`` does every matrix-dependent one-off computation
 (diagonal inverse and spectral-radius damping for Jacobi, level schedules and
 strict-triangle split for Gauss-Seidel) and returns the object that sweeps.
@@ -230,7 +230,7 @@ def resolve_jacobi_default(
     Sparse-CSR sibling of
     ``preconditioners.implementations.amg.smoothers.resolve_jacobi_default``
     - same name and logic, own copy, since the sparse tree never imports
-    the dense tree (``docs/plan.md``).
+    the dense tree (enforced by ``tach.toml``).
 
     Args:
         smoother (MultigridSmoother | None): Explicit smoother strategy.

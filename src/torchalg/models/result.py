@@ -1,15 +1,14 @@
 """Result dataclasses for solver execution.
 
-Ported from ``neuralls.domain.solver.models.result`` (see ``docs/plan.md``)
+Ported from ``neuralls.domain.solver.models.result``
 with ``NDArray`` fields translated to ``torch.Tensor``, list fields
 translated to immutable tuples, and the whole dataclass made ``frozen=True,
 slots=True`` (the reference's ``SolverResult`` was plain, mutable
-``@dataclass``) per this repo's immutability convention (see
-``docs/plan.md``'s "nn.Module usage" architecture decision: state/result
+``@dataclass``) per this repo's immutability convention (state/result
 records are pure immutable data, replaced via ``dataclasses.replace``,
 never mutated in place).
 
-Two deliberate deviations from a straight port, both per ``docs/plan.md``:
+Two deliberate deviations from a straight port:
 
 - ``event_log: EventLog | None`` is replaced by
   ``diagnostics: TerminationDiagnostics`` (see
@@ -17,7 +16,7 @@ Two deliberate deviations from a straight port, both per ``docs/plan.md``:
 - ``iteration_history: IterationHistory | None`` is dropped from this
   module for now: ``IterationHistory`` lives in ``torchalg.monitoring``
   (ported in Stage 8), but ``torchalg.models`` must not depend on
-  ``torchalg.monitoring`` (see the dependency DAG in ``docs/plan.md``).
+  ``torchalg.monitoring`` (enforced by ``tach.toml``).
   Wiring it back onto ``SolverResult`` happens when Stage 9 lands, from a
   module that is allowed to see both.
 
@@ -29,8 +28,8 @@ Design:
     The reference's comparison-workflow-specific result types
     (``CGComparisonResult``, ``PlotPaths``, ``RankedRecommendation``,
     ``ComparisonRecommendations``, ``ComparisonResult``) are not ported here;
-    they belong to ``torchalg.comparison``, the highest orchestration layer per
-    ``docs/plan.md``'s scope trim.
+    they belong to ``torchalg.comparison``, the highest orchestration layer,
+    which is not ported yet.
 
 Theory:
     Results contain both numerical outcomes (solution, residual) and

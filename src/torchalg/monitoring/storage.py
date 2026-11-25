@@ -78,8 +78,9 @@ class VectorHistory:
     computed on: ``add``/``prepend`` move each vector to host memory
     immediately, one at a time, rather than accumulating on the solve device
     and transferring at the end - the latter would not bound peak device
-    memory at all, since the accumulation itself is what exhausts it (see
-    ``docs/bug-full-trace-history-exhausts-gpu-memory.md``).
+    memory at all, since the accumulation itself is what exhausts it (keeping
+    every iterate on the solve device grows device memory as
+    ``O(3 * iterations * n)``, which exhausted GPU memory in ``FULL`` trace mode).
 
     ``add``/``prepend`` copy the whole tuple (``O(k)`` each); the solver loop
     appends to lists in ``IterationHistory`` instead (see ``ScalarHistory``).

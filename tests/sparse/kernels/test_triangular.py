@@ -162,7 +162,7 @@ class TestLevelScheduleAndTriangularSolve:
     def test_backward_schedule_is_not_reversed_forward_schedule(
         self, torch_dtype: torch.dtype
     ) -> None:
-        """Pinned regression for the counterexample in ``docs/plan.md``.
+        """Pinned regression: a reversed forward schedule is not a valid backward schedule.
 
         Symmetric edges (0,1), (1,3), (2,3) on a 4-node DAG: the forward
         schedule is ``[0, 1, 0, 2]``; the "reversed forward" shortcut would

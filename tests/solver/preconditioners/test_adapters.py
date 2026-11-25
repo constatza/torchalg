@@ -8,7 +8,7 @@ Ported from the reference (``dl-experiments``'s
 ``tests/solver/preconditioners/test_adapters.py``), with one omission: the
 reference's ``test_adapter_can_be_injected_into_factory`` exercises the
 TOML-config-driven composition factory (``NeuralPreconditionerConfig``,
-``create_preconditioner``), which ``docs/plan.md``'s scope trim explicitly
+``create_preconditioner``), which this migration explicitly
 excludes from this migration - that factory has no equivalent in
 ``torchalg``. DIP-style "adapter injected via constructor" coverage is kept
 via ``NeuralPreconditioner`` itself in ``test_neural.py``.

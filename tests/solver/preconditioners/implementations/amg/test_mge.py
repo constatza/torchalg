@@ -1,4 +1,4 @@
-"""Multigrid eigensolver (MGE) tests (Bootstrap AMG, docs/bootstrap-amg.md Sec. 4.2, Algorithm 1).
+"""Multigrid eigensolver (MGE) tests (Bootstrap AMG, [STATUS14] Sec. 4).
 
 Fixtures live in this module, matching ``test_algebraic_distance.py``'s,
 ``test_compatible_relaxation.py``'s and ``test_least_squares.py``'s
@@ -38,7 +38,7 @@ def prolongation_4_to_2(torch_dtype: torch.dtype) -> torch.Tensor:
 def test_composite_transfer_metrics_finest_level_is_identity(
     torch_dtype: torch.dtype,
 ) -> None:
-    """[BAMG11]/[STATUS14]: ``T = I`` on the finest level (docs/bootstrap-amg.md line 234)."""
+    """[BAMG11]/[STATUS14]: ``T = I`` on the finest level, where ``P_0`` is the identity."""
     metrics = composite_transfer_metrics([], n0=5, dtype=torch_dtype, device=torch.device("cpu"))
 
     assert len(metrics) == 1

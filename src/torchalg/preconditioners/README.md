@@ -329,7 +329,7 @@ since it's only a win when multiple instances against the same matrix are
 expected.
 
 `BootstrapAMGPreconditioner` (`amg/bootstrap.py`) is Bootstrap AMG (BAMG,
-Brandt/Brannick/Kahl/Livshits 2011, `docs/bootstrap-amg.md`): unlike
+Brandt/Brannick/Kahl/Livshits, SIAM J. Sci. Comput. 33(2), 2011): unlike
 `AggregationCoarsening`/`AdaptiveSAPreconditioner`, the C/F split, the
 strength-of-connection measure and the interpolation weights are all
 derived from test vectors instead of `A`'s raw entries or an M-matrix sign

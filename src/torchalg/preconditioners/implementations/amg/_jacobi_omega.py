@@ -42,8 +42,8 @@ def scaled_by_inverse_diagonal(matrix: torch.Tensor) -> torch.Tensor:
     """``D^-1 A`` with ``D^-1`` zero where the diagonal is zero (PyAMG's ``get_diagonal(inv=True)``).
 
     Dense-only - see ``torchalg.sparse.preconditioners.amg._jacobi_omega``
-    for the sparse-CSR sibling, per ``docs/plan.md``'s "Correction: dense
-    and sparse must be separate implementations, not an internal branch".
+    for the sparse-CSR sibling: same algorithm, separate implementation,
+    tested against the dense result.
 
     Args:
         matrix (torch.Tensor): Square dense matrix ``A``.

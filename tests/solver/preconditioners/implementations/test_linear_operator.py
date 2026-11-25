@@ -3,8 +3,8 @@
 Tests the adapter that wraps an arbitrary linear-operator callable
 (``Callable[[torch.Tensor], torch.Tensor]``) as a preconditioner. Unlike the
 reference (which wraps ``scipy.sparse.linalg.LinearOperator``), ``torchalg``
-has no sparse dependency at all (see ``docs/plan.md``'s dense-only
-directive) - a plain callable is the abstraction here.
+has no sparse dependency at all (the dense tree stays dense-only) - a plain callable is
+the abstraction here.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Re-export shim: ``AMGPreconditioner`` now lives in ``torchalg.multigrid.amg``.
 
-Promoted (see ``docs/plan.md``) because it only ever treats its matrix as an
+Promoted because it only ever treats its matrix as an
 opaque buffer, calling injected ``CoarseningStrategy``/``MultigridCycle``
 strategies - never committing to dense or sparse storage. Kept here so every
 existing ``from .amg import AMGPreconditioner``/``from ...amg.amg import

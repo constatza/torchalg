@@ -1,11 +1,10 @@
 """Solution and system validation utilities for iterative solvers.
 
-Ported from ``neuralls.domain.solver.utils.validation`` (see
-``docs/plan.md``) with ``numpy`` operations translated to ``torch``
+Ported from ``neuralls.domain.solver.utils.validation``
+with ``numpy`` operations translated to ``torch``
 equivalents. ``record_breakdown_event`` is not ported as-is: its only job in
 the reference is constructing and appending an ``EventLog``/``EventType``
-entry, a system this migration deliberately drops (see ``docs/plan.md``'s
-"Architectural corrections" section — replaced by a ``TerminationDiagnostics``
+entry, a system this migration deliberately drops (replaced by a ``TerminationDiagnostics``
 frozen dataclass landing in Stage 2, wired up in Stage 9). The one piece of
 real, reusable logic inside it — classifying *why* a solution broke down
 (NaN vs. Inf) into a reason string — is kept below as

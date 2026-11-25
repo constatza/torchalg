@@ -1,4 +1,4 @@
-"""Algebraic-distance strength-of-connection tests (Bootstrap AMG, docs/bootstrap-amg.md Sec. 2.2).
+"""Algebraic-distance strength-of-connection tests (Bootstrap AMG, [AD11] Sec. 4).
 
 Fixtures live in this module, matching ``test_compatible_relaxation.py``'s
 precedent: each ``implementations/amg/`` test module keeps its fixtures
@@ -93,8 +93,7 @@ def test_vector_weights_t_none_matches_identity_t(
 ) -> None:
     """``composite=None`` (the default) must be numerically identical to passing an
     explicit identity ``T`` - [BAMG11] eq. 4.1's ``T = I`` reduction, valid
-    "on the finest level, or before any MGE enrichment" (``docs/
-    bootstrap-amg.md`` line 234). This is the regression guard for every
+    "on the finest level, or before any MGE enrichment". This is the regression guard for every
     existing ``k_e=0`` caller: passing ``T`` must never change behavior
     unless a caller actually supplies a non-identity one.
     """

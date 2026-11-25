@@ -33,7 +33,10 @@ it. Both implementations expose `solve(target)` with results equal to rounding:
   used when no pivot is within `diagonal_tol` of zero (checked once at setup). At n = 10000 (5-point Laplacian, 199 dependency
   levels) an IC(0) apply takes 0.28 ms against 14.7 ms level-scheduled. A target
   that requires grad falls back to the level-scheduled solve, since the library
-  call has no autograd. The triangle's `crow_indices` take the operand's
+  call has no autograd. That fallback is built on the first such call and kept as a
+  submodule (its schedule is an `O(n + nnz)` host recurrence), except when the triangle
+  itself requires grad: the fallback captures the triangle's graph at construction, so it
+  is then rebuilt per call. The triangle's `crow_indices` take the operand's
   `col_indices` dtype, so an int32 operand stays int32 end to end (MKL then does not
   narrow int64 indices on every call).
 - `PreparedTriangularSolve`: level-scheduled substitution, the default for every
@@ -67,7 +70,10 @@ transpose permutation of `L` - is computed once by `analyze_ic0(A)` into a froze
 `IC0Pattern` (`preconditioners/_ic0_pattern.py`). `sparse_ic0(A, pattern)` then only
 gathers by those positions, so its numeric loop makes no `searchsorted` and no host
 read except one breakdown check after the last level (per-level pivots are collected and
-tested together; the error still names the first failing row in level order); each step
+tested together; the error still names the first failing row in level order, because
+pivots after a breakdown turn `-inf` or `nan` but are concatenated after it); the
+factor's input values are gathered by the integer `pattern.lower_positions`, not the
+boolean mask, so the gather needs no `nonzero` host sync on an accelerator; each step
 writes its positions in place unless grad mode is on and the matrix values require grad,
 when the out-of-place `scatter` keeps autograd's saved versions valid (shared
 `write_positions`/`tracks_autograd` in `preconditioners/_triangular.py`); `pattern=None` analyzes internally for
@@ -139,22 +145,34 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   vector `(n,)` or a block `(n, k)`.
 - `GaussSeidelSmoother.prepare(A)` returns a prepared symmetric Gauss-Seidel
   (`_gauss_seidel.prepare_csr_gauss_seidel` -> `PreparedSymmetricGaussSeidel`) at every
-  size; there is no dense-backed format. Preparation splits `A` into strict-upper and
-  strict-lower CSR triangles and prepares `D + L` and `D + U` with
-  `kernels.triangular.prepare_triangular_solve`, so the substitution is the vendor
-  solve registered for the device (`TRIANGULAR_SOLVER_BY_DEVICE`: MKL on CPU, cuSPARSE
-  on CUDA) and a sweep pair is two triangular solves plus two SpMVs with launches
-  independent of the dependency depth. A matrix with a zero pivot gets the
-  level-scheduled `PreparedTriangularSolve` instead, which freezes that row to the sweep's
-  target. `smooth(..., rows=)` (PyAMG's indexed sweep, used by adaptive SA's
-  final candidate relaxation) has no vendor form: it runs on level-scheduled substitutions
-  that are built on the first masked sweep of a matrix and kept, so matrices only ever
-  swept unmasked (compatible relaxation, setup cycles) build no level schedule. Both
-  `smooth` and `smooth_from_zero` (which skips the first strict-upper matvec) accept
-  a vector `(n,)` or a block `(n, k)`. A sweep pair dispatches 10 operators (n = 2744 and
-  10000) against 2 950 and 6 370 for the level-scheduled substitution, and adaptive SA and bootstrap
-  AMG build identical hierarchies with identical PCG iteration counts on the
-  `benchmarks/cases.py` cases.
+  size; there is no dense-backed format. Preparation compacts `A` to int32 indices once,
+  splits it into strict-upper and strict-lower CSR triangles and prepares `D + L` and
+  `D + U` with `kernels.triangular.prepare_triangular_solve` from the compacted matrix,
+  so the substitution is the vendor solve registered for the device
+  (`TRIANGULAR_SOLVER_BY_DEVICE`: MKL on CPU, cuSPARSE on CUDA) with launches independent
+  of the dependency depth, and MKL never narrows int64 triangle indices per call (161 to
+  137 us per solve at lap2d n = 10 000). The caller chooses how a sweep gets its
+  strict-triangle products (`SweepProducts`). The solve-time smoother takes
+  `FROM_SOLVES`: when every pivot is nonzero the solves satisfy their systems, so the
+  strict products come from them: the backward target is `U x_old + D x_f` and the next
+  forward sweep's `U x_b` is `t_b - D x_b`. `smooth` therefore applies `U` once per call
+  and `smooth_from_zero` (backward target `D x_f`) no strict product at all; results
+  equal the explicit sweep to rounding (1e-16). Setup stages (`GaussSeidelMemo`:
+  compatible relaxation, adaptive and bootstrap test-vector relaxation and setup cycles)
+  take `EXPLICIT` and apply `L` and `U` every sweep, because coarsening and fitting
+  amplify that rounding to 1e-10 in the hierarchy; explicit products keep every setup
+  bit-identical to the textbook sweep. A matrix with a zero pivot gets the
+  level-scheduled `PreparedTriangularSolve`, which freezes that row to the sweep's
+  target; the freeze breaks both identities, so its sweeps apply `L` and `U` explicitly
+  whatever the caller chose. `smooth(..., rows=)` (PyAMG's indexed sweep, used
+  only by adaptive SA's general setup stage; compatible relaxation sweeps unmasked) also
+  goes through the vendor solve: per call it builds both triangles with every inactive or
+  zero-pivot row replaced by an identity row, and solves for the target `current` on the
+  inactive rows, as the dense `_relaxation._prepare_sweep` does (149 us against 5 857 us
+  level-scheduled per solve at n = 10 000). Both `smooth` and `smooth_from_zero` accept a
+  vector `(n,)` or a block `(n, k)`. Adaptive SA, bootstrap AMG and BootCMatch build
+  identical hierarchies with identical PCG iteration counts on the `benchmarks/cases.py`
+  cases.
 - Every prepared smoother also implements `residual(rhs, x) = rhs - A x`, and the
   V- and W-cycles form level residuals through it, so the operator each level
   multiplies by is the one `prepare` stored. Sparse prepared smoothers and
@@ -198,9 +216,13 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   per call at `n = 10 000` but returns unsorted columns, and restoring sorted
   rows costs what the COO path already spends.
 - The dense coarsest-level inverse (`multigrid.coarse_solve.pseudo_inverse_coarse_solver`)
-  uses a Cholesky inverse for a symmetric, well-conditioned SPD matrix of
-  dimension `>= CHOLESKY_MIN_DIMENSION` and `pinv` otherwise, so singular,
-  indefinite, nonsymmetric and small coarse operators are unchanged.
+  uses a Cholesky inverse `X` for a symmetric SPD matrix of dimension
+  `>= CHOLESKY_MIN_DIMENSION` when `||A||_F ||X||_F` (an upper bound on `kappa_2`)
+  is below `0.1 / (c eps)`, which proves `pinv`'s default `rtol = c eps` would
+  truncate no singular value, and `pinv` otherwise, so singular, near-singular,
+  indefinite, nonsymmetric and small coarse operators are unchanged. The Cholesky
+  inverse measured at least as accurate as `pinv` at every `kappa` (forward error
+  2.6e-11 against 3.1e-11 at `kappa = 1e6`, c = 256), so the two differ by rounding.
 - `kernels.diagonal.sparse_diagonal` scatters masked values instead of
   boolean-indexing them, and `repeat_interleave` row-index expansion passes
   `output_size`, so neither reads a count back from the device.

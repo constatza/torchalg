@@ -2,8 +2,9 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg.coarsening.AggregationCoarsening``
-(dense; kept unmodified for comparison - see ``docs/plan.md``'s "Correction:
-dense and sparse must be separate implementations, not an internal branch").
+(dense; kept unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``).
 Builds the strength/aggregation/prolongation chain via this package's own
 sparse-native kernels end to end, never densifying the fine-grid matrix.
 

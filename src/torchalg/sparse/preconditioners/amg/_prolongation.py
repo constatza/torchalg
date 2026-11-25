@@ -2,8 +2,9 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg._prolongation.make_bridge`` (dense;
-kept unmodified for comparison - see ``docs/plan.md``'s "Correction: dense
-and sparse must be separate implementations, not an internal branch"). The
+kept unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). The
 dense version reshapes ``(n_nodes, dofs, m)`` and inserts one all-zero row
 per node-block for the new candidate's dof. For sparse CSR every inserted
 row is structurally empty (zero stored entries), so this reduces to a pure

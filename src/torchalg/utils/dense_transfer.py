@@ -1,7 +1,7 @@
 """Dense transfer operator for multigrid-style prolongation and restriction.
 
-Promoted out of ``preconditioners.implementations.amg.transfer`` (see
-``docs/plan.md``): this class only ever requires its ``P`` argument to be a
+Promoted out of ``preconditioners.implementations.amg.transfer`` because
+this class only ever requires its ``P`` argument to be a
 dense ``torch.Tensor`` and does plain ``P @ x`` / ``P.T @ x`` - nothing about
 it assumes anything about any other tensor in the system (not the fine-grid
 matrix ``A``, not any result format). That makes it format-agnostic in

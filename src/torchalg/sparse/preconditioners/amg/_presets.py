@@ -2,8 +2,9 @@
 
 Sparse-CSR sibling of
 ``preconditioners.implementations.amg._presets`` (dense; kept unmodified for
-comparison - see ``docs/plan.md``'s "Correction: dense and sparse must be
-separate implementations, not an internal branch"). ``adaptive.py``'s
+comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). ``adaptive.py``'s
 sparse alpha-SA port follows the same preset shape as the dense one: run a
 setup algorithm in ``setup()``, then wrap the resulting fixed hierarchy in
 a ``torchalg.multigrid.AMGPreconditioner`` subclass whose ``setup`` is

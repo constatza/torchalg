@@ -1,8 +1,7 @@
 """Tests for the relocated test-vector helpers.
 
 ``TestBuildHierarchy`` moved to ``tests/multigrid/test_hierarchy.py``
-alongside ``hierarchy.py``'s promotion into ``torchalg.multigrid`` (see
-``docs/plan.md``).
+alongside ``hierarchy.py``'s promotion into ``torchalg.multigrid`` .
 """
 
 from __future__ import annotations

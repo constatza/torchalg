@@ -1,7 +1,7 @@
 """Coarsening strategies for AMG hierarchy construction.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.coarsening``
-(see ``docs/plan.md``'s dense-only directive). ``SparseAggregationCoarsening``
+(the dense tree stays dense-only). ``SparseAggregationCoarsening``
 is renamed to ``AggregationCoarsening`` and now builds dense ``torch.Tensor``
 P/R operators instead of ``scipy.sparse`` matrices - the five-step SA-AMG
 algorithm itself (Vanek, Mandel & Brezina 1996) is unchanged; only the
@@ -53,8 +53,8 @@ class AggregationCoarsening:
 
     Dense-only. See ``torchalg.sparse.preconditioners.amg.coarsening
     .AggregationCoarsening`` for the sparse-CSR sibling (same name,
-    disambiguated by package, per ``docs/plan.md``'s "Correction: dense and
-    sparse must be separate implementations, not an internal branch") - the
+    disambiguated by package; same algorithm, separate implementation,
+    tested against the dense result) - the
     caller picks which one to construct based on their matrix's actual
     format, this class never imports or dispatches to the sparse one.
 
@@ -149,9 +149,8 @@ class AggregationCoarsening:
         """Build one coarse level from a dense fine-grid matrix A.
 
         Dense-only - see ``torchalg.sparse.preconditioners.amg.coarsening
-        .AggregationCoarsening`` for the sparse-CSR sibling, per
-        ``docs/plan.md``'s "Correction: dense and sparse must be separate
-        implementations, not an internal branch".
+        .AggregationCoarsening`` for the sparse-CSR sibling: same algorithm,
+        separate implementation, tested against the dense result.
 
         Args:
             A (torch.Tensor): Dense fine-grid matrix ``A``, shape
@@ -225,8 +224,7 @@ class TargetDimensionCoarsening:
     pass (log-spaced, not linear — see that module's docstring) followed
     by bisection of every disagreeing interval down past `step`. A plain
     fixed `step` grid, linear or log, is not enough on its own: on a
-    heterogeneous 25x25 soft-inclusion grid (see `.claude/plan.md`'s
-    investigation notes), the true `theta -> dim` staircase has plateaus
+    heterogeneous 25x25 soft-inclusion grid, the true `theta -> dim` staircase has plateaus
     only ~0.003-0.006 wide sitting between much wider ones, so a `step`
     anywhere near a typical default (0.01-0.1) can straddle and skip them
     outright — silently handing back the same, coarser-than-intended

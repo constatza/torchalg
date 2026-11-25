@@ -4,7 +4,7 @@ Relocated from
 ``tests/solver/preconditioners/implementations/test_amg_hierarchy.py``
 (``TestBuildHierarchy``) alongside the promotion of ``hierarchy.py`` from
 ``torchalg.preconditioners.implementations.amg`` into ``torchalg.multigrid``
-(see ``docs/plan.md``) - same convention used for the ``torchalg.utils``
+- same convention used for the ``torchalg.utils``
 promotions (``tests/solver/utils/``), adapted to this package's own
 top-level name since it is a shared engine, not a ``utils`` leaf.
 """

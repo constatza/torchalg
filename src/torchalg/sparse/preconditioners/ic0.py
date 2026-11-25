@@ -2,13 +2,13 @@
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.ic0.IC0Preconditioner`` (dense; kept
-unmodified for comparison - see ``docs/plan.md``'s "Correction: dense and
-sparse must be separate implementations, not an internal branch"). Row-
+unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``). Row-
 oriented ("left-looking") level-scheduled factorization - not a sparse
-transliteration of the dense column-oriented ("right-looking") Crout loop,
-see ``docs/plan.md``'s "Correction: the row-oriented recurrence
-sparse_ic0/sparse_ilu0 actually need" section, the authoritative spec this
-module implements. Rows are processed in
+transliteration of the dense column-oriented ("right-looking") Crout loop:
+each row depends only on already-finished rows, so the rows of one dependency
+level factor in one batch. Rows are processed in
 ``kernels.triangular.level_schedule``'s row order - not strict ``0..n-1``
 order - since the recurrence's result is independent of visitation order as
 long as every row's dependencies are visited first (same property

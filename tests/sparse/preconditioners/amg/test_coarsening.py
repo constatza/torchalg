@@ -3,9 +3,8 @@
 Cross-checks the standalone sparse ``AggregationCoarsening`` against the
 dense sibling (``torchalg.preconditioners.implementations.amg.coarsening
 .AggregationCoarsening``) on the same matrix - same algorithm, two classes
-now instead of one class's two branches (``docs/plan.md``'s "Correction:
-dense and sparse must be separate implementations, not an internal
-branch"). Replaces the deleted
+now instead of one class's two branches; the sparse tree never imports the dense tree (enforced by
+``tach.toml``). Replaces the deleted
 ``tests/solver/preconditioners/implementations/amg/test_sparse_coarsening.py``.
 """
 

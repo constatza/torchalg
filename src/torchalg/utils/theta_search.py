@@ -24,7 +24,7 @@ monotonicity). A fixed-step grid, linear or log, either wastes evaluations
 re-sampling the flat interior of wide plateaus, or risks striding past a
 narrow one entirely - silently handing back the same, coarser-than-
 intended dimension for two genuinely different targets (this is what
-motivated this module: see `.claude/plan.md`'s investigation notes on a
+motivated this module: a
 25x25 soft-inclusion grid whose true staircase has plateaus as narrow as
 ~0.003 in `theta` sitting between much wider ones).
 

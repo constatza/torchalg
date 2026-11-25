@@ -21,8 +21,9 @@ the paper references.
 
 Sparse-CSR counterpart of
 ``preconditioners.implementations.amg.bootstrap.BAMGCoarsening`` (dense;
-kept unmodified for comparison - see ``docs/plan.md``'s "Correction: dense
-and sparse must be separate implementations, not an internal branch").
+kept unmodified for comparison).
+Same algorithm, separate implementation, tested against the dense result: the
+sparse tree never imports the dense tree (enforced by ``tach.toml``).
 Wires together this session's new sparse kernels
 (``kernels.algebraic_distance.sparse_algebraic_distance``,
 ``kernels.strength.sparse_strength_graph``,
@@ -32,7 +33,7 @@ Wires together this session's new sparse kernels
 format-agnostic promoted leaves (``torchalg.utils.test_vector_weights``,
 ``torchalg.utils.ls_interpolation``) and this package's own
 ``_compatible_relaxation.compatible_relaxation_coarsening``, following
-``docs/bootstrap-amg.md`` Sec. 5's per-level block exactly as the dense
+the [BAMG11]/[STATUS14] per-level setup block exactly as the dense
 class does.
 
 Every change from the dense class follows directly from storage format, not
@@ -729,8 +730,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     setup algorithm, then ``_commit``) with
     genuinely different hierarchy-construction logic (the prebuilt-levels
     pattern), the same "earned inheritance" reasoning that keeps the dense
-    class a subclass too (see ``docs/plan.md``'s "Correction: validation
-    placement, and inheritance vs. composition for presets").
+    class a subclass too (a preset subclasses only when it overrides behavior;
+    pure constructor wiring stays a factory function).
 
     **MGE (``k_e``) is not exposed here** - multigrid-eigensolver enrichment
     has no sparse implementation yet (see

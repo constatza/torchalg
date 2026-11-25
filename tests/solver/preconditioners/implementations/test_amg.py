@@ -9,8 +9,7 @@ numpy to torch tensors, using the shared ``poisson_1d``/``poisson_rhs``/
 
 Deviations from the reference:
     - ``TestAMGConfigParsing`` (TOML/Pydantic config parsing) is not ported:
-      the TOML-driven preconditioner factory is an explicit scope trim (see
-      ``docs/plan.md``'s "Scope trim" section) - not part of this migration.
+      the TOML-driven preconditioner factory is an explicit scope trim - not part of this migration.
     - ``TestNeuralPreconditionerFallback`` is not ported here: it exercises
       ``NeuralPreconditioner``/``ExtraInputPredictorPort``, which land in
       Stage 7 (``ports.py``/``neural.py``), not Stage 5.
@@ -19,8 +18,7 @@ Deviations from the reference:
     - ``TestNeuralStubs`` is new (the reference has no test for these two
       stubs at all): a small regression suite confirming
       ``NeuralCoarseningStrategy``/``NeuralTransferOperator`` are ported
-      as-is and stay a deliberate, tracked gap (see ``docs/plan.md``'s
-      architectural-corrections section) rather than silently rotting.
+      as-is and stay a deliberate, tracked gap rather than silently rotting.
     - Class/fixture names follow the Stage 5 renames documented in
       ``implementations/amg/__init__.py``: ``SparseAggregationCoarsening`` ->
       ``AggregationCoarsening``, ``SparseTransferOperator`` ->
@@ -210,7 +208,7 @@ class TestStandardAggregation:
     """Cross-validated against the compiled PyAMG library's ``standard_aggregation``
     (``amg_core::standard_aggregation``, transliterated verbatim in
     ``_aggregation.py``): 500 random symmetric strength graphs (n=3..40, varying
-    density) matched exactly during development - see ``.claude/plan.md``.
+    density) matched exactly during development.
     """
 
     def test_matches_pyamg_reference_grouping_on_poisson_1d(self, poisson_1d: torch.Tensor) -> None:
@@ -369,7 +367,7 @@ class TestTargetDimensionCoarsening:
     theta >= 0.51, since the chain's off-diagonal strength ratio is exactly
     0.5 everywhere. (Values were 10/20 under the old single-pass
     `greedy_aggregation`; the field-standard algorithm's neighbor-freeness
-    safeguard changes the realized plateau — see `.claude/plan.md`.)
+    safeguard changes the realized plateau.)
     """
 
     def test_search_computes_the_theta_independent_ratios_once(
@@ -1014,8 +1012,7 @@ class TestNeuralStubs:
     """Regression tests for the deliberately-unimplemented neural AMG extension points.
 
     ``NeuralCoarseningStrategy``/``NeuralTransferOperator`` are ported as-is,
-    matching the reference (see ``docs/plan.md``'s architectural-corrections
-    section) - genuine OCP extension points, not dead code. These tests keep
+    matching the reference - genuine OCP extension points, not dead code. These tests keep
     this a deliberate, tracked gap: if a future change accidentally "fixes"
     ``build_transfer`` without anyone noticing, this test starts failing
     instead of the gap silently rotting.

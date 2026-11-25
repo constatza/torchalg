@@ -1,6 +1,6 @@
 """CUDA-only regression test: ``FULL`` trace mode must not scale device memory with iterations.
 
-See ``docs/bug-full-trace-history-exhausts-gpu-memory.md``: the original bug
+The original bug
 grew GPU memory by ``O(3 * iterations * n)`` because iterate vectors were
 cloned onto the solve device every step and never offloaded. The fix moves
 each vector to host memory immediately (``monitoring/storage.py::VectorHistory.add``),

@@ -1,6 +1,6 @@
 """Tests for ``VCycle``/``WCycle``, relocated alongside the promotion of
 ``cycle.py`` from ``torchalg.preconditioners.implementations.amg`` into
-``torchalg.multigrid`` (see ``docs/plan.md``).
+``torchalg.multigrid``.
 
 New here: ``TestWCycleCoarseSolver`` - regression coverage for the
 ``WCycle``/``VCycle`` coarse-solver parity gap found during the promotion

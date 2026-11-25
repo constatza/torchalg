@@ -2,7 +2,7 @@
 
 The 2 sparse test cases from
 ``tests/solver/preconditioners/implementations/test_jacobi_omega.py``,
-moved here per ``docs/plan.md``'s migration notes (the pre-existing dense
+moved here with the sparse sibling (the pre-existing dense
 cases stay at that path).
 """
 

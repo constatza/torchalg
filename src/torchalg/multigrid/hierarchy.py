@@ -1,7 +1,7 @@
 """Multigrid hierarchy data model.
 
 Ported from ``neuralls.domain.solver.preconditioners.implementations.amg.hierarchy``
-(see ``docs/plan.md``) with ``NDArray`` translated to ``torch.Tensor``. Stays
+with ``NDArray`` translated to ``torch.Tensor``. Stays
 plain frozen dataclasses - not ``nn.Module`` - since the prepared hierarchy is
 the state ``AMGPreconditioner.setup()`` builds and holds, not a buffer
 registered directly on a module (see ``amg.py`` for the full

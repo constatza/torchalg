@@ -13,7 +13,7 @@ This package tracks per-iteration telemetry for solver loops:
 
 Discrete termination facts live in ``torchalg.models.diagnostics``;
 the reference implementation's event-log subsystem is intentionally not
-ported (see ``docs/plan.md``).
+ported (see ``torchalg.models.diagnostics`` for why).
 """
 
 from .analysis import energy_norm_history, golub_meurant_error_bound
