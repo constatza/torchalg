@@ -44,7 +44,10 @@ from torchalg.strategies.direction import (
     TwoTermRecurrenceStrategy,
 )
 from torchalg.strategies.norms import euclidean_norm
-from torchalg.strategies.orthogonalization import OrthogonalizationStrategy
+from torchalg.strategies.orthogonalization import (
+    OrthogonalizationReport,
+    OrthogonalizationStrategy,
+)
 from torchalg.utils.numerics import is_finite, pair_is_finite, read_flags, stable_dot_product
 from torchalg.utils.validation import check_solution_validity, describe_breakdown_reason
 
@@ -73,6 +76,28 @@ def _resolve_first_breakdown(recorded: torch.Tensor | None) -> int | None:
         return None
     iteration = int(recorded)
     return iteration if iteration > 0 else None
+
+
+def _read_norms(
+    residual_norm: torch.Tensor | float, rhs_norm: torch.Tensor | float
+) -> tuple[float, float]:
+    """Read the final residual and right-hand-side norms as floats, once.
+
+    Two tensors come back stacked in one host transfer instead of one
+    synchronization each. Both are detached first: ``float()`` of a
+    gradient-tracked scalar warns in ``differentiable=True`` solves, and the
+    result's norms are non-differentiable telemetry, so the returned
+    solution's graph is untouched.
+    """
+    if isinstance(residual_norm, torch.Tensor) and isinstance(rhs_norm, torch.Tensor):
+        residual, rhs = torch.stack([residual_norm.detach(), rhs_norm.detach()]).tolist()
+        return residual, rhs
+    return _as_float(residual_norm), _as_float(rhs_norm)
+
+
+def _as_float(value: torch.Tensor | float) -> float:
+    """``value`` as a Python float, detached first if it is a tensor."""
+    return float(value.detach()) if isinstance(value, torch.Tensor) else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,10 +196,13 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             strategy and the matvec ``A d``: two plain dots, two fused
             ``addcmul`` updates (one launch and one temporary fewer each than
             multiply-then-add), one residual norm, and one packed host read of
-            the finiteness flag of the dot pair together with the stopping
-            test (one synchronization where a read per flag took two). The
-            ``(r, w)`` and ``(d, q)`` values are consumed unchecked until that
-            read, so a non-finite one sends the iteration through
+            the finiteness flag of the dot pair, ANDed with the
+            orthogonalization's projection flag
+            (``OrthogonalizationReport.projections_finite``), together with
+            the stopping test (one synchronization where a read per flag took
+            three for FCG). The ``(r, w)`` and ``(d, q)`` values and the
+            projections are consumed unchecked until that read, so a
+            non-finite one sends the iteration through
             ``_recompute_overflow_safe`` (the ``stable_dot_product`` rescaled
             path) and a second stopping read; the results of both paths agree
             to rounding. The stopping test is folded into ``state.converged``
@@ -190,7 +218,8 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             and the norm are reductions, the SpMV a row reduction, the scalar
             algebra a constant chain), ``S = 1`` (the packed read; ``S = 2``
             with a non-Euclidean stopping norm) and ``L`` a small constant
-            independent of ``n`` (26 dispatches for PCG, 52 to 55 for FCG).
+            independent of ``n`` (26 dispatches for PCG, 52 to 55 for FCG,
+            with a callable Jacobi preconditioner).
             Roofline: ``W/Q`` is about 0.1 flop per byte at ``nnz/n`` near 37
             (memory-bound).
             Work-depth: ``W/D`` is about ``10^3`` to ``10^4`` at ``n = 3000``,
@@ -203,12 +232,15 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             else self._apply_preconditioner(self.preconditioner, state.r, state)
         )
         rw_curr = torch.dot(state.r, w)
-        d, ortho_breakdown = self.direction_strategy.compute_direction(w, rw_curr, state)
+        d, ortho_report = self.direction_strategy.compute_direction(w, rw_curr, state)
         q = state.q if first_iteration else linear_op(d)
         curvature = torch.dot(d, q)
-        # Speculative: assumes the dots are finite, so that the finiteness flag and the
-        # stopping test are read together below instead of one synchronization each.
+        # Speculative: assumes the dots and the orthogonalization projections are finite,
+        # so that their finiteness flag and the stopping test are read together below
+        # instead of one synchronization each.
         finite = pair_is_finite(rw_curr, curvature)
+        if ortho_report is not None:
+            finite = finite & ortho_report.projections_finite
         update = self._advance(state, rw_curr, d, q, curvature)
         converged = self._converged_flag(update.residual_norm, state)
         if converged is None:
@@ -216,8 +248,8 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         else:
             dots_finite, converged_now = read_flags(finite, converged)
         if not dots_finite:
-            rw_curr, d, ortho_breakdown, q, curvature = self._recompute_overflow_safe(
-                linear_op, state, w, rw_curr, d, ortho_breakdown, q
+            rw_curr, d, ortho_report, q, curvature = self._recompute_overflow_safe(
+                linear_op, state, w, rw_curr, d, ortho_report, q
             )
             update = self._advance(state, rw_curr, d, q, curvature)
             converged = self._converged_flag(update.residual_norm, state)
@@ -238,7 +270,9 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             direction_history=direction_history,
             rw_prev=rw_curr,
             ortho_breakdown_at=_record_first_breakdown(
-                state.ortho_breakdown_at, ortho_breakdown, new_iteration
+                state.ortho_breakdown_at,
+                None if ortho_report is None else ortho_report.breakdown,
+                new_iteration,
             ),
             energy_decrement=update.energy_decrement,
         )
@@ -279,27 +313,41 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         w: torch.Tensor,
         rw_plain: torch.Tensor,
         d: torch.Tensor,
-        ortho_breakdown: torch.Tensor | None,
+        ortho_report: OrthogonalizationReport | None,
         q: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor, torch.Tensor, OrthogonalizationReport | None, torch.Tensor, torch.Tensor
+    ]:
         """Redo an iteration's dot products with ``stable_dot_product`` after a non-finite one.
 
-        Called only when a plain ``(r, w)`` or ``(d, q)`` was non-finite
-        (overflow or NaN). A non-finite ``(r, w)`` fed ``d`` and ``q``, so the
-        direction and matrix product are recomputed from the safe value; a
-        finite one leaves both valid. A stateful orthogonalization (window
-        counter) therefore advances twice on such an iteration, which only
-        happens once a dot product has already overflowed.
+        Called only when a plain ``(r, w)``, ``(d, q)`` or orthogonalization
+        projection was non-finite (overflow or NaN). A non-finite ``(r, w)``
+        fed ``d`` and ``q``, so the direction is recomputed from the safe
+        value; a stateful orthogonalization (window counter) therefore
+        advances twice on such an iteration, which only happens once a dot
+        product has already overflowed. Non-finite projections, from the
+        first direction or from that recomputed one, make the direction
+        strategy retry with per-pair ``stable_dot_product`` projections
+        (``overflow_safe_retry``), which replaces the call without advancing
+        it. ``q`` is recomputed whenever ``d`` was.
 
         Returns:
-            tuple: ``(rw, d, ortho_breakdown, q, curvature)`` as the fast path
+            tuple: ``(rw, d, ortho_report, q, curvature)`` as the fast path
                 would have produced them.
         """
         rw = stable_dot_product(state.r, w)
+        recomputed = False
         if not is_finite(rw_plain):
-            d, ortho_breakdown = self.direction_strategy.compute_direction(w, rw, state)
+            d, ortho_report = self.direction_strategy.compute_direction(w, rw, state)
+            recomputed = True
+        if ortho_report is not None and not bool(ortho_report.projections_finite):
+            d, ortho_report = self.direction_strategy.compute_direction(
+                w, rw, state, overflow_safe_retry=True
+            )
+            recomputed = True
+        if recomputed:
             q = state.q if state.iteration == 0 else linear_op(d)
-        return rw, d, ortho_breakdown, q, stable_dot_product(d, q)
+        return rw, d, ortho_report, q, stable_dot_product(d, q)
 
     def _check_stopping(
         self,
@@ -330,15 +378,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             state,
             self.convergence_criterion,
         )
-        # Regression: ``float(state.rhs_norm)`` emitted PyTorch's
-        # gradient-tracked-scalar warning for ``differentiable=True`` solves.
-        # SolverResult/history values are non-differentiable telemetry, so
-        # detach them without altering the returned solution's graph.
-        rhs_norm_for_history = (
-            float(state.rhs_norm.detach())
-            if isinstance(state.rhs_norm, torch.Tensor)
-            else state.rhs_norm
-        )
+        residual_norm_float, rhs_norm_float = _read_norms(state.residual_norm, state.rhs_norm)
         (
             residual_abs_hist,
             residual_rel_hist,
@@ -347,25 +387,13 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             direction_vectors,
             error_history_a_norm,
             energy_decrements,
-        ) = self._extract_histories_from_iteration_history(rhs_norm_for_history)
+        ) = self._extract_histories_from_iteration_history(rhs_norm_float)
 
         ortho_breakdown_at = _resolve_first_breakdown(state.ortho_breakdown_at)
 
         breakdown = state.breakdown or not solution_valid
         diagnostics = self._diagnostics(state, converged, breakdown, ortho_breakdown_at)
         stopping_criterion = self._stopping_criterion(state, converged, breakdown, maxiter)
-
-        # Convert tensor-or-float norms to float for SolverResult
-        residual_norm_float = (
-            float(state.residual_norm.detach())
-            if isinstance(state.residual_norm, torch.Tensor)
-            else state.residual_norm
-        )
-        rhs_norm_float = (
-            float(state.rhs_norm.detach())
-            if isinstance(state.rhs_norm, torch.Tensor)
-            else state.rhs_norm
-        )
 
         return SolverResult(
             converged=converged,

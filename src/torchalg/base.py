@@ -65,8 +65,13 @@ class IterativeSolverBase[S: SolverState](ABC):
         """Solve ``A x = b`` using the concrete iterative method.
 
         ``A``/``b``/``x0`` (and any ``nn.Module``-based preconditioner) are
-        moved to the device chosen by :func:`torchalg.placement.choose_device`
-        (CUDA only where it is expected to pay); the returned solution
+        moved to one device. A system matrix already on an accelerator keeps
+        its device; a CPU-resident one goes where
+        :func:`torchalg.placement.choose_device` expects it to pay (CUDA only
+        for large enough, non-sequential problems). A caller solving many
+        times on the GPU should therefore move ``A`` there once: a CPU ``A``
+        that the policy sends to CUDA is copied host-to-device on every
+        solve. The returned solution
         and ``SolverResult`` stay on that same device rather than being
         forced back to CPU — callers needing NumPy interop already convert
         explicitly (``.detach().cpu().numpy()``), and forcing a transfer
@@ -88,11 +93,11 @@ class IterativeSolverBase[S: SolverState](ABC):
                 solve, so tracking autograd by default only builds graphs
                 nobody uses. Set ``True`` to keep normal autograd tracking,
                 e.g. to backpropagate through an unrolled solve.
-            device: Overrides the automatic cost-based choice when given.
-                The convergence check pulls a Python float off the residual
-                every iteration, which forces a blocking device sync, so a
-                GPU only pays for large enough systems; the automatic choice
-                already keeps small and sweep-bound solves on the CPU.
+            device: Overrides the automatic choice when given. The
+                convergence check pulls a Python flag off the residual every
+                iteration, which forces a blocking device sync, so a GPU only
+                pays for large enough systems; the cost policy already keeps
+                small and sweep-bound CPU-resident solves on the CPU.
         """
         with inference_unless_differentiable(differentiable):
             self._validate_system(A, b, x0)
@@ -194,14 +199,18 @@ class IterativeSolverBase[S: SolverState](ABC):
     ) -> tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
         """Move the system and preconditioner onto the given or autodetected device.
 
-        Callers who pass no ``device`` get the cost-based choice of
-        :func:`torchalg.placement.choose_device`: CUDA only where the GPU is
-        expected to beat the CPU for this matrix size and preconditioner (a
-        sequential-sweep preconditioner such as IC(0) stays on the CPU, small
-        sparse systems stay on the CPU). Passing an explicit ``device`` opts
-        out of that choice entirely. With a matvec callable for ``A`` the
+        Callers who pass no ``device`` keep a system matrix that already lives
+        on an accelerator where it is; a CPU-resident one gets the cost-based
+        choice of :func:`torchalg.placement.choose_device`: CUDA only where
+        the GPU is expected to beat the CPU for this matrix size and
+        preconditioner (a sequential-sweep preconditioner such as IC(0) stays
+        on the CPU, small sparse systems stay on the CPU). Passing an explicit
+        ``device`` opts out of both rules. With a matvec callable for ``A`` the
         operands stay on ``b``'s device, since the callable's own device is
-        not visible here. ``A``/``b``/``x0`` are moved first since a failed
+        not visible here. A CSR matrix that does not require grad gets int32
+        indices (``compact_csr_indices``) before the move, which halves the
+        index bytes of a host-to-device copy; ``_prepare_operator``'s own
+        narrowing is then a no-op. ``A``/``b``/``x0`` are moved first since a failed
         ``.to()`` on a local variable leaves nothing mutated;
         ``self.preconditioner`` is moved last since ``nn.Module.to()``
         mutates its buffers in place and could otherwise be left half-moved
@@ -215,6 +224,7 @@ class IterativeSolverBase[S: SolverState](ABC):
             b (torch.Tensor): RHS vector.
             x0 (torch.Tensor | None): Optional initial guess.
             device (torch.device | None): Explicit target device; ``None``
+                keeps an accelerator-resident matrix in place and otherwise
                 chooses by cost via :func:`torchalg.placement.choose_device`.
 
         Returns:
@@ -223,19 +233,32 @@ class IterativeSolverBase[S: SolverState](ABC):
         """
         preconditioner = getattr(self, "preconditioner", None)
         if device is None:
-            device = (
-                choose_device(placement_problem(A, preconditioner))
-                if isinstance(A, torch.Tensor)
-                else b.device
-            )
+            device = self._resolve_device(A, b, preconditioner)
         if isinstance(A, torch.Tensor):
-            A = A.to(device)
+            # Narrowed before the move, so a host-to-device copy carries half the index bytes.
+            A = (A if A.requires_grad else compact_csr_indices(A)).to(device)
         b = b.to(device)
         if x0 is not None:
             x0 = x0.to(device)
         if isinstance(preconditioner, torch.nn.Module):
             preconditioner.to(device)
         return A, b, x0
+
+    @staticmethod
+    def _resolve_device(
+        A: LinearSystemOperator, b: torch.Tensor, preconditioner: object
+    ) -> torch.device:
+        """Device of a solve called without an explicit ``device``.
+
+        A matvec callable keeps ``b``'s device. A system matrix already on an
+        accelerator keeps its device: moving it to the CPU would copy it back
+        on every solve. Only a CPU-resident matrix goes to the cost policy.
+        """
+        if not isinstance(A, torch.Tensor):
+            return b.device
+        if A.device.type != "cpu":
+            return A.device
+        return choose_device(placement_problem(A, preconditioner))
 
     def _prepare_operator(self, A: LinearSystemOperator) -> Callable[[torch.Tensor], torch.Tensor]:
         """Wrap dense tensors and callables behind a matvec callable.

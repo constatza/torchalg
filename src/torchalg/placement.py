@@ -1,15 +1,16 @@
 """Cost-based CPU/GPU placement of a solve.
 
 ``solve()`` used to move every operand to CUDA whenever a GPU was visible. The cost audit
-(``docs/implementations/cost-model.md``, ``docs/implementations/device-and-gpu.md``) shows
-that this is wrong for most small and medium problems: a GPU kernel pays a launch and
+shows that this is wrong for most small and medium problems: a GPU kernel pays a launch and
 synchronization latency of about 0.1 to 0.2 ms whatever its size, a sparse CPU kernel at
 ``n`` below 10^5 costs microseconds, and a level-scheduled triangular solve issues about 13
 kernels per dependency level, which measured 30 to 165 times slower than the CPU.
 
 The decision therefore depends on what bounds the work (:class:`Placement`) and on its size,
 and is made in one place, :func:`choose_device`, from a :class:`PlacementProblem`. An
-explicit ``device=`` argument of ``solve()`` bypasses it.
+explicit ``device=`` argument of ``solve()`` bypasses it, and ``solve()`` consults it only
+for a CPU-resident system matrix: one already on an accelerator stays there, since moving it
+to the CPU would copy it back on every solve.
 
 The two thresholds are provisional: they come from an AMD gfx1030 measurement (the only GPU
 measured so far) and must be re-measured on CUDA, see ``plans/cost-audit-fixes.md``.

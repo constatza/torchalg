@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
@@ -21,7 +21,14 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from tests.support.dispatch_counter import DispatchCounter
 from torchalg import flexible_cg, pcg
 from torchalg.base import DEFAULT_RTOL
-from torchalg.strategies.orthogonalization import DEFAULT_M_MAX
+from torchalg.conjugate_gradient import FCGSolver, PCGSolver
+from torchalg.models.history import DirectionWindow
+from torchalg.strategies.orthogonalization import (
+    DEFAULT_M_MAX,
+    OrthogonalizationReport,
+    OrthogonalizationStrategy,
+    TruncatedGramSchmidt,
+)
 from torchalg.utils.numerics import stable_dot_product
 
 ITERATIONS = 6
@@ -283,15 +290,19 @@ class TestEquivalence:
 MARGINAL_ITERATIONS = 4
 PCG_SYNCS_PER_ITERATION = 1
 """One packed read of the ``((r, w), (d, q))`` finiteness flag and the stopping test."""
-FCG_SYNCS_PER_ITERATION = 2
-"""PCG's one plus the orthogonalization projection finiteness read."""
+FCG_SYNCS_PER_ITERATION = 1
+"""PCG's one: the projection finiteness flag is packed into the same read."""
 PCG_LAUNCHES_PER_ITERATION_BOUND = 26
 FCG_LAUNCHES_PER_ITERATION_BOUND = 55
+RESULT_FLAG_READS = 2
+"""End of solve: solution finiteness and the convergence test; the norms add no ``item``."""
 
 OVERFLOW_SCALE = 1e155
 """Large enough that a squared entry (1e310) overflows float64 while the dot stays finite."""
 
 OVERFLOW_RTOL = 1e-12
+
+FLAGGED_WINDOW = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +359,41 @@ def _reference_pcg_with_stable_dots(
     return u, r
 
 
+class _SpeculationAlwaysFails(OrthogonalizationStrategy):
+    """Truncated Gram-Schmidt whose speculative pass always reports overflowed projections.
+
+    Forces the solver's retry path on every iteration with history while the
+    speculative direction stays finite, so the result must still match the
+    unflagged solve.
+    """
+
+    def __init__(self, window_size: int) -> None:
+        self._inner = TruncatedGramSchmidt(window_size=window_size)
+        self.retries = 0
+
+    @property
+    def window_size(self) -> int:
+        return self._inner.window_size
+
+    def orthogonalize(
+        self,
+        vector: torch.Tensor,
+        window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
+    ) -> tuple[torch.Tensor, OrthogonalizationReport]:
+        result, report = self._inner.orthogonalize(
+            vector, window, overflow_safe_retry=overflow_safe_retry
+        )
+        if overflow_safe_retry:
+            self.retries += 1
+            return result, report
+        if len(window) == 0:
+            return result, report
+        flagged = torch.zeros((), dtype=torch.bool, device=vector.device)
+        return result, replace(report, projections_finite=flagged)
+
+
 class TestNonFinitePath:
     """Overflowing plain dot products still take the rescaled path, with the same results."""
 
@@ -381,6 +427,23 @@ class TestNonFinitePath:
         assert math.isclose(
             result.residual_abs, float(torch.linalg.norm(expected_r)), rel_tol=OVERFLOW_RTOL
         )
+
+    def test_flagged_projections_are_recomputed_per_pair(
+        self, spd_matrix: torch.Tensor, rhs: torch.Tensor
+    ) -> None:
+        """A non-finite projection flag retries the direction once, with the same window."""
+        flagged = _SpeculationAlwaysFails(window_size=FLAGGED_WINDOW)
+        expected_u, expected = FCGSolver(TruncatedGramSchmidt(FLAGGED_WINDOW)).solve(
+            spd_matrix, rhs, rtol=NO_TOLERANCE, atol=NO_TOLERANCE, maxiter=ITERATIONS
+        )
+
+        solution, result = FCGSolver(flagged).solve(
+            spd_matrix, rhs, rtol=NO_TOLERANCE, atol=NO_TOLERANCE, maxiter=ITERATIONS
+        )
+
+        assert flagged.retries == ITERATIONS - 1
+        assert result.iterations == expected.iterations
+        torch.testing.assert_close(solution, expected_u, rtol=FCG_ROUNDING_RTOL, atol=0.0)
 
     def test_nan_system_still_reports_breakdown(self) -> None:
         """A NaN right-hand side is rejected at the boundary; a NaN matvec ends in breakdown."""
@@ -445,6 +508,28 @@ class TestStructuralCost:
 
         assert (long.syncs - short.syncs) == syncs_per_iteration * MARGINAL_ITERATIONS
         assert (long.launches - short.launches) <= launches_bound * MARGINAL_ITERATIONS
+
+    def test_result_reads_both_norms_in_one_transfer(
+        self, spd_matrix: torch.Tensor, rhs: torch.Tensor
+    ) -> None:
+        """Only the validity and convergence tests read one flag each.
+
+        The residual and right-hand-side norms come back together through one
+        stacked ``tolist()`` transfer, which dispatches no ``item``
+        (it was one ``item`` per norm, three in all).
+        """
+        solver = PCGSolver()
+        with torch.inference_mode():
+            state = solver._initialize_state(
+                solver._prepare_operator(spd_matrix), rhs, None, maxiter=ITERATIONS
+            )
+            counter = DispatchCounter()
+            with counter:
+                result = solver._build_result(state, DEFAULT_RTOL, NO_TOLERANCE, maxiter=ITERATIONS)
+
+        assert counter.syncs == RESULT_FLAG_READS
+        assert result.rhs_norm == float(torch.linalg.norm(rhs))
+        assert result.residual_abs == float(state.residual_norm)
 
     def test_differentiable_pcg_backpropagates(
         self, spd_matrix: torch.Tensor, rhs: torch.Tensor

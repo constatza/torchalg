@@ -99,7 +99,11 @@ class IC0Pattern:
             ``transpose_perm``, it only indexes storage and is held as int32 when
             ``max(n, nnz)`` fits (``structural_index``), else int64.
         lower_mask (torch.Tensor): bool, stored entries that are in the lower
-            triangle and non-zero (reuse key; selects ``L``'s input values).
+            triangle and non-zero (reuse key).
+        lower_positions (torch.Tensor): int64, storage positions of ``lower_mask``'s
+            entries in ascending order; gathers ``L``'s input values. An integer
+            gather, unlike a boolean-mask index, needs no ``nonzero`` and so no host
+            sync on an accelerator.
         lower_crow (torch.Tensor): ``crow_indices`` of the factor ``L``.
         lower_col (torch.Tensor): ``col_indices`` of the factor ``L``.
         levels (tuple[IC0Level, ...]): Forward level schedule with the gather
@@ -113,6 +117,7 @@ class IC0Pattern:
     col: torch.Tensor
     row: torch.Tensor
     lower_mask: torch.Tensor
+    lower_positions: torch.Tensor
     lower_crow: torch.Tensor
     lower_col: torch.Tensor
     levels: tuple[IC0Level, ...]
@@ -248,6 +253,7 @@ def analyze_ic0(matrix: torch.Tensor) -> IC0Pattern:
         col=col.clone(),
         row=structural_index(row, extent),
         lower_mask=lower_mask,
+        lower_positions=lower_mask.nonzero(as_tuple=True)[0],
         lower_crow=structural_index(lower_crow, extent),
         lower_col=structural_index(lower_col, extent),
         levels=tuple(levels),

@@ -124,6 +124,7 @@ def test_empty_history_breakdown_matches_vector_device(
     _, report = strategy.orthogonalize(vector, DirectionWindow.empty(vector))
 
     assert report.breakdown.device == vector.device
+    assert report.projections_finite.device == vector.device
 
 
 @pytest.fixture
@@ -170,19 +171,84 @@ def test_classical_orthogonalization_matches_per_pair_loop(
     torch.testing.assert_close(result, expected, rtol=1e-13, atol=1e-13)
 
 
-def test_overflowing_projections_fall_back_to_scaled_dot_products(
+@pytest.fixture
+def overflowing_window(
     make_window: Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], DirectionWindow],
-) -> None:
-    """Projections past the float range are recomputed by the rescaling dot product."""
+) -> tuple[torch.Tensor, DirectionWindow]:
+    """A vector whose plain projection overflows float64 while its true value is finite."""
     vector = torch.tensor([1e200, 1e200, 0.0], dtype=torch.float64)
     d = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
     q = torch.tensor([1e200, -1e200, 0.0], dtype=torch.float64)
     window = make_window((d,), (q,))
     assert not torch.isfinite(window.q @ vector).all()
+    return vector, window
+
+
+def test_overflowing_projections_are_reported_without_a_host_read(
+    overflowing_window: tuple[torch.Tensor, DirectionWindow],
+) -> None:
+    """The speculative pass flags the overflow as a 0-d tensor for the solver's packed read."""
+    vector, window = overflowing_window
 
     _, report = TruncatedGramSchmidt(window_size=1).orthogonalize(vector, window)
 
+    assert report.projections_finite.shape == ()
+    assert not bool(report.projections_finite)
+
+
+def test_overflow_safe_retry_falls_back_to_scaled_dot_products(
+    overflowing_window: tuple[torch.Tensor, DirectionWindow],
+) -> None:
+    """Projections past the float range are recomputed by the rescaling dot product."""
+    vector, window = overflowing_window
+
+    result, report = TruncatedGramSchmidt(window_size=1).orthogonalize(
+        vector, window, overflow_safe_retry=True
+    )
+
     assert torch.isfinite(report.coefficients).all()
+    assert bool(report.projections_finite)
+    expected = _per_pair_classical(vector, list(window.d), list(window.q))
+    torch.testing.assert_close(result, expected, rtol=1e-14, atol=0.0)
+
+
+def test_finite_projections_are_reported_finite(
+    conjugate_window_inputs: tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]],
+    make_window: Callable[[Sequence[torch.Tensor], Sequence[torch.Tensor]], DirectionWindow],
+) -> None:
+    """The common path reports finite projections, so the solver never retries."""
+    vector, directions, products = conjugate_window_inputs
+
+    _, report = TruncatedGramSchmidt(window_size=3).orthogonalize(
+        vector, make_window(directions, products)
+    )
+
+    assert bool(report.projections_finite)
+
+
+def test_periodic_restart_retry_repeats_the_window_without_advancing(
+    periodic_restart_history: DirectionWindow,
+    torch_dtype: torch.dtype,
+) -> None:
+    """A retry reuses the window of the call it replaces; the sawtooth then continues."""
+    strategy = PeriodicRestartOrthogonalization(m_max=3.0)
+    probe = torch.ones(5, dtype=torch_dtype)
+
+    def window_size(*, retry: bool) -> int:
+        _, report = strategy.orthogonalize(
+            probe, periodic_restart_history, overflow_safe_retry=retry
+        )
+        return len(report.coefficients)
+
+    sizes = [
+        window_size(retry=False),
+        window_size(retry=False),
+        window_size(retry=True),
+        window_size(retry=False),
+        window_size(retry=False),
+    ]
+
+    assert sizes == [1, 2, 2, 3, 1]
 
 
 def test_modified_gram_schmidt_is_sequential_and_uses_stored_curvature(

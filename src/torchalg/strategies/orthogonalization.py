@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import torch
 
 from torchalg.models.history import DirectionWindow
-from torchalg.utils.numerics import is_finite, stable_dot_product
+from torchalg.utils.numerics import stable_dot_product
 
 DEFAULT_M_MAX = 20
 REORTHOG_ZERO_NORM_TOL = 1e-14
@@ -30,6 +30,15 @@ class OrthogonalizationReport:
     reads this per-iteration — it's batched into a single extraction at the
     very end of the solve (see CGState.ortho_breakdown_at)."""
 
+    projections_finite: torch.Tensor = field(default_factory=lambda: torch.tensor(True))
+    """0-d bool tensor: whether every projection ``(vector, q_j)`` is finite.
+    Classical Gram-Schmidt computes them as one unchecked matrix-vector product
+    and leaves this flag on the device, so the solver reads it together with
+    its other per-iteration flags in one host synchronization. ``False`` means
+    a projection overflowed and the result is invalid; the caller repeats the
+    call with ``overflow_safe_retry=True``, which recomputes each projection
+    with ``stable_dot_product``."""
+
 
 def _no_breakdown(reference: torch.Tensor) -> torch.Tensor:
     """A 0-d ``False`` tensor matching ``reference``'s device.
@@ -43,11 +52,17 @@ def _no_breakdown(reference: torch.Tensor) -> torch.Tensor:
     return torch.zeros((), dtype=torch.bool, device=reference.device)
 
 
+def _finite(reference: torch.Tensor) -> torch.Tensor:
+    """A 0-d ``True`` tensor on ``reference``'s device, for reports with no unchecked projection."""
+    return torch.ones((), dtype=torch.bool, device=reference.device)
+
+
 def _empty_report(vector: torch.Tensor) -> OrthogonalizationReport:
     """Report for an orthogonalization against an empty window."""
     return OrthogonalizationReport(
         coefficients=torch.empty(0, dtype=vector.dtype, device=vector.device),
         breakdown=_no_breakdown(vector),
+        projections_finite=_finite(vector),
     )
 
 
@@ -64,8 +79,16 @@ class OrthogonalizationStrategy(ABC):
         self,
         vector: torch.Tensor,
         window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
-        """Orthogonalize ``vector`` against the stored directions/products."""
+        """Orthogonalize ``vector`` against the stored directions/products.
+
+        ``overflow_safe_retry=True`` repeats the previous call, whose report
+        had ``projections_finite`` false, with every projection taken by
+        ``stable_dot_product``: same window, and a stateful strategy does not
+        advance, so the retry replaces that call rather than adding one.
+        """
 
 
 class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
@@ -104,23 +127,25 @@ class PeriodicRestartOrthogonalization(OrthogonalizationStrategy):
         self,
         vector: torch.Tensor,
         window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Orthogonalize using FCG periodic restart."""
+        if not overflow_safe_retry:
+            self._iteration_count += 1
+        call_index = self._iteration_count - 1
         n_history = len(window)
 
         if n_history == 0:
-            self._iteration_count += 1
             return vector.clone(), _empty_report(vector)
 
         if math.isinf(self.m_max):
             m_i = n_history
         else:
-            m_i = (self._iteration_count % int(self.m_max)) + 1
+            m_i = (call_index % int(self.m_max)) + 1
             m_i = min(m_i, n_history)
 
-        result, report = _orthogonalize_classical(vector, window.tail(m_i))
-        self._iteration_count += 1
-        return result, report
+        return _orthogonalize_classical(vector, window.tail(m_i), overflow_safe=overflow_safe_retry)
 
 
 class TruncatedGramSchmidt(OrthogonalizationStrategy):
@@ -147,12 +172,16 @@ class TruncatedGramSchmidt(OrthogonalizationStrategy):
         self,
         vector: torch.Tensor,
         window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Orthogonalize against the last ``window_size`` directions."""
         if len(window) == 0:
             return vector.clone(), _empty_report(vector)
 
-        return _orthogonalize_classical(vector, window.tail(self._window_size))
+        return _orthogonalize_classical(
+            vector, window.tail(self._window_size), overflow_safe=overflow_safe_retry
+        )
 
 
 class ModifiedGramSchmidt(OrthogonalizationStrategy):
@@ -174,12 +203,16 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
         self,
         vector: torch.Tensor,
         window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Orthogonalize using the updated vector for each numerator.
 
         Inherently sequential: each numerator uses the vector already
         updated by the previous directions, so this cannot be collapsed into
-        matrix-vector products without changing the algorithm.
+        matrix-vector products without changing the algorithm. Every
+        numerator is already a ``stable_dot_product``, so the projections are
+        always finite and ``overflow_safe_retry`` changes nothing.
         """
         if len(window) == 0:
             return vector.clone(), _empty_report(vector)
@@ -191,7 +224,7 @@ class ModifiedGramSchmidt(OrthogonalizationStrategy):
             coefficients.append(coeff)
             result = result - coeff * d_j
 
-        return result, _build_report(vector, result, torch.stack(coefficients))
+        return result, _build_report(vector, result, torch.stack(coefficients), _finite(vector))
 
 
 def create_fcg_orthogonalization(
@@ -207,22 +240,25 @@ def create_fcg_orthogonalization(
     return PeriodicRestartOrthogonalization(m_max=float(m_max))
 
 
-def _projections(vector: torch.Tensor, window: DirectionWindow) -> torch.Tensor:
+def _projections(
+    vector: torch.Tensor, window: DirectionWindow, *, overflow_safe: bool
+) -> torch.Tensor:
     """Return ``[(vector, q_j)]`` for every stored pair, shape ``(k,)``.
 
-    One matrix-vector product; if any entry is non-finite (overflow), the
-    per-pair ``stable_dot_product`` loop recomputes them, so overflow
-    handling matches the sequential formulation.
+    Speculatively one unchecked matrix-vector product; ``overflow_safe`` takes
+    the per-pair ``stable_dot_product`` loop instead, so overflow handling
+    matches the sequential formulation.
     """
-    projections = window.q @ vector
-    if is_finite(projections):
-        return projections
-    return torch.stack([stable_dot_product(vector, q_j) for q_j in window.q])
+    if overflow_safe:
+        return torch.stack([stable_dot_product(vector, q_j) for q_j in window.q])
+    return window.q @ vector
 
 
 def _orthogonalize_classical(
     vector: torch.Tensor,
     window: DirectionWindow,
+    *,
+    overflow_safe: bool,
 ) -> tuple[torch.Tensor, OrthogonalizationReport]:
     """Apply classical A-conjugacy Gram-Schmidt against ``window``.
 
@@ -231,16 +267,27 @@ def _orthogonalize_classical(
     and the sequential sum ``vector - sum_j c_j d_j`` is one matrix-vector
     product ``D^T c`` (the same formula, summed in a different order). The
     denominators ``(d_j, q_j)`` are the curvatures stored with the window.
+
+    Cost:
+        The finiteness of the projections stays on the device (``isfinite``
+        and ``all``, two launches, no host synchronization) and reaches the
+        solver through ``OrthogonalizationReport.projections_finite``. An
+        overflow is absorbing, so a non-finite projection makes the
+        coefficients and the result non-finite; the solver discards them
+        and retries with ``overflow_safe``.
     """
-    coefficients = _projections(vector, window) / window.curvature
+    projections = _projections(vector, window, overflow_safe=overflow_safe)
+    coefficients = projections / window.curvature
     result = torch.addmv(vector, window.d.mT, coefficients, alpha=-1)
-    return result, _build_report(vector, result, coefficients)
+    finite = torch.isfinite(projections).all()
+    return result, _build_report(vector, result, coefficients, finite)
 
 
 def _build_report(
     vector: torch.Tensor,
     result: torch.Tensor,
     coefficients: torch.Tensor,
+    projections_finite: torch.Tensor,
 ) -> OrthogonalizationReport:
     """Build an orthogonalization report with breakdown classification.
 
@@ -252,4 +299,6 @@ def _build_report(
     result_norm = torch.linalg.norm(result)
     vector_norm = torch.linalg.norm(vector)
     breakdown = result_norm < REORTHOG_ZERO_NORM_TOL * torch.clamp_min(vector_norm, 1.0)
-    return OrthogonalizationReport(coefficients=coefficients, breakdown=breakdown)
+    return OrthogonalizationReport(
+        coefficients=coefficients, breakdown=breakdown, projections_finite=projections_finite
+    )

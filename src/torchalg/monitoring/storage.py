@@ -13,14 +13,14 @@ def as_scalar_value(value: torch.Tensor | float) -> torch.Tensor:
 
 
 def to_cpu_copy(vector: torch.Tensor) -> torch.Tensor:
-    """Detach and move ``vector`` to a fresh CPU tensor.
+    """Detach and copy ``vector`` into a fresh CPU tensor.
 
-    ``.to("cpu")`` is a no-op view (not a copy) when ``vector`` is already on
-    CPU, so the trailing ``.clone()`` only actually allocates in that case -
-    it guarantees the stored copy is immune to the caller mutating its own
-    tensor afterward, regardless of the solve device.
+    ``copy=True`` makes ``.to`` allocate even when ``vector`` is already on
+    CPU (where a plain ``.to("cpu")`` returns ``vector`` itself), so the stored
+    copy is immune to the caller mutating its own tensor afterward. From an
+    accelerator it is the single device-to-host transfer, with no second copy.
     """
-    return vector.detach().to("cpu").clone()
+    return vector.detach().to("cpu", copy=True)
 
 
 @dataclass(frozen=True, slots=True)

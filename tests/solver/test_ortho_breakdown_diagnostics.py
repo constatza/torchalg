@@ -41,6 +41,8 @@ class _AlwaysBreaksDown(OrthogonalizationStrategy):
         self,
         vector: torch.Tensor,
         window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Pass ``vector`` through unchanged, always flagged as breakdown."""
         return vector, OrthogonalizationReport(
@@ -60,6 +62,8 @@ class _NeverBreaksDown(OrthogonalizationStrategy):
         self,
         vector: torch.Tensor,
         window: DirectionWindow,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Pass ``vector`` through unchanged, never flagged as breakdown."""
         return vector, OrthogonalizationReport(

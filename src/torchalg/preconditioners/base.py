@@ -510,13 +510,16 @@ class Identity(StaticSetupPreconditioner):
         - No computational overhead.
 
     Cost:
-        Setup: none. Apply, ``k`` right-hand-side columns, ``V = 8`` bytes per
-        ``float64``: ``W = 0``, ``Q = 2Vnk`` (the clone reads and writes the
-        residual once, so the caller owns a distinct buffer), ``D = 1``,
-        ``L = 1``, ``S = 0``.
-        Roofline: ``W/Q = 0``, a pure copy bounded by memory bandwidth.
-        Work-depth: ``W/D = 0``; the cost of an unpreconditioned solve is the
-        PCG iteration alone, which the iteration count multiplies.
+        Setup: none. Apply: ``W = 0``, ``Q = 0``, ``D = 0``, ``L = 0``,
+        ``S = 0``; the input tensor itself is returned. No solver writes ``r``
+        or ``z`` in place (the CG updates are out of place, and the first
+        direction and an empty FCG window still copy), so a defensive clone
+        would only add a ``2Vn`` memory pass per iteration: measured 6-15% of
+        a plain-CG iteration (129 to 120 us at ``n = 10^4``, 214 to 184 us at
+        ``n = 9 * 10^4``), with bit-identical iterates.
+        Roofline and work-depth: nothing to bound; the cost of an
+        unpreconditioned solve is the PCG iteration alone, which the
+        iteration count multiplies.
 
     Stateless, so it is always ready - construction alone satisfies the
     ``setup()``-before-``apply()`` contract (``setup()`` is still provided,
@@ -555,6 +558,7 @@ class Identity(StaticSetupPreconditioner):
                 doesn't need context).
 
         Returns:
-            torch.Tensor: Clone of the input residual vector (z = r).
+            torch.Tensor: The input tensor itself (z = r), not a copy; a
+                caller that writes ``z`` in place writes ``r``.
         """
-        return residual.clone()
+        return residual

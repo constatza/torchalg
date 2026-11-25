@@ -12,11 +12,15 @@ References:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 
 import torch
 
 from torchalg.models.state import CGState
-from torchalg.strategies.orthogonalization import OrthogonalizationStrategy
+from torchalg.strategies.orthogonalization import (
+    OrthogonalizationReport,
+    OrthogonalizationStrategy,
+)
 
 
 class DirectionStrategy(ABC):
@@ -29,8 +33,13 @@ class DirectionStrategy(ABC):
 
     @abstractmethod
     def compute_direction(
-        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        self,
+        w: torch.Tensor,
+        rw: torch.Tensor,
+        state: CGState,
+        *,
+        overflow_safe_retry: bool = False,
+    ) -> tuple[torch.Tensor, OrthogonalizationReport | None]:
         """Compute the search direction for the current state.
 
         Args:
@@ -40,12 +49,18 @@ class DirectionStrategy(ABC):
                 direction must be a copy of ``w`` (there is nothing to
                 conjugate against); the solver reuses the precomputed
                 ``state.q = A w`` for that first direction.
+            overflow_safe_retry: Repeat the previous call, whose report had
+                ``projections_finite`` false, with overflow-safe projections
+                and without advancing a stateful orthogonalization (see
+                ``OrthogonalizationStrategy.orthogonalize``).
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor | None]: ``(direction,
-                ortho_breakdown)`` - ``ortho_breakdown`` is a 0-d bool tensor,
-                ``True`` iff this step's orthogonalization reported a
-                near-zero/degenerate result, or ``None`` for strategies that
+            tuple[torch.Tensor, OrthogonalizationReport | None]:
+                ``(direction, report)`` - the orthogonalization report, whose
+                ``breakdown`` is ``True`` iff this step reported a
+                near-zero/degenerate result and whose ``projections_finite``
+                is ``False`` iff the direction must be recomputed with
+                ``overflow_safe_retry``; or ``None`` for strategies that
                 perform no orthogonalization (nothing to report, and no
                 per-iteration flag allocation).
         """
@@ -75,9 +90,16 @@ class TwoTermRecurrenceStrategy(DirectionStrategy):
         return 0
 
     def compute_direction(
-        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
+        self,
+        w: torch.Tensor,
+        rw: torch.Tensor,
+        state: CGState,
+        *,
+        overflow_safe_retry: bool = False,
     ) -> tuple[torch.Tensor, None]:
         """Compute ``d_k = w_k + beta_k d_{k-1}``. Never orthogonalizes.
+
+        Takes no projection, so ``overflow_safe_retry`` changes nothing.
 
         Cost:
             One fused ``addcmul`` launch with no ``beta * d`` temporary, instead
@@ -119,14 +141,19 @@ class OrthogonalizationDirectionStrategy(DirectionStrategy):
         return self.orthogonalization.window_size
 
     def compute_direction(
-        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        w: torch.Tensor,
+        rw: torch.Tensor,
+        state: CGState,
+        *,
+        overflow_safe_retry: bool = False,
+    ) -> tuple[torch.Tensor, OrthogonalizationReport]:
         """Orthogonalize ``w`` against stored directions/products."""
-        direction, report = self.orthogonalization.orthogonalize(
+        return self.orthogonalization.orthogonalize(
             vector=w,
             window=state.direction_history.window(like=w),
+            overflow_safe_retry=overflow_safe_retry,
         )
-        return direction, report.breakdown
 
 
 class CompositeDirectionStrategy(DirectionStrategy):
@@ -156,16 +183,32 @@ class CompositeDirectionStrategy(DirectionStrategy):
         return self.reorthog_strategy.window_size
 
     def compute_direction(
-        self, w: torch.Tensor, rw: torch.Tensor, state: CGState
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Compute base direction and optionally reorthogonalize it."""
-        direction, base_breakdown = self.base_strategy.compute_direction(w, rw, state)
+        self,
+        w: torch.Tensor,
+        rw: torch.Tensor,
+        state: CGState,
+        *,
+        overflow_safe_retry: bool = False,
+    ) -> tuple[torch.Tensor, OrthogonalizationReport | None]:
+        """Compute base direction and optionally reorthogonalize it.
+
+        A retry is passed to both stages; the combined report breaks down
+        if either stage did and has finite projections only if both have.
+        """
+        direction, base_report = self.base_strategy.compute_direction(
+            w, rw, state, overflow_safe_retry=overflow_safe_retry
+        )
         if self.reorthog_strategy is None:
-            return direction, base_breakdown
+            return direction, base_report
         reorthogonalized, report = self.reorthog_strategy.orthogonalize(
             vector=direction,
             window=state.direction_history.window(like=direction),
+            overflow_safe_retry=overflow_safe_retry,
         )
-        if base_breakdown is None:
-            return reorthogonalized, report.breakdown
-        return reorthogonalized, base_breakdown | report.breakdown
+        if base_report is None:
+            return reorthogonalized, report
+        return reorthogonalized, replace(
+            report,
+            breakdown=base_report.breakdown | report.breakdown,
+            projections_finite=base_report.projections_finite & report.projections_finite,
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +11,7 @@ import torch
 from torchalg.sparse.preconditioners import _ic0_pattern
 from torchalg.sparse.preconditioners._ic0_pattern import IC0Pattern, analyze_ic0
 from torchalg.sparse.preconditioners._triangular import build_sparse_cholesky_solve_cache
-from torchalg.sparse.preconditioners.ic0 import sparse_ic0
+from torchalg.sparse.preconditioners.ic0 import _factorize, sparse_ic0
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -322,3 +323,30 @@ class TestStructuralIndexWidth:
     ) -> None:
         assert not analyze_ic0(poisson_2d_csr).matches(poisson_2d_int32_csr)
         assert not analyze_ic0(poisson_2d_int32_csr).matches(poisson_2d_csr)
+
+
+class TestLowerPositions:
+    """Integer gather positions select ``L``'s input values without a boolean-mask sync."""
+
+    @pytest.mark.parametrize("fixture", ["poisson_2d_csr", "poisson_2d_explicit_zero_csr"])
+    def test_select_the_same_values_as_the_lower_mask(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        matrix = request.getfixturevalue(fixture)
+        pattern = analyze_ic0(matrix)
+
+        assert pattern.lower_positions.dtype == torch.int64
+        assert torch.equal(
+            matrix.values()[pattern.lower_positions], matrix.values()[pattern.lower_mask]
+        )
+
+    def test_factor_is_bit_identical_to_the_mask_gather(
+        self, poisson_2d_rescaled_csr: torch.Tensor
+    ) -> None:
+        pattern = analyze_ic0(poisson_2d_rescaled_csr)
+        mask_gather = dataclasses.replace(pattern, lower_positions=pattern.lower_mask)
+
+        _assert_same_csr(
+            _factorize(poisson_2d_rescaled_csr, pattern),
+            _factorize(poisson_2d_rescaled_csr, mask_gather),
+        )

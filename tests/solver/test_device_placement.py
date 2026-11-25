@@ -154,6 +154,83 @@ def test_solve_preserves_preconditioner_buffer_dtype(
     assert preconditioner.inv_diag.dtype == dtype
 
 
+@pytest.fixture
+def cuda_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend no CUDA device is visible, so the cost policy alone would pick the CPU."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+
+@pytest.fixture
+def meta_system(
+    tridiagonal_system_known_solution_torch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The small system on the ``meta`` device, standing in for an accelerator.
+
+    A copy out of ``meta`` raises, so any move to the CPU fails loudly.
+    """
+    matrix, rhs, _ = tridiagonal_system_known_solution_torch
+    return matrix.to("meta"), rhs.to("meta")
+
+
+@pytest.mark.usefixtures("cuda_absent")
+def test_operands_already_on_an_accelerator_stay_there(
+    meta_system: tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    """With no explicit device, a non-CPU system matrix keeps its device.
+
+    The cost policy would choose the CPU for this small dense system; it decides
+    only for CPU-resident input, so no per-solve device-to-host copy happens.
+    """
+    matrix, rhs = meta_system
+    solver = PCGSolver()
+
+    placed_matrix, placed_rhs, placed_guess = solver._place_on_device(
+        matrix, rhs, torch.zeros_like(rhs)
+    )
+
+    assert isinstance(placed_matrix, torch.Tensor)
+    assert placed_matrix.device == matrix.device
+    assert placed_rhs.device == matrix.device
+    assert placed_guess is not None
+    assert placed_guess.device == matrix.device
+
+
+@pytest.fixture
+def csr_system(
+    tridiagonal_system_known_solution_torch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The small system with a CPU CSR matrix carrying PyTorch's default int64 indices."""
+    matrix, rhs, _ = tridiagonal_system_known_solution_torch
+    csr = matrix.to_sparse_csr()
+    assert csr.crow_indices().dtype == csr.col_indices().dtype == torch.int64
+    return csr, rhs
+
+
+def test_csr_indices_are_narrowed_before_the_move(
+    csr_system: tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    """A CPU int64 CSR matrix leaves placement with int32 indices (half the H2D index bytes)."""
+    matrix, rhs = csr_system
+
+    placed, _, _ = PCGSolver()._place_on_device(matrix, rhs, None)
+
+    assert isinstance(placed, torch.Tensor)
+    assert placed.crow_indices().dtype == placed.col_indices().dtype == torch.int32
+    assert matrix.crow_indices().dtype == torch.int64
+
+
+def test_csr_that_requires_grad_keeps_its_indices(
+    csr_system: tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    """A tracked matrix is not rebuilt, so its autograd graph stays intact."""
+    matrix, rhs = csr_system
+    tracked = matrix.clone().requires_grad_(True)
+
+    placed, _, _ = PCGSolver()._place_on_device(tracked, rhs, None)
+
+    assert placed is tracked
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA device")
 def test_solve_runs_on_cuda_when_available(
     tridiagonal_system_known_solution_torch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],

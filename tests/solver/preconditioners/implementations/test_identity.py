@@ -1,7 +1,7 @@
 """Tests for Identity preconditioner.
 
 Tests the noop Identity preconditioner to ensure:
-- Returns a clone of the input (not the same tensor).
+- Returns the input tensor itself (``z = r``, no copy).
 - Doesn't modify input values.
 """
 
@@ -12,26 +12,18 @@ import torch
 from torchalg.preconditioners.implementations import Identity
 
 
-def test_identity_preconditioner_is_noop(residual_vector: torch.Tensor) -> None:
-    """Verify identity preconditioner returns a clone of the input.
+def test_identity_preconditioner_returns_the_input_unchanged(
+    residual_vector: torch.Tensor,
+) -> None:
+    """Verify identity preconditioner returns the input tensor itself.
 
     Theory:
-        Identity preconditioner: M = I, so z = M^{-1}r = r. Should return an
-        exact clone without modification.
+        Identity preconditioner: M = I, so z = M^{-1}r = r. No solver writes
+        ``r`` or ``z`` in place, so a copy would only cost a memory pass.
     """
-    precond = Identity()
-    z = precond.apply(residual_vector)
+    expected = residual_vector.clone()
 
-    torch.testing.assert_close(z, residual_vector)
-    assert z is not residual_vector
+    z = Identity().apply(residual_vector)
 
-
-def test_identity_preconditioner_does_not_alias_input(residual_vector: torch.Tensor) -> None:
-    """Verify mutating the output does not affect the original residual."""
-    precond = Identity()
-    original_first_entry = residual_vector[0].clone()
-
-    z = precond.apply(residual_vector)
-    z[0] = 999.0
-
-    assert residual_vector[0] == original_first_entry
+    assert z is residual_vector
+    assert torch.equal(z, expected)

@@ -7,7 +7,7 @@ import dataclasses
 import pytest
 import torch
 
-from torchalg.monitoring.storage import ScalarHistory, VectorHistory
+from torchalg.monitoring.storage import ScalarHistory, VectorHistory, to_cpu_copy
 
 
 class TestScalarHistory:
@@ -142,3 +142,18 @@ class TestVectorHistory:
         history = VectorHistory.empty()
         with pytest.raises(dataclasses.FrozenInstanceError):
             history.vectors = (torch.ones(1),)  # ty: ignore[invalid-assignment]
+
+
+class TestToCpuCopy:
+    """``to_cpu_copy`` returns a detached CPU tensor that owns its storage."""
+
+    def test_cpu_input_is_not_aliased(self, residual_vector: torch.Tensor) -> None:
+        copy = to_cpu_copy(residual_vector)
+
+        assert copy.untyped_storage().data_ptr() != residual_vector.untyped_storage().data_ptr()
+        assert torch.equal(copy, residual_vector)
+
+    def test_result_is_detached(self, residual_vector: torch.Tensor) -> None:
+        copy = to_cpu_copy(residual_vector.clone().requires_grad_(True))
+
+        assert not copy.requires_grad

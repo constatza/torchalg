@@ -31,7 +31,7 @@ def test_two_term_recurrence_first_iteration_returns_preconditioned_residual(
         rhs_norm=1.0,
     )
 
-    direction, ortho_breakdown = TwoTermRecurrenceStrategy().compute_direction(
+    direction, ortho_report = TwoTermRecurrenceStrategy().compute_direction(
         two_term_preconditioned_residual,
         torch.dot(two_term_current_residual, two_term_preconditioned_residual),
         state,
@@ -39,7 +39,7 @@ def test_two_term_recurrence_first_iteration_returns_preconditioned_residual(
 
     assert torch.equal(direction, two_term_preconditioned_residual)
     assert direction is not two_term_preconditioned_residual
-    assert ortho_breakdown is None
+    assert ortho_report is None
 
 
 def test_two_term_recurrence_uses_fletcher_reeves_beta(
@@ -60,7 +60,7 @@ def test_two_term_recurrence_uses_fletcher_reeves_beta(
     state = replace(base_state, iteration=1, rw_prev=2.0)
 
     rw = torch.dot(two_term_current_residual, two_term_preconditioned_residual)
-    direction, ortho_breakdown = TwoTermRecurrenceStrategy().compute_direction(
+    direction, ortho_report = TwoTermRecurrenceStrategy().compute_direction(
         two_term_preconditioned_residual,
         rw,
         state,
@@ -68,7 +68,7 @@ def test_two_term_recurrence_uses_fletcher_reeves_beta(
 
     expected = two_term_preconditioned_residual + 0.5 * two_term_previous_direction
     assert torch.allclose(direction, expected)
-    assert ortho_breakdown is None
+    assert ortho_report is None
 
 
 def test_two_term_recurrence_backpropagates_to_every_input(
@@ -136,7 +136,7 @@ def test_orthogonalization_direction_strategy_uses_direction_history(
         rw_prev=0.0,
     )
 
-    direction, ortho_breakdown = OrthogonalizationDirectionStrategy(
+    direction, ortho_report = OrthogonalizationDirectionStrategy(
         TruncatedGramSchmidt(window_size=2),
     ).compute_direction(
         orthogonalization_probe,
@@ -145,7 +145,8 @@ def test_orthogonalization_direction_strategy_uses_direction_history(
     )
 
     assert torch.allclose(direction, torch.tensor([0.0, 1.0], dtype=direction.dtype))
-    assert bool(ortho_breakdown) is False
+    assert ortho_report is not None
+    assert bool(ortho_report.breakdown) is False
 
 
 def test_two_term_recurrence_reports_no_breakdown_without_allocating_a_flag(
@@ -173,8 +174,8 @@ def test_two_term_recurrence_reports_no_breakdown_without_allocating_a_flag(
         rw_prev=1.0,
     )
 
-    _, ortho_breakdown = TwoTermRecurrenceStrategy().compute_direction(
+    _, ortho_report = TwoTermRecurrenceStrategy().compute_direction(
         two_term_preconditioned_residual, torch.tensor(1.0, dtype=state.r.dtype), state
     )
 
-    assert ortho_breakdown is None
+    assert ortho_report is None

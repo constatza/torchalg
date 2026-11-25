@@ -75,9 +75,9 @@ def _factorize(matrix: torch.Tensor, pattern: IC0Pattern) -> torch.Tensor:
     # slicing the same backing storage for a gather and then writing back into
     # it in place would bump that storage's version between the forward read
     # and the later backward pass. Without tracking there is nothing to save,
-    # and ``values`` is already a private copy (boolean-mask indexing).
+    # and ``values`` is already a private copy (an integer-index gather).
     in_place = not tracks_autograd(matrix)
-    values = matrix.values()[pattern.lower_mask]
+    values = matrix.values()[pattern.lower_positions]
     level_pivots: list[torch.Tensor] = []
 
     for level in pattern.levels:
@@ -115,8 +115,12 @@ def _factorize(matrix: torch.Tensor, pattern: IC0Pattern) -> torch.Tensor:
 def _raise_on_breakdown(pattern: IC0Pattern, level_pivots: list[torch.Tensor]) -> None:
     """Raise for the first non-positive pivot in level order, with one host sync.
 
-    A breakdown makes later pivots ``nan``, which compare false against zero,
-    so the first non-positive pivot found here is the first that occurred.
+    Elimination does not stop at a breakdown. After a zero pivot, later pivots
+    that depend on it become ``-inf`` (the division by ``sqrt(0)`` feeds
+    ``inf**2`` into their dot products) and so also compare non-positive;
+    after a negative one they become ``nan``. Either way ``torch.cat`` keeps
+    level order and a pivot depends only on earlier levels, so the first
+    non-positive pivot found here is the first that occurred.
 
     Args:
         pattern (IC0Pattern): Plan whose levels produced ``level_pivots``.
