@@ -141,44 +141,64 @@ A Galerkin product ``P.T @ A @ P`` is symmetric only up to summation-order round
 coarse operator, whose Cholesky factor (built from one triangle) would solve a different
 system."""
 
-_MIN_PIVOT_RATIO_EXPONENT = 0.5
-"""Cholesky is trusted when ``(min pivot / max pivot)^2 > eps ** exponent``.
+_PINV_TRUNCATION_MARGIN = 0.1
+"""Fraction of ``pinv``'s truncation threshold the proven condition bound must stay below.
 
-A positive semidefinite singular matrix finishes its Cholesky with a rounding-level pivot
-(ratio ``~eps``) instead of failing, and the plain inverse would then return garbage where
-``pinv`` returns the minimum-norm solution. Pivot ratios bound the condition number from
-below, so a tiny ratio proves near-singularity; matrices below the bound keep ``pinv``."""
+``pinv``'s default ``rtol = c eps`` zeroes singular values at or below ``c eps sigma_max``,
+so it truncates nothing exactly when ``kappa_2 < 1 / (c eps)``. The bound is evaluated on
+the computed inverse, whose relative error is ``O(c eps kappa)``, and the SVD's own
+singular values carry ``O(eps sigma_max)`` error, so near the threshold neither side's
+verdict is reliable. A factor of ten leaves the computed bound within a few percent of
+the exact one and keeps the decision clear of the region where ``pinv`` itself flips."""
 
 
 def _spd_inverse(matrix: torch.Tensor) -> torch.Tensor | None:
-    """Inverse of a large, symmetric, well-conditioned positive definite ``matrix``, else ``None``.
+    """Inverse of a large symmetric positive definite ``matrix`` that ``pinv`` would not truncate.
+
+    The Cholesky inverse ``X`` replaces ``pinv`` only when the two are equal to rounding:
+    ``matrix`` is symmetric, its Cholesky succeeds and ``||A||_F ||X||_F``, an upper bound
+    on ``kappa_2 = ||A||_2 ||A^-1||_2``, is below ``_PINV_TRUNCATION_MARGIN / (c eps)``.
+    Then ``pinv``'s default ``rtol`` truncates no singular value, so it too is the plain
+    inverse, and the Cholesky inverse measured at least as accurate at every ``kappa``. A
+    singular or near-singular matrix (whose Cholesky can finish on a rounding-level
+    pivot), or an overflowing bound, fails the test and keeps ``pinv``.
 
     Cost:
         Cholesky ``c^3 / 3`` plus the triangular inverse and product ``2 c^3 / 3``, so
-        ``W ~ c^3`` against ``~ 24 c^3`` for the SVD in ``pinv``. One host synchronization
-        decides the branch (``S = 1``). A rejected matrix pays the Cholesky on top of the
-        ``pinv``. ``Q = O(Vc^2)`` (a constant number of passes over the ``c x c`` matrix),
-        ``D = O(c)`` (the factorization is a recurrence over the columns).
+        ``W ~ c^3`` against ``~ 24 c^3`` for the SVD in ``pinv``; the symmetry test and
+        the two Frobenius norms add ``O(c^2)``. One host synchronization decides the
+        branch (``S = 1``). A rejected matrix pays the Cholesky and its inverse on top of
+        the ``pinv``. ``Q = O(Vc^2)`` (a constant number of passes over the ``c x c``
+        matrix), ``D = O(c)`` (the factorization is a recurrence over the columns).
 
     Args:
         matrix (torch.Tensor): Dense square coarsest-level matrix.
 
     Returns:
-        torch.Tensor | None: ``matrix^-1`` when it is symmetric, positive definite and not
-        near-singular and at least ``CHOLESKY_MIN_DIMENSION`` wide; ``None`` when ``pinv``
-        must decide.
+        torch.Tensor | None: ``matrix^-1`` when it is symmetric, positive definite, at
+        least ``CHOLESKY_MIN_DIMENSION`` wide and provably below ``pinv``'s truncation;
+        ``None`` when ``pinv`` must decide.
     """
-    if matrix.shape[0] < CHOLESKY_MIN_DIMENSION:
+    size = matrix.shape[0]
+    if size < CHOLESKY_MIN_DIMENSION:
         return None
     eps = torch.finfo(matrix.dtype).eps
     asymmetry = (matrix - matrix.mT).abs().amax()
     symmetric = asymmetry <= _SYMMETRY_TOLERANCE_EPS * eps * matrix.abs().amax()
     factor, info = torch.linalg.cholesky_ex(matrix)
-    pivots = factor.diagonal()
-    well_conditioned = (pivots.amin() / pivots.amax()) ** 2 > eps**_MIN_PIVOT_RATIO_EXPONENT
-    if not bool((info == 0) & symmetric & well_conditioned):
+    # A failed factor can hold a zero pivot, on which ``cholesky_inverse`` raises; the
+    # identity stands in (rejected by ``info`` below) so the branch still costs one sync.
+    succeeded = info == 0
+    factor = torch.where(
+        succeeded, factor, torch.eye(size, dtype=factor.dtype, device=factor.device)
+    )
+    inverse = torch.cholesky_inverse(factor)
+    condition_bound = torch.linalg.matrix_norm(matrix) * torch.linalg.matrix_norm(inverse)
+    # False for ``inf`` and ``nan`` too, so an overflowing or failed inverse is rejected.
+    below_truncation = condition_bound < _PINV_TRUNCATION_MARGIN / (size * eps)
+    if not bool(succeeded & symmetric & below_truncation):
         return None
-    return torch.cholesky_inverse(factor)
+    return inverse
 
 
 def pseudo_inverse_coarse_solver(matrix: torch.Tensor) -> CoarseSolve:
@@ -186,18 +206,22 @@ def pseudo_inverse_coarse_solver(matrix: torch.Tensor) -> CoarseSolve:
 
     PyAMG's default coarse solver (``'pinv'``). Valid for singular coarse matrices, which
     arise when dropped candidates leave zero rows/columns, and returns the minimum-norm
-    least-squares solution there. A symmetric, well-conditioned positive definite matrix
-    of dimension ``>= CHOLESKY_MIN_DIMENSION``, the usual Galerkin coarse operator, is inverted through its Cholesky factor instead,
-    which agrees with ``pinv`` to rounding at a fraction of the SVD cost; every other
-    matrix (small, nonsymmetric, singular, indefinite, near-singular) keeps the plain (not
-    Hermitian) ``pinv``, bit-identical to the previous per-call ``pinv(matrix) @ rhs``.
+    least-squares solution there. A symmetric positive definite matrix of dimension
+    ``>= CHOLESKY_MIN_DIMENSION`` whose condition bound proves ``pinv`` would truncate no
+    singular value (``_spd_inverse``), the usual Galerkin coarse operator, is inverted
+    through its Cholesky factor instead, which agrees with ``pinv`` to rounding at a
+    fraction of the SVD cost; every other matrix (small, nonsymmetric, singular,
+    indefinite, near-singular) keeps the plain (not Hermitian) ``pinv``, bit-identical to
+    the previous per-call ``pinv(matrix) @ rhs``.
 
     Cost:
         Setup, once per hierarchy, ``c`` the coarsest dimension, ``V = 8`` bytes per
         ``float64``: ``W ~ c^3`` on the SPD path (Cholesky and its inverse), ``W ~ 24 c^3``
         through ``pinv`` (a standard SVD coefficient, not a counted value), ``Q = O(Vc^2)``
         (about ``2Vc^2`` for the SVD), ``D = O(c)``, ``L`` a small constant and ``S = 1``
-        (the SPD test; none below ``CHOLESKY_MIN_DIMENSION``). Apply is one ``c x c``
+        (the SPD and condition test; none below ``CHOLESKY_MIN_DIMENSION``). A matrix
+        that fails the test pays the ``~ c^3`` Cholesky attempt on top of the ``pinv``.
+        Apply is one ``c x c``
         product on both (``PseudoInverseCoarseSolve``).
         Roofline: ``W/Q`` is about ``1.5c`` flops per byte for the SVD, so setup is
         compute-bound beyond tiny ``c``; the SVD is the largest single flop term of

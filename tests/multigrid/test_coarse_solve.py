@@ -7,6 +7,7 @@ prepared hierarchy never re-factorizes.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import pytest
@@ -26,6 +27,7 @@ from torchalg.preconditioners.implementations.amg import AggregationCoarsening, 
 
 SEED = 7
 COARSE_SIZE = 12
+MODERATE_CONDITION = 1e11
 
 
 @pytest.fixture
@@ -56,6 +58,14 @@ def large_spd_matrix() -> torch.Tensor:
 
 
 @pytest.fixture
+def large_singular_matrix() -> torch.Tensor:
+    """Wide symmetric matrix with a zero last row/column, whose Cholesky fails on a zero pivot."""
+    matrix = torch.eye(CHOLESKY_MIN_DIMENSION, dtype=torch.float64) * 2.0
+    matrix[-1, -1] = 0.0
+    return matrix
+
+
+@pytest.fixture
 def large_rhs() -> torch.Tensor:
     generator = torch.Generator().manual_seed(SEED + 1)
     return torch.randn(CHOLESKY_MIN_DIMENSION, dtype=torch.float64, generator=generator)
@@ -66,7 +76,7 @@ def semidefinite_matrix() -> torch.Tensor:
     """Symmetric positive semidefinite of rank ``n - 1`` whose Cholesky still succeeds.
 
     Its last pivot is rounding noise rather than an exact zero (asserted here), so only the
-    pivot-ratio guard keeps it away from a garbage inverse.
+    condition bound keeps it away from a garbage inverse.
     """
     generator = torch.Generator().manual_seed(0)
     size = CHOLESKY_MIN_DIMENSION
@@ -75,6 +85,43 @@ def semidefinite_matrix() -> torch.Tensor:
     matrix = (matrix + matrix.T) / 2
     assert int(torch.linalg.cholesky_ex(matrix).info) == 0
     return matrix
+
+
+@pytest.fixture
+def spd_with_condition() -> Callable[[float], torch.Tensor]:
+    """Build a ``CHOLESKY_MIN_DIMENSION``-wide SPD matrix with a known 2-norm condition number.
+
+    The eigenvalues are log-spaced from ``1 / condition`` to ``1`` under a seeded random
+    orthogonal basis.
+    """
+
+    def build(condition: float) -> torch.Tensor:
+        generator = torch.Generator().manual_seed(SEED)
+        size = CHOLESKY_MIN_DIMENSION
+        basis, _ = torch.linalg.qr(
+            torch.randn(size, size, dtype=torch.float64, generator=generator)
+        )
+        spectrum = torch.logspace(-math.log10(condition), 0.0, size, dtype=torch.float64)
+        matrix = basis @ torch.diag(spectrum) @ basis.T
+        return (matrix + matrix.T) / 2
+
+    return build
+
+
+@pytest.fixture
+def pinv_truncation_condition() -> float:
+    """``1 / (c eps)``: ``pinv``'s default ``rtol`` truncates singular values below this ratio."""
+    return 1.0 / (CHOLESKY_MIN_DIMENSION * torch.finfo(torch.float64).eps)
+
+
+@pytest.fixture
+def forbid_pinv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any call to ``torch.linalg.pinv`` fail the test."""
+
+    def forbidden(*_args: object, **_kwargs: object) -> torch.Tensor:
+        raise AssertionError("this coarse matrix must not need the SVD-based pinv")
+
+    monkeypatch.setattr(torch.linalg, "pinv", forbidden)
 
 
 @pytest.fixture
@@ -140,14 +187,44 @@ class TestFactories:
             atol=1e-12,
         )
 
+    @pytest.mark.usefixtures("forbid_pinv")
     def test_large_spd_matrix_is_inverted_without_an_svd(
-        self, large_spd_matrix: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+        self, large_spd_matrix: torch.Tensor
     ) -> None:
-        def forbidden(*_args: object, **_kwargs: object) -> torch.Tensor:
-            raise AssertionError("a large SPD coarse matrix must not need the SVD-based pinv")
-
-        monkeypatch.setattr(torch.linalg, "pinv", forbidden)
         pseudo_inverse_coarse_solver(large_spd_matrix)
+
+    @pytest.mark.usefixtures("forbid_pinv")
+    def test_moderately_conditioned_spd_matrix_takes_cholesky(
+        self, spd_with_condition: Callable[[float], torch.Tensor]
+    ) -> None:
+        """``kappa = 1e11`` is far enough from ``pinv``'s truncation for the bound to prove it."""
+        pseudo_inverse_coarse_solver(spd_with_condition(MODERATE_CONDITION))
+
+    def test_cholesky_inverse_is_at_least_as_accurate_as_pinv(
+        self, spd_with_condition: Callable[[float], torch.Tensor], large_rhs: torch.Tensor
+    ) -> None:
+        """Their difference at a moderate ``kappa`` is rounding, not a different solution."""
+        matrix = spd_with_condition(MODERATE_CONDITION)
+        rhs = matrix @ large_rhs
+
+        def forward_error(solution: torch.Tensor) -> float:
+            return float((solution - large_rhs).norm() / large_rhs.norm())
+
+        cholesky_error = forward_error(pseudo_inverse_coarse_solver(matrix)(rhs))
+        assert cholesky_error <= forward_error(torch.linalg.pinv(matrix) @ rhs)
+
+    def test_spd_matrix_near_the_pinv_truncation_keeps_the_exact_pinv(
+        self,
+        spd_with_condition: Callable[[float], torch.Tensor],
+        pinv_truncation_condition: float,
+        large_rhs: torch.Tensor,
+    ) -> None:
+        """Near ``1 / (c eps)`` the bound cannot prove ``pinv`` truncates nothing."""
+        matrix = spd_with_condition(0.5 * pinv_truncation_condition)
+
+        solve = pseudo_inverse_coarse_solver(matrix)
+
+        assert torch.equal(solve(large_rhs), torch.linalg.pinv(matrix) @ large_rhs)
 
     def test_pinv_solver_is_exactly_the_pinv_when_nonsymmetric(
         self, nonsymmetric_matrix: torch.Tensor, large_rhs: torch.Tensor
@@ -161,6 +238,12 @@ class TestFactories:
     ) -> None:
         solve = pseudo_inverse_coarse_solver(semidefinite_matrix)
         assert torch.equal(solve(large_rhs), torch.linalg.pinv(semidefinite_matrix) @ large_rhs)
+
+    def test_pinv_solver_is_exactly_the_pinv_when_a_wide_matrix_has_a_zero_row(
+        self, large_singular_matrix: torch.Tensor, large_rhs: torch.Tensor
+    ) -> None:
+        solve = pseudo_inverse_coarse_solver(large_singular_matrix)
+        assert torch.equal(solve(large_rhs), torch.linalg.pinv(large_singular_matrix) @ large_rhs)
 
     def test_pinv_solver_returns_minimum_norm_solution_when_singular(
         self, singular_matrix: torch.Tensor, rhs: torch.Tensor
