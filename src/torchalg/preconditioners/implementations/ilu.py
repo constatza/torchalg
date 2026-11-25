@@ -22,7 +22,7 @@ from typing import Self
 import torch
 from torch import nn
 
-from ..base import LinearPreconditioner, PreconditionerContext
+from ..base import LinearPreconditioner, Placement, PreconditionerContext
 from ._masked_factorization import dense_ilu0
 
 
@@ -68,6 +68,8 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
+
+    placement = Placement.SEQUENTIAL_SWEEP
 
     def __init__(self) -> None:
         """Register the (not yet computed) combined LU-factor buffer."""

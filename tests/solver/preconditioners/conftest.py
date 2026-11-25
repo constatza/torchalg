@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
-from torchalg.preconditioners.base import PreconditionerContext
+from torchalg.preconditioners.base import Placement, PreconditionerContext
 from torchalg.preconditioners.implementations.jacobi import JacobiPreconditioner
 from torchalg.preconditioners.implementations.pod import compute_pod_basis
 from torchalg.preconditioners.ports import ExtraInputPredictorPort, PredictorPort
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 class _RaisingSmoother:
     """Test double proving that a preset delegates solve-time smoothing."""
+
+    placement = Placement.SPMV_BOUND
 
     def prepare(self, A: torch.Tensor) -> PreparedSmoother:
         """Raise whenever a cycle binds the configured smoother to a level."""

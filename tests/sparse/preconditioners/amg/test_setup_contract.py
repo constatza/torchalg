@@ -20,7 +20,7 @@ from torchalg.multigrid import AMGPreconditioner, VCycle
 from torchalg.preconditioners.base import MatrixSetupPreconditioner
 from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.kernels import triangular as triangular_kernel
-from torchalg.sparse.preconditioners.amg import _gauss_seidel_format
+from torchalg.sparse.preconditioners.amg import smoothers
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner,
     adaptive_sa_hierarchy,
@@ -119,7 +119,6 @@ class TestGaussSeidelSolveWorkIsPrepared:
         poisson_1d_large_csr: torch.Tensor,
         poisson_1d_large_rhs: torch.Tensor,
         monkeypatch: pytest.MonkeyPatch,
-        csr_gauss_seidel: None,
     ) -> None:
         calls: list[int] = []
         original = triangular_kernel.level_schedule
@@ -132,7 +131,7 @@ class TestGaussSeidelSolveWorkIsPrepared:
         preconditioner = vcycle_amg(n_levels=3, smoother=GaussSeidelSmoother())
         preconditioner.setup(poisson_1d_large_csr)
         built_in_setup = len(calls)
-        assert built_in_setup == 2 * 2  # forward + backward on each of the 2 smoothed levels
+        assert built_in_setup == 0  # unmasked sweeps run on the vendor solves
 
         for _ in range(3):
             preconditioner.apply(poisson_1d_large_rhs)
@@ -142,16 +141,15 @@ class TestGaussSeidelSolveWorkIsPrepared:
 class TestSetupStagesPrepareEachMatrixOnce:
     @pytest.fixture
     def built_matrices(self, monkeypatch: pytest.MonkeyPatch) -> list[torch.Tensor]:
-        """Matrices handed to either Gauss-Seidel preparer (CSR or dense-backed), in call order."""
+        """Matrices handed to the Gauss-Seidel preparer, in call order."""
         matrices: list[torch.Tensor] = []
-        for name in ("prepare_csr_gauss_seidel", "prepare_dense_gauss_seidel"):
-            original = getattr(_gauss_seidel_format, name)
+        original = smoothers.prepare_csr_gauss_seidel
 
-            def recording(matrix: torch.Tensor, *args: Any, original: Any = original):
-                matrices.append(matrix)
-                return original(matrix, *args)
+        def recording(matrix: torch.Tensor):
+            matrices.append(matrix)
+            return original(matrix)
 
-            monkeypatch.setattr(_gauss_seidel_format, name, recording)
+        monkeypatch.setattr(smoothers, "prepare_csr_gauss_seidel", recording)
         return matrices
 
     @pytest.fixture

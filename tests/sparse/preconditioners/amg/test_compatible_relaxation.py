@@ -184,6 +184,39 @@ class TestCrRate:
         assert 0.0 <= rho < 1.0
 
 
+@pytest.fixture(params=[0, 1, 2, 3])
+def random_graph_case(
+    request: pytest.FixtureRequest,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Seeded random ``(dense directional adjacency, candidates, priority)`` on 60 nodes.
+
+    The adjacency is deliberately not symmetric: ``_independent_set_of`` reads
+    only row ``i``, so a directional graph exercises exactly that contract.
+    """
+    generator = torch.Generator().manual_seed(request.param)
+    n = 60
+    adjacency = torch.rand(n, n, generator=generator) < 0.08
+    adjacency.fill_diagonal_(False)
+    candidates = torch.rand(n, generator=generator) < 0.8
+    priority = torch.rand(n, generator=generator)
+    return adjacency, candidates, priority
+
+
+def _reference_independent_set(
+    candidates: torch.Tensor, adjacency: torch.Tensor, priority: torch.Tensor
+) -> torch.Tensor:
+    """Greedy set by plain tensor-scalar reads: the definition the list-based loop must equal."""
+    eligible = candidates.clone()
+    selected = torch.zeros_like(candidates)
+    for i in torch.argsort(priority, descending=True).tolist():
+        if not eligible[i]:
+            continue
+        selected[i] = True
+        eligible[i] = False
+        eligible &= ~adjacency[i]
+    return selected
+
+
 class TestIndependentSetOf:
     def test_matches_dense_default_adjacency(
         self,
@@ -219,6 +252,22 @@ class TestIndependentSetOf:
             five_true_candidates, sparse, descending_priority_5, guidance_graph=sparse_guidance
         )
         assert actual.tolist() == expected.tolist()
+
+    def test_matches_tensor_scalar_reference_on_random_directional_graphs(
+        self, random_graph_case: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> None:
+        adjacency, candidates, priority = random_graph_case
+        sparse_adjacency = adjacency.to_sparse_csr()
+        matrix = sparse_adjacency.to(torch.float64)
+
+        actual = _independent_set_of(candidates, matrix, priority, guidance_graph=sparse_adjacency)
+        dense = dense_independent_set_of(
+            candidates, adjacency.to(torch.float64), priority, guidance_graph=adjacency
+        )
+
+        expected = _reference_independent_set(candidates, adjacency, priority)
+        assert torch.equal(actual, expected)
+        assert torch.equal(dense, expected)
 
 
 class TestCompatibleRelaxationCoarsening:
@@ -290,15 +339,14 @@ class TestCompatibleRelaxationCoarsening:
 
 
 class TestStageScopedGaussSeidelInCompatibleRelaxation:
-    """One stage prepares the level matrix once, however many CR sweeps run."""
+    """CR sweeps are unmasked, so they run on the vendor solves and build no level schedule."""
 
-    def test_schedules_built_once_across_the_whole_coarsening(
+    def test_no_schedule_built_across_the_whole_coarsening(
         self,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
         sparse_relaxation: GaussSeidelMemo,
         monkeypatch: pytest.MonkeyPatch,
-        csr_gauss_seidel: None,
     ) -> None:
         calls: list[int] = []
         original = triangular_kernel.level_schedule
@@ -312,4 +360,4 @@ class TestStageScopedGaussSeidelInCompatibleRelaxation:
         compatible_relaxation_coarsening(
             sparse, sparse_relaxation, nu=5, delta=0.7, draw=seeded_draw_factory(1)
         )
-        assert len(calls) == 2  # forward + backward, for the one matrix
+        assert calls == []

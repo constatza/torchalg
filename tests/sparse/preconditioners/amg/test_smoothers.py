@@ -84,9 +84,14 @@ def rhs_block(dense_matrix: torch.Tensor, test_seed: int) -> torch.Tensor:
     )
 
 
+def _even_rows(matrix: torch.Tensor) -> torch.Tensor:
+    """Masked-sweep row subset: only masked sweeps build level schedules."""
+    return torch.arange(0, matrix.shape[0], 2)
+
+
 @pytest.fixture
-def count_level_schedules(monkeypatch: pytest.MonkeyPatch, csr_gauss_seidel: None) -> list[int]:
-    """Counter list; ``len`` is the number of ``level_schedule`` calls made by CSR Gauss-Seidel."""
+def count_level_schedules(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Counter list; ``len`` is the number of ``level_schedule`` calls made by Gauss-Seidel."""
     calls: list[int] = []
     original = triangular_kernel.level_schedule
 
@@ -305,14 +310,18 @@ class TestPreparedGaussSeidel:
         count_level_schedules: list[int],
     ) -> None:
         prepared = GaussSeidelSmoother().prepare(csr_matrix)
-        built_by_prepare = len(count_level_schedules)
-        assert built_by_prepare == 2  # forward and backward, independently
+        assert count_level_schedules == []  # unmasked sweeps run on the vendor solves
         x = x0
         for _ in range(4):
             x = prepared.smooth(rhs, x, 3)
         prepared.smooth_from_zero(rhs, 3)
-        prepared.smooth(rhs, x0, 2, rows=torch.arange(0, csr_matrix.shape[0], 2))
-        assert len(count_level_schedules) == built_by_prepare
+        assert count_level_schedules == []
+        masked_rows = torch.arange(0, csr_matrix.shape[0], 2)
+        prepared.smooth(rhs, x0, 2, rows=masked_rows)
+        built_by_first_masked_sweep = len(count_level_schedules)
+        assert built_by_first_masked_sweep == 2  # forward and backward, independently
+        prepared.smooth(rhs, x0, 2, rows=masked_rows)
+        assert len(count_level_schedules) == built_by_first_masked_sweep
 
 
 class TestGaussSeidelMemo:
@@ -327,7 +336,7 @@ class TestGaussSeidelMemo:
     ) -> None:
         stage = smoothers.GaussSeidelMemo()
         for _ in range(5):
-            stage.prepare(csr_matrix).smooth(rhs, x0, 1)
+            stage.prepare(csr_matrix).smooth(rhs, x0, 1, rows=_even_rows(csr_matrix))
         assert len(count_level_schedules) == 2
 
     def test_distinct_matrices_are_prepared_separately(
@@ -339,8 +348,8 @@ class TestGaussSeidelMemo:
     ) -> None:
         stage = smoothers.GaussSeidelMemo()
         other = csr_matrix.clone()
-        stage.prepare(csr_matrix).smooth(rhs, x0, 1)
-        stage.prepare(other).smooth(rhs, x0, 1)
+        stage.prepare(csr_matrix).smooth(rhs, x0, 1, rows=_even_rows(csr_matrix))
+        stage.prepare(other).smooth(rhs, x0, 1, rows=_even_rows(other))
         assert len(count_level_schedules) == 4
 
     def test_matches_prepared_smoother(
@@ -359,8 +368,12 @@ class TestGaussSeidelMemo:
         x0: torch.Tensor,
         count_level_schedules: list[int],
     ) -> None:
-        smoothers.GaussSeidelMemo().prepare(csr_matrix)
-        smoothers.GaussSeidelMemo().prepare(csr_matrix)
+        smoothers.GaussSeidelMemo().prepare(csr_matrix).smooth(
+            rhs, x0, 1, rows=_even_rows(csr_matrix)
+        )
+        smoothers.GaussSeidelMemo().prepare(csr_matrix).smooth(
+            rhs, x0, 1, rows=_even_rows(csr_matrix)
+        )
         assert len(count_level_schedules) == 4
 
 

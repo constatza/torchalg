@@ -22,7 +22,10 @@ from torch import nn
 
 from torchalg.multigrid import PreparedHierarchy, VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
-from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
+from torchalg.preconditioners.base import (
+    MatrixSetupPreconditioner,
+    PreconditionerContext,
+)
 from torchalg.utils.device import moved_to
 
 from ._presets import prebuilt_cycle, seeded_draw
@@ -105,6 +108,7 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         self._cycle: VCycle = prebuilt_cycle(
             resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
         )
+        self.placement = self._cycle.placement
         self._bootcmatch_setup = BootCMatchSetup(
             coarsening_factory=BootCMatchCoarsening,
             cycle=self._cycle,

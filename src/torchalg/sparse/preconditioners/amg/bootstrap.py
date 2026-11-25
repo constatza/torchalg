@@ -126,6 +126,7 @@ from torchalg.utils.ls_interpolation import (
     batched_select_interpolatory_set,
 )
 from torchalg.utils.test_vector_weights import test_vector_weights
+from torchalg.utils.weak_cache import weak_memo
 
 from ._compatible_relaxation import compatible_relaxation_coarsening
 from ._presets import PrebuiltCoarsening, gs_setup_cycle, prebuilt_cycle, seeded_draw
@@ -139,6 +140,9 @@ if TYPE_CHECKING:
 
 _LSR_TARGET_FRACTION = 0.2
 """Matches the dense sibling's value - see its docstring."""
+
+type NeighborhoodOf = Callable[[torch.Tensor, int], torch.Tensor]
+"""``(matrix, depth) -> boolean CSR neighborhood``: ``sparse_depth_neighborhood`` or its memo."""
 
 
 def _seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:
@@ -241,6 +245,7 @@ class BAMGCoarsening:
         transfer_operator: Callable[
             [torch.Tensor], SparseTransferOperator
         ] = SparseTransferOperator,
+        neighborhood_of: NeighborhoodOf = sparse_depth_neighborhood,
     ) -> None:
         """Store hyperparameters and the finest-level test vectors.
 
@@ -262,7 +267,12 @@ class BAMGCoarsening:
                 ``TransferOperatorMemo`` so ``build_transfer`` and the
                 hierarchy builder share one operator (one transpose) per
                 prolongation instead of building a throwaway.
+            neighborhood_of (NeighborhoodOf): Evaluates the LS-ring
+                neighborhood of a level matrix. Pass a per-setup memo so the
+                finest matrix's neighborhood, which depends on ``A`` alone, is
+                built once across the initial and every improvement hierarchy.
         """
+        self._neighborhood_of = neighborhood_of
         self._transfer_operator = transfer_operator
         self._relaxation = relaxation
         self._nu = nu
@@ -313,6 +323,34 @@ class BAMGCoarsening:
 
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, SparseTransferOperator]:
         """Build one Bootstrap AMG coarse level from sparse CSR ``A``.
+
+        Cost:
+            Per level, ``z = nnz(A)``, ``k`` test vectors, ``s`` compatible-relaxation
+            stages (data dependent), ``nu`` CR sweeps per stage, ``m`` fine rows,
+            ``m_b`` rows at padded width ``c_b`` in each candidate-count chunk,
+            ``caliber`` the interpolatory-set size, ``d`` the algebraic-distance depth. Stages:
+            algebraic distance ``W = O(zk)`` plus its depth-``d`` neighborhood;
+            compatible relaxation ``s (nu W_sweep + O(n))`` with ``W_sweep = 4z + 2n``
+            (one Gauss-Seidel iteration, see ``compatible_relaxation_coarsening``) and
+            ``D = s (nu D_sweep + n)``, the ``n`` being the host-sequential
+            independent set, which dominates ``D`` of the whole step; the LSR
+            correction ``W = 2zk``; the depth ``d + 2`` neighborhood
+            (``sparse_depth_neighborhood``, memoized per level matrix and setup run,
+            so the finest level pays it once, not once per hierarchy build);
+            the interpolatory-set selection ``W = (8 caliber - 1) k sum_b m_b c_b`` over
+            row-width chunks (each chunk padded to its own largest candidate count,
+            not the global maximum) and the row fits ``O(m caliber^2 k)``
+            (``batched_select_interpolatory_set``); the
+            Galerkin product ``W = 2 sum nnz(P_k:) + 2 sum nnz((AP)_i:)``
+            (``form_sparse_sparse``) and the restriction ``P^T V``, ``W = 2 nnz(P) k``.
+            ``S = s + O(1)`` (one convergence read per CR stage plus the candidate
+            width and the fallback tests). ``I`` is the neighborhood, the independent
+            set and the candidate packing.
+            Roofline: every stage has ``W/Q`` below 1 flop per byte (the index work
+            has none), so the step is memory- and host-bound.
+            Work-depth: the selection, fits and SpGEMMs are parallel (large ``W/D``);
+            the CR coarsening is a host-sequential chain (``W/D`` about 1), so setup
+            does not speed up with workers.
 
         Args:
             A (torch.Tensor): Sparse CSR fine-grid matrix, shape ``(n, n)``.
@@ -457,6 +495,12 @@ class BAMGCoarsening:
     ) -> torch.Tensor:
         """LS/LSR-fitted sparse CSR prolongation ``P`` (identity on ``C``, fitted rows on ``F``).
 
+        Cost:
+            The depth ``d + 2`` neighborhood is one ``sparse_depth_neighborhood`` call
+            per distinct level matrix per setup run (``neighborhood_of`` memo), not per
+            hierarchy build, so the finest level's index-work ``I`` is paid once instead
+            of once per bootstrap pass.
+
         Args:
             A (torch.Tensor): Sparse CSR fine-grid matrix, shape ``(n, n)``.
             test_vectors (torch.Tensor): Test vectors, shape ``(n, k)``.
@@ -483,7 +527,7 @@ class BAMGCoarsening:
 
         weights = test_vector_weights(test_vectors, A, composite=composite)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
-        neighborhood = sparse_depth_neighborhood(A, self._depth + 2)
+        neighborhood = self._neighborhood_of(A, self._depth + 2)
 
         row_indices: list[torch.Tensor] = [coarse_points]
         col_indices: list[torch.Tensor] = [torch.arange(n_coarse, device=device)]
@@ -694,6 +738,32 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     always runs with ``k_e=0``/``eigensolver=None``, matching the dense
     class's own historical (pre-MGE) default behavior exactly.
 
+    Cost:
+        Setup, once per matrix: ``n_bootstrap_cycles + 1`` hierarchy builds, each
+        ``L`` calls of ``BAMGCoarsening.build_transfer`` (``L`` levels), plus
+        ``n_bootstrap_cycles`` improvement passes; the discarded builds are the
+        algorithm's design (the improvement passes refine test vectors, not the
+        kept hierarchy). Each build also relaxes ``k_r`` test vectors by ``eta``
+        symmetric Gauss-Seidel iterations per level, ``W = eta (4 z_l + 2 n_l) k_r``,
+        and each improvement pass runs ``eta`` GS-smoothed V(1,1) cycles on the
+        ``L - 1`` sub-hierarchies, ``W = eta k_r sum over sub-hierarchies of
+        (9 z_l + 4 nnz(P_l) + O(n_l)) + 2c^2`` per cycle (``c`` the coarsest
+        order). Smoothers and transposes are prepared once per level matrix and
+        shared across the run. The compatible-relaxation independent set makes
+        the host-sequential depth ``D = O(n)`` per CR stage, so the setup does
+        not speed up with workers and is the largest term of the method's total
+        cost. ``S`` is dominated by the per-stage convergence reads
+        (``O(builds x L x s)``).
+        Apply, one V(``a``, ``b``) cycle with weighted-Jacobi smoothing and ``L``
+        levels, per non-coarsest level ``l``:
+        ``W_l = 2(a + b) z_l + 4 nnz(P_l) + 3(a + b) n_l``, ``L_l = 4(a + b) + 2``,
+        ``S = 0``, plus the coarsest cached-inverse product ``W = 2c^2``,
+        ``D = ceil(log2 c) + 1``; ``D`` is about ``sum_l [(a + b)(ceil(log2 m_l) + 4) +
+        2 (ceil(log2 m_P) + 1)]``, shallow because Jacobi and the transfers have no
+        recurrence. The hierarchy is deeper than aggregation's (coarsening is
+        slower), so the launch count, not the depth, dominates its apply.
+        Roofline: apply ``W/Q`` is about 0.15 flop per byte (memory-bound).
+
     Args:
         k_r (int): Number of relaxation-derived test vectors.
         eta (int): Relaxation sweeps per test vector per level.
@@ -755,6 +825,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         def new_bootstrap_setup() -> BootstrapSetup:
             stage = GaussSeidelMemo()
             transfers = TransferOperatorMemo()
+            neighborhoods: NeighborhoodOf = weak_memo(sparse_depth_neighborhood)
             return BootstrapSetup(
                 coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
                     vectors,
@@ -767,6 +838,7 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
                     use_lsr=use_lsr,
                     draw=draw,
                     transfer_operator=transfers,
+                    neighborhood_of=neighborhoods,
                 ),
                 transfer_operator_factory=transfers,
                 relaxation=stage,

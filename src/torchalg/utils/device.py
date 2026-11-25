@@ -1,10 +1,6 @@
-"""Automatic device selection for iterative solvers.
+"""Moving prepared state between devices and dtypes.
 
-Design:
-    - Pure function (no state, no config).
-    - Environment-only decision: honors the standard ``CUDA_VISIBLE_DEVICES``
-      variable transitively via ``torch.cuda.is_available()``, so forcing
-      CPU-only execution needs no torchalg-specific flag.
+The choice of device lives in ``torchalg.placement``; this module only moves.
 """
 
 from __future__ import annotations
@@ -14,16 +10,6 @@ from typing import cast
 
 import torch
 from torch import nn
-
-
-def resolve_device() -> torch.device:
-    """Return the CUDA device if available, else CPU.
-
-    Returns:
-        torch.device: ``cuda`` when ``torch.cuda.is_available()`` is
-            ``True``, otherwise ``cpu``.
-    """
-    return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
 def moved_tensor(tensor: torch.Tensor, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

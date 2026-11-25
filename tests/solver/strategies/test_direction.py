@@ -71,6 +71,43 @@ def test_two_term_recurrence_uses_fletcher_reeves_beta(
     assert ortho_breakdown is None
 
 
+def test_two_term_recurrence_backpropagates_to_every_input(
+    two_term_current_residual: torch.Tensor,
+    two_term_preconditioned_residual: torch.Tensor,
+    two_term_previous_direction: torch.Tensor,
+) -> None:
+    """``d = w + (rw / rw_prev) d_prev`` keeps all three inputs on the autograd tape."""
+    rw_prev = 2.0
+    w = two_term_preconditioned_residual.clone().requires_grad_(True)
+    previous = two_term_previous_direction.clone().requires_grad_(True)
+    rw = torch.dot(two_term_current_residual, two_term_preconditioned_residual).requires_grad_(True)
+    state = replace(
+        CGState.create_initial(
+            u=torch.zeros_like(w),
+            r=two_term_current_residual,
+            w=w,
+            d=previous,
+            q=previous,
+            residual_norm=1.0,
+            rhs_norm=1.0,
+        ),
+        iteration=1,
+        rw_prev=rw_prev,
+    )
+
+    direction, _ = TwoTermRecurrenceStrategy().compute_direction(w, rw, state)
+    direction.sum().backward()
+
+    assert w.grad is not None
+    assert previous.grad is not None
+    assert rw.grad is not None
+    torch.testing.assert_close(w.grad, torch.ones_like(w))
+    torch.testing.assert_close(
+        previous.grad, torch.full_like(previous, float(rw.detach()) / rw_prev)
+    )
+    torch.testing.assert_close(rw.grad, previous.detach().sum() / rw_prev)
+
+
 def test_orthogonalization_direction_strategy_uses_direction_history(
     orthogonalization_probe: torch.Tensor,
     previous_direction: torch.Tensor,

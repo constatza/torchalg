@@ -25,9 +25,9 @@ import torch
 
 from benchmarks.cases import MatrixCase, box3d_case, lap2d_case
 from benchmarks.harness import time_callable
-from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 from torchalg.sparse.kernels.triangular import PreparedTriangularSolve
 from torchalg.sparse.preconditioners.ic0 import sparse_ic0
+from torchalg.utils.csr_index import compact_csr_indices
 
 CASES = (box3d_case(2744), lap2d_case(10000), box3d_case(27000), lap2d_case(90000))
 ALL_ROWS = ("trsv", "spmv-idx", "spmm", "spmv-coo", "spmv-gather", "dense-ic0")

@@ -14,7 +14,14 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from torchalg.utils.numerics import _overflow_scale_threshold, stable_dot_product
+from tests.solver.conftest import DispatchCounter
+from torchalg.utils.numerics import (
+    _overflow_scale_threshold,
+    both_finite,
+    pair_is_finite,
+    read_flags,
+    stable_dot_product,
+)
 
 
 def _branch_free_stable_dot(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -171,3 +178,56 @@ class TestStableDotProductFastPath:
             stable_dot_product(a, b)
         assert counter.ops <= 8  # previous branch-free formulation launched about 15
         assert counter.largest_output <= 1
+
+
+class TestBothFinite:
+    """``both_finite`` reads a scalar pair once and never reports a non-finite value as finite."""
+
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            (1.0, -2.0, True),
+            (float("nan"), 1.0, False),
+            (1.0, float("inf"), False),
+            (float("inf"), float("-inf"), False),
+            (1.7e308, 1.7e308, False),  # sum overflows: conservative, callers recompute
+        ],
+        ids=["finite", "nan", "inf", "opposite-inf", "sum-overflow"],
+    )
+    def test_classification(self, a: float, b: float, expected: bool) -> None:
+        """Only a finite pair (whose sum does not overflow) is reported finite."""
+        pair = (torch.tensor(a, dtype=torch.float64), torch.tensor(b, dtype=torch.float64))
+
+        assert both_finite(*pair) is expected
+
+
+class TestPairIsFinite:
+    """``pair_is_finite`` is the device-side flag that ``both_finite`` reads."""
+
+    def test_returns_an_unread_bool_tensor(self) -> None:
+        """No host read: the result is a 0-d bool tensor."""
+        flag = pair_is_finite(torch.tensor(1.0), torch.tensor(float("nan")))
+
+        assert flag.dtype == torch.bool
+        assert flag.ndim == 0
+        assert not bool(flag)
+
+
+class TestReadFlags:
+    """``read_flags`` returns two device flags from one transfer."""
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [(False, False), (True, False), (False, True), (True, True)],
+    )
+    def test_every_combination_round_trips(self, first: bool, second: bool) -> None:
+        """Each of the four flag pairs decodes to itself."""
+        assert read_flags(torch.tensor(first), torch.tensor(second)) == (first, second)
+
+    def test_reads_the_host_once(self) -> None:
+        """One ``item`` for both flags, against one per flag when read separately."""
+        counter = DispatchCounter()
+        with torch.inference_mode(), counter:  # the mode the solvers run under
+            read_flags(torch.tensor(True), torch.tensor(False))
+
+        assert counter.syncs == 1

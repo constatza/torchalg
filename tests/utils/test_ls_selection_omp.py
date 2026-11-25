@@ -9,10 +9,13 @@ same weighted LS residual wherever candidates tie or are linearly dependent.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 import torch
 
 from tests.utils.selection_problem import SELECTION_CALIBER, SelectionProblem
+from torchalg.utils import ls_interpolation
 from torchalg.utils.ls_interpolation import (
     batched_ls_interpolation_rows,
     batched_select_interpolatory_set,
@@ -292,3 +295,90 @@ def test_fit_falls_back_to_lstsq_on_singular_gram_rows(
     assert bool(torch.isfinite(rows).all())
     dtype = vectors.dtype
     torch.testing.assert_close(rows, reference, rtol=_tolerance(dtype), atol=_tolerance(dtype))
+
+
+# --- width bucketing ------------------------------------------------------------------
+
+
+def _bucketed_slots(chunks: list[tuple[int, int]], lengths: list[int]) -> int:
+    return sum((hi - lo) * max(lengths[hi - 1], 1) for lo, hi in chunks)
+
+
+@pytest.fixture
+def lengths_with_wide_outlier() -> list[int]:
+    """Ascending candidate counts: two big groups and one fallback-width row."""
+    return sorted([3] * 400 + [5] * 400 + [200])
+
+
+@pytest.fixture
+def short_lengths() -> list[int]:
+    return sorted([3] * 5 + [4] * 5)
+
+
+def test_width_chunks_cover_rows_and_isolate_a_wide_outlier(
+    lengths_with_wide_outlier: list[int],
+) -> None:
+    lengths = lengths_with_wide_outlier
+    chunks = ls_interpolation._width_chunks(lengths, overhead=64)
+
+    assert chunks[0][0] == 0 and chunks[-1][1] == len(lengths)
+    assert all(prev[1] == nxt[0] for prev, nxt in pairwise(chunks))
+    assert _bucketed_slots(chunks, lengths) < len(lengths) * lengths[-1] // 10
+    assert chunks[-1] == (len(lengths) - 1, len(lengths))
+
+
+def test_width_chunks_stay_whole_when_overhead_dominates(short_lengths: list[int]) -> None:
+    lengths = short_lengths
+    assert ls_interpolation._width_chunks(lengths, overhead=10**6) == [(0, len(lengths))]
+
+
+def test_width_chunks_of_no_rows_is_empty() -> None:
+    assert ls_interpolation._width_chunks([], overhead=64) == []
+
+
+@pytest.mark.parametrize(
+    "overhead", [0, 16, 10**9], ids=["every-length", "grouped", "single-chunk"]
+)
+def test_bucketed_selection_is_bit_identical_to_one_full_width_chunk(
+    short_candidate_selection_problem: SelectionProblem,
+    monkeypatch: pytest.MonkeyPatch,
+    overhead: int,
+) -> None:
+    problem = short_candidate_selection_problem
+    monkeypatch.setattr(ls_interpolation, "_CHUNK_OVERHEAD_SLOTS", 10**9)
+    full_chosen, full_mask = _select(problem)
+    monkeypatch.setattr(ls_interpolation, "_CHUNK_OVERHEAD_SLOTS", overhead)
+    chosen, chosen_mask = _select(problem)
+
+    assert torch.equal(chosen_mask, full_mask)
+    assert torch.equal(chosen, full_chosen)
+
+
+def test_bucketed_selection_runs_each_chunk_at_its_own_width(
+    short_candidate_selection_problem: SelectionProblem, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problem = short_candidate_selection_problem
+    monkeypatch.setattr(ls_interpolation, "_CHUNK_OVERHEAD_SLOTS", 0)
+    widths: list[int] = []
+    original = ls_interpolation._select_block
+
+    def recording(
+        padded_candidates: torch.Tensor,
+        candidate_mask: torch.Tensor,
+        test_vectors: torch.Tensor,
+        targets: torch.Tensor,
+        weights: torch.Tensor,
+        caliber: int,
+        gamma: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        widths.append(padded_candidates.shape[1])
+        return original(
+            padded_candidates, candidate_mask, test_vectors, targets, weights, caliber, gamma
+        )
+
+    monkeypatch.setattr(ls_interpolation, "_select_block", recording)
+    _select(problem)
+
+    assert len(widths) > 1
+    assert max(widths) == int(problem.candidate_mask.sum(dim=-1).max())
+    assert sum(widths) < problem.padded_candidates.shape[1] * len(widths)

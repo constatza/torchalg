@@ -51,9 +51,31 @@ from __future__ import annotations
 import functools
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Protocol, Self, runtime_checkable
 
 import torch
+
+
+class Placement(Enum):
+    """What bounds one application of a preconditioner, hence which device suits it.
+
+    The cost audit (``docs/implementations/cost-model.md``) shows that the three
+    classes behave differently on an accelerator, so the solver chooses the device
+    from this closed set rather than moving everything to CUDA:
+
+    - ``SEQUENTIAL_SWEEP``: a chain of dependent steps (triangular solves, level-scheduled
+      Gauss-Seidel sweeps). The work per dependency level is tiny, so the GPU pays its
+      launch latency per level and measured 30 to 165 times slower than the CPU.
+    - ``SPMV_BOUND``: sparse matrix-vector products and vector updates. Bandwidth bound
+      with a launch-latency floor, so the GPU wins only for large systems.
+    - ``DENSE_BOUND``: dense products and factor solves. Compute or bandwidth bound with
+      high arithmetic intensity, so the GPU wins from moderate sizes.
+    """
+
+    SEQUENTIAL_SWEEP = auto()
+    SPMV_BOUND = auto()
+    DENSE_BOUND = auto()
 
 
 class PreconditionerNotReadyError(RuntimeError):
@@ -158,6 +180,13 @@ class Preconditioner(ABC):
         >>> matrix = torch.eye(3, dtype=torch.float64) * 2.0
         >>> precond = JacobiPreconditioner().setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
+    """
+
+    placement: Placement = Placement.SPMV_BOUND
+    """What bounds one ``apply`` (see :class:`Placement`).
+
+    Subclasses with sweeps override it on the class; a composite such as a multigrid
+    preconditioner assigns it per instance from the smoother it is built around.
     """
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -479,6 +508,15 @@ class Identity(StaticSetupPreconditioner):
         - Convergence rate: O(sqrt(kappa(A))) where
           kappa(A) = lambda_max(A) / lambda_min(A).
         - No computational overhead.
+
+    Cost:
+        Setup: none. Apply, ``k`` right-hand-side columns, ``V = 8`` bytes per
+        ``float64``: ``W = 0``, ``Q = 2Vnk`` (the clone reads and writes the
+        residual once, so the caller owns a distinct buffer), ``D = 1``,
+        ``L = 1``, ``S = 0``.
+        Roofline: ``W/Q = 0``, a pure copy bounded by memory bandwidth.
+        Work-depth: ``W/D = 0``; the cost of an unpreconditioned solve is the
+        PCG iteration alone, which the iteration count multiplies.
 
     Stateless, so it is always ready - construction alone satisfies the
     ``setup()``-before-``apply()`` contract (``setup()`` is still provided,

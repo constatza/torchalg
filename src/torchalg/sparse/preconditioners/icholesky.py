@@ -20,7 +20,7 @@ from typing import Self
 import torch
 from torch import nn
 
-from torchalg.preconditioners.base import LinearPreconditioner, PreconditionerContext
+from torchalg.preconditioners.base import LinearPreconditioner, Placement, PreconditionerContext
 from torchalg.sparse.preconditioners._triangular import (
     PreparedTriangularPair,
     build_sparse_cholesky_solve_cache,
@@ -70,6 +70,8 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         >>> precond.setup(L)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
+
+    placement = Placement.SEQUENTIAL_SWEEP
 
     def __init__(self) -> None:
         """Register the (not yet stored) lower-triangular-factor buffer."""

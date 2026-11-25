@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import torch
 
-from torchalg.sparse.kernels.index_dtype import INT32_INDEX_LIMIT
+from torchalg.utils.csr_index import INT32_INDEX_LIMIT
 
 
 def structural_index(index: torch.Tensor, extent: int) -> torch.Tensor:

@@ -4,7 +4,12 @@
 orchestration:
 
 - `norms.py` defines convergence norm functions.
-- `convergence.py` defines tolerance criteria.
+- `convergence.py` defines tolerance criteria. `converged_flag_from_norm`
+  is the stopping test as a device-side bool (no synchronization, no
+  conversion launches when both norms are tensors of one dtype and device);
+  `has_converged_from_norm` is the same test read to the host with one
+  synchronization. The CG step reads the flag together with its finiteness
+  flag in a single transfer.
 - `orthogonalization.py` defines A-conjugacy orthogonalization strategies for
   FCG and optional PCG reorthogonalization. They consume a `DirectionWindow`
   (`models/history.py`): classical Gram-Schmidt (`PeriodicRestartOrthogonalization`,

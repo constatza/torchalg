@@ -11,10 +11,15 @@ test tree.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 import torch
 
 from torchalg.utils.pod_basis import compute_pod_basis
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class TestComputePodBasis:
@@ -122,6 +127,107 @@ class TestComputePodBasis:
         wrong_length = torch.ones(poisson_snapshots.shape[0] + 1, dtype=poisson_snapshots.dtype)
         with pytest.raises(ValueError, match="row_scales"):
             compute_pod_basis(poisson_snapshots, rank=10, row_scales=wrong_length)
+
+
+def _svd_reference(
+    snapshots: torch.Tensor, rank: float, svd: Callable[..., tuple[torch.Tensor, ...]] | None = None
+) -> torch.Tensor:
+    """The thin-SVD basis the Gram route must reproduce: leading right singular vectors."""
+    _, s, vh = (svd or torch.linalg.svd)(snapshots, full_matrices=False)
+    if isinstance(rank, float):
+        cumulative = torch.cumsum(s.square(), dim=0) / s.square().sum()
+        rank = min(int((cumulative < rank).sum()) + 1, len(s))
+    return vh[:rank].T.contiguous()
+
+
+def _min_principal_cosine(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Smallest cosine of the principal angles between two orthonormal column spans."""
+    return float(torch.linalg.svdvals(a.mT @ b).min())
+
+
+SAME_SUBSPACE = 1.0 - 1e-12
+
+
+class TestGramRoute:
+    """The unweighted fit works in the ``N x N`` Gram matrix and falls back to the SVD."""
+
+    @pytest.mark.parametrize("rank", [10, 0.999, 0.99999])
+    def test_well_conditioned_matches_svd_without_calling_svd(
+        self,
+        snapshots_with_spectrum: Callable[[list[float], int], torch.Tensor],
+        forbid_svd: Callable[..., tuple[torch.Tensor, ...]],
+        rank: float,
+    ) -> None:
+        """Mild decay: same subspace, same selected k, and no SVD is computed."""
+        spectrum = [0.8**i for i in range(40)]
+        snapshots = snapshots_with_spectrum(spectrum, 40)
+        basis = compute_pod_basis(snapshots, rank)
+        reference = _svd_reference(snapshots, rank, svd=forbid_svd)
+        assert basis.shape == reference.shape
+        assert _min_principal_cosine(basis, reference) >= SAME_SUBSPACE
+        torch.testing.assert_close(
+            basis.T @ basis, torch.eye(basis.shape[1], dtype=basis.dtype), atol=1e-10, rtol=0.0
+        )
+
+    @pytest.mark.parametrize("rank", [30, 40, 0.9999999999])
+    def test_ill_conditioned_falls_back_to_svd(
+        self,
+        snapshots_with_spectrum: Callable[[list[float], int], torch.Tensor],
+        rank: float,
+    ) -> None:
+        """Modes past the Gram matrix's accuracy limit are taken from the SVD instead."""
+        spectrum = [10.0 ** (-8 * i / 39) for i in range(40)]
+        snapshots = snapshots_with_spectrum(spectrum, 40)
+        basis = compute_pod_basis(snapshots, rank)
+        reference = _svd_reference(snapshots, rank)
+        assert basis.shape == reference.shape
+        assert _min_principal_cosine(basis, reference) >= SAME_SUBSPACE
+
+    def test_ill_conditioned_energy_truncation_stays_on_gram_route(
+        self,
+        snapshots_with_spectrum: Callable[[list[float], int], torch.Tensor],
+        forbid_svd: Callable[..., tuple[torch.Tensor, ...]],
+    ) -> None:
+        """A large singular-value gap truncated above it is accurate: no fallback needed."""
+        spectrum = [0.5**i for i in range(10)] + [1e-9] * 30
+        snapshots = snapshots_with_spectrum(spectrum, 40)
+        basis = compute_pod_basis(snapshots, 0.9999)
+        assert basis.shape[1] <= 10
+
+    @pytest.mark.parametrize("rank", [8, 12, 1.0])
+    def test_rank_deficient_matches_svd(
+        self,
+        snapshots_with_spectrum: Callable[[list[float], int], torch.Tensor],
+        rank: float,
+    ) -> None:
+        """Exactly 8 nonzero modes: a count beyond 8 needs the SVD's null-space vectors."""
+        snapshots = snapshots_with_spectrum([1.0 - 0.1 * i for i in range(8)], 20)
+        basis = compute_pod_basis(snapshots, rank)
+        reference = _svd_reference(snapshots, rank)
+        assert basis.shape == reference.shape
+        assert _min_principal_cosine(basis[:, :8], reference[:, :8]) >= SAME_SUBSPACE
+        torch.testing.assert_close(
+            basis.T @ basis, torch.eye(basis.shape[1], dtype=basis.dtype), atol=1e-10, rtol=0.0
+        )
+
+    def test_more_samples_than_dofs_matches_svd(self, test_seed: int) -> None:
+        """``N > n_dofs``: the Gram matrix would be larger than the snapshots, so use the SVD."""
+        generator = torch.Generator().manual_seed(test_seed)
+        snapshots = torch.randn(30, 12, generator=generator, dtype=torch.float64)
+        basis = compute_pod_basis(snapshots, 0.99)
+        reference = _svd_reference(snapshots, 0.99)
+        assert basis.shape == reference.shape
+        assert _min_principal_cosine(basis, reference) >= SAME_SUBSPACE
+
+    def test_float32_never_trusts_the_gram_matrix(
+        self, snapshots_with_spectrum: Callable[[list[float], int], torch.Tensor]
+    ) -> None:
+        """float32 squares an already coarse precision, so the SVD runs; dtype is kept."""
+        snapshots = snapshots_with_spectrum([0.8**i for i in range(40)], 40).to(torch.float32)
+        basis = compute_pod_basis(snapshots, 10)
+        assert basis.dtype == torch.float32
+        reference = _svd_reference(snapshots, 10)
+        assert _min_principal_cosine(basis, reference) >= 1.0 - 1e-5
 
 
 def _projector(basis: torch.Tensor) -> torch.Tensor:

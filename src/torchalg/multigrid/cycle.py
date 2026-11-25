@@ -22,6 +22,8 @@ from .coarse_solve import CoarseSolverFactory, HierarchyNotPreparedError, lu_coa
 from .hierarchy import MultigridHierarchy, PreparedHierarchy, prepare_hierarchy
 
 if TYPE_CHECKING:
+    from torchalg.preconditioners.base import Placement
+
     from .protocols import MultigridSmoother
 
 
@@ -78,6 +80,7 @@ class VCycle:
                 solve once per hierarchy.
         """
         self._smoother = smoother
+        self.placement: Placement = smoother.placement
         self._n_pre = n_pre
         self._n_post = n_post
         self._coarse_solver_factory = coarse_solver_factory
@@ -186,6 +189,7 @@ class WCycle:
                 solve once per hierarchy.
         """
         self._smoother = smoother
+        self.placement: Placement = smoother.placement
         self._n_pre = n_pre
         self._n_post = n_post
         self._coarse_solver_factory = coarse_solver_factory

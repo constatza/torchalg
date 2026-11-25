@@ -132,3 +132,41 @@ def build_sparse_lu_solve_cache(
         check_invariants=False,
     )
     return PreparedTriangularPair(lower, upper)
+
+
+def write_positions(
+    values: torch.Tensor, positions: torch.Tensor, new_values: torch.Tensor, *, in_place: bool
+) -> torch.Tensor:
+    """Write ``new_values`` at ``positions`` of ``values``, in place or into a copy.
+
+    Cost:
+        W: ``len(positions)`` in place; ``len(values)`` out of place (the whole
+        array is copied). Out of place is needed only when autograd tracks
+        ``values``.
+
+    Args:
+        values (torch.Tensor): Factor value buffer.
+        positions (torch.Tensor): Distinct flat indices into ``values``.
+        new_values (torch.Tensor): Values to store, one per position.
+        in_place (bool): ``True`` mutates and returns ``values``; ``False``
+            returns a fresh tensor and leaves ``values`` untouched.
+
+    Returns:
+        torch.Tensor: Buffer holding the written values.
+    """
+    if in_place:
+        values[positions] = new_values
+        return values
+    return values.scatter(0, positions, new_values)
+
+
+def tracks_autograd(matrix: torch.Tensor) -> bool:
+    """Whether a factorization of ``matrix`` must stay out of place for autograd.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix about to be factored.
+
+    Returns:
+        bool: ``True`` when grad mode is on and the stored values require grad.
+    """
+    return torch.is_grad_enabled() and matrix.values().requires_grad

@@ -13,6 +13,7 @@ from typing import Protocol
 import pytest
 import torch
 
+from torchalg.preconditioners.base import Placement
 from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo
 from torchalg.utils.spectral import approximate_spectral_radius
 
@@ -271,6 +272,8 @@ class _PreparedDenseOracle:
 class DenseRelaxation:
     """Dense ``MultigridSmoother`` backed by the ``solve_triangular`` oracle."""
 
+    placement = Placement.SEQUENTIAL_SWEEP
+
     def __init__(self, sweeps: DenseSymmetricGaussSeidel) -> None:
         self._sweeps = sweeps
 
@@ -310,15 +313,3 @@ def gauss_seidel_block(poisson_2d_dense: torch.Tensor, test_seed: int) -> tuple[
     x = torch.randn(n, 2, generator=generator, dtype=poisson_2d_dense.dtype)
     rows = torch.tensor([0, 2, 3, 7])
     return rhs, x, rows
-
-
-@pytest.fixture
-def csr_gauss_seidel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the level-scheduled CSR Gauss-Seidel, whatever the matrix size.
-
-    For tests that assert properties of the CSR path (schedules built once per matrix).
-    """
-    from torchalg.sparse.preconditioners.amg import _gauss_seidel_format
-
-    monkeypatch.setattr(_gauss_seidel_format, "DENSE_ALWAYS_MAX_N", 0)
-    monkeypatch.setattr(_gauss_seidel_format, "CSR_ALWAYS_MIN_N", 0)

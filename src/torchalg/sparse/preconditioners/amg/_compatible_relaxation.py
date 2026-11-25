@@ -165,6 +165,19 @@ def _independent_set_of(
     (such as the algebraic-distance strength graph, where ``r_ij != r_ji``)
     must symmetrize it themselves.
 
+    Cost:
+        Per call, ``a = nnz(adjacency)``: ``W = 0``, ``I = O(n log n + a)``
+        (the priority sort, then one visit per node and per removed
+        neighbor), ``D = n`` (each pick invalidates neighbors of every later
+        pick, so the order is strictly sequential), ``Q = O(a w + n V)`` for
+        the host copies, ``S = O(1)`` (one bulk ``tolist`` per array, no
+        per-node read). The sequential loop reads native Python integers and
+        booleans instead of one scalar-tensor access per node and neighbor,
+        which is the executed cost matching the algorithmic minimum
+        ``O(n + a)`` for the visits.
+        Work-depth: ``I/D = O(1 + a/n)``, essentially no parallelism; the
+        step is host-bound at any size.
+
     Args:
         candidates (torch.Tensor): Boolean mask, shape ``(n,)``, the
             eligible node set ``Z``.
@@ -192,19 +205,19 @@ def _independent_set_of(
     # directly - simpler than the dense boolean-row-AND it replaces, not
     # more complex.
     adjacency_cpu = adjacency.cpu()
-    crow = adjacency_cpu.crow_indices()
-    col = adjacency_cpu.col_indices()
+    crow = adjacency_cpu.crow_indices().tolist()
+    col = adjacency_cpu.col_indices().tolist()
     order = torch.argsort(priority, descending=True).cpu().tolist()
-    eligible = candidates.cpu().clone()
-    selected = torch.zeros(n, dtype=torch.bool)
+    eligible = candidates.cpu().tolist()
+    selected = [False] * n
     for i in order:
         if not eligible[i]:
             continue
         selected[i] = True
         eligible[i] = False
-        neighbors = col[crow[i] : crow[i + 1]]
-        eligible[neighbors] = False
-    return selected.to(device)
+        for neighbor in col[crow[i] : crow[i + 1]]:
+            eligible[neighbor] = False
+    return torch.tensor(selected, dtype=torch.bool, device=device)
 
 
 def compatible_relaxation_coarsening(
@@ -219,6 +232,21 @@ def compatible_relaxation_coarsening(
     guidance_graph: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compatible-relaxation coarsening outer loop (Algorithm 2.1, [AD11]/[STATUS14]).
+
+    Cost:
+        The loop runs ``s`` stages (data dependent: it stops when ``rho_f``
+        reaches ``delta``), each ``nu`` smoother sweeps (``cr_rate``), two
+        norms with one host read (``S = 1`` per stage), and one
+        ``_independent_set_of``. With ``W_sweep``, ``D_sweep`` and ``L_sweep``
+        the cost of one smoother sweep on ``matrix``:
+        ``W = s (nu W_sweep + O(n))``,
+        ``D = s (nu D_sweep + n)`` and ``L = s (nu L_sweep + O(1))``, the
+        ``n`` coming from the sequential independent set. The depth is
+        dominated by the host-sequential set when ``D_sweep`` is small, so
+        the step does not speed up with workers; it is graph work
+        (``I = O(s (n log n + nnz))``), not a flop count.
+        Roofline: ``W/Q`` is that of the smoother (memory-bound).
+        Work-depth: ``W/D`` is low, as above.
 
     Args:
         matrix (torch.Tensor): Sparse CSR system matrix ``A``, shape

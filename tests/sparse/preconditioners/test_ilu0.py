@@ -101,6 +101,15 @@ class TestSparseILU0:
         with pytest.raises(ValueError, match="sparse CSR"):
             sparse_ilu0(poisson_1d_dense)
 
+    def test_factorization_leaves_the_input_values_untouched(
+        self, poisson_2d_csr: torch.Tensor
+    ) -> None:
+        before = poisson_2d_csr.values().clone()
+
+        sparse_ilu0(poisson_2d_csr)
+
+        assert torch.equal(poisson_2d_csr.values(), before)
+
     def test_differentiable_through_values(self, poisson_1d_dense: torch.Tensor) -> None:
         matrix = poisson_1d_dense.to_sparse_csr()
         values = matrix.values().clone().requires_grad_(True)

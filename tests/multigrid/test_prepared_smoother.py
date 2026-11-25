@@ -16,6 +16,7 @@ from torchalg.multigrid.hierarchy import (
     build_hierarchy,
 )
 from torchalg.multigrid.protocols import PreparedSmoother
+from torchalg.preconditioners.base import Placement
 from torchalg.preconditioners.implementations.amg import AggregationCoarsening
 
 N_LEVELS = 3
@@ -49,6 +50,8 @@ class RecordingPrepared:
 
 class RecordingSmoother:
     """Smoother factory that counts ``prepare`` calls."""
+
+    placement = Placement.SPMV_BOUND
 
     def __init__(self) -> None:
         self.prepared_for: list[int] = []

@@ -106,6 +106,10 @@ class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
     smooth matvec is ``O(nnz)`` per level rather than ``O(level_size^2)`` -
     only the coarsest-level direct solve still densifies (see
     ``torchalg.sparse.preconditioners.amg.coarse_solve.dense_coarse_solve``).
+
+    Attributes:
+        placement (Placement): Taken from ``cycle``, i.e. from its smoother: Jacobi
+            smoothing is ``SPMV_BOUND``, Gauss-Seidel ``SEQUENTIAL_SWEEP``.
     """
 
     def __init__(
@@ -132,6 +136,7 @@ class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
             raise ValueError("n_levels must be at least 2 for AMG coarsening.")
         self._coarsening = coarsening
         self._cycle = cycle
+        self.placement = cycle.placement
         self._n_levels = n_levels
         self._linear = linear
         self._hierarchy: PreparedHierarchy | None = None

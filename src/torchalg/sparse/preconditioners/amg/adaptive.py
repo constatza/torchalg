@@ -436,6 +436,35 @@ def adaptive_sa_hierarchy(
     same defaults, same algorithm, every format-committing step swapped per
     this module's docstring.
 
+    Cost:
+        Once per matrix. ``q`` = ``num_candidates``, ``s`` = ``candidate_iters``,
+        ``L`` levels with ``n_l`` rows and ``z_l`` stored entries, ``P_l`` the
+        prolongation of level ``l``, ``c`` the order of a dense coarsest block
+        (it grows with the candidate count: coarse nodes times candidates so far).
+        The first candidate costs ``2s`` symmetric Gauss-Seidel iterations per
+        level (down and up), ``W = 2s sum_l (4 z_l + 2 n_l)``, plus one
+        aggregation, prolongation smoothing and Galerkin product per level. Each
+        of the ``q - 1`` later candidates runs ``s`` GS-smoothed V(1,1) trial
+        cycles on the whole hierarchy and ``s`` more on each of its ``L - 2``
+        nested sub-hierarchies, so its work is quadratic in ``L``:
+        ``W = O(s L sum_l (9 z_l + 4 nnz(P_l)))`` for the cycles, plus one
+        smoothed-aggregation rebuild of the hierarchy (per later candidate, and
+        a final one) and one coarsest-level inverse per trial hierarchy
+        prepared, each ``W ~ c^3`` for an SPD block or ``~ 24 c^3`` through
+        ``pinv`` (``pseudo_inverse_coarse_solver``). Smoothers are prepared once
+        per level matrix and shared across the stage. ``D`` is the sum of the
+        stage chains, dominated by the Gauss-Seidel triangular recurrences
+        (``lv_f + lv_b`` per iteration, ``s`` iterations, a trial cycle per
+        stage), the coarsest factorization (``D = O(c)``) and the host
+        aggregation (``3 n_l + nnz`` per level); ``I`` is the aggregation and
+        ``S = O(L q s)`` the trial-cycle convergence reads. ``Q`` follows each
+        block (every sparse block is memory-bound; the dense inverse has
+        ``W/Q`` of order ``c``).
+        Work-depth: ``W/D`` is high in the SpMV, SpGEMM and dense blocks and low
+        in the Gauss-Seidel and aggregation chains. The setup is by far the
+        largest term of the method's total cost; a smoothed-aggregation setup of
+        one level is the unit it multiplies.
+
     Args:
         matrix (torch.Tensor): SPD system matrix, sparse CSR, shape ``(n, n)``.
         initial_candidates (torch.Tensor | None): Known candidates ``(n, k)``;
@@ -511,6 +540,25 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
     same defaults, composed entirely from this package's own sparse-native
     kernels/preconditioners plus the shared, format-agnostic
     ``torchalg.multigrid`` engine.
+
+    Cost:
+        Setup: ``adaptive_sa_hierarchy``, once per matrix; it dominates the
+        method's total cost. Apply, one V(``a``, ``b``) cycle with weighted-Jacobi
+        smoothing, ``L`` levels, ``V = 8`` bytes per ``float64``, per
+        non-coarsest level ``l``: ``W_l = 2(a + b) z_l + 4 nnz(P_l) + 3(a + b) n_l``
+        (the smoother SpMVs and vector passes, plus one prolongation and one
+        restriction), ``L_l = 4(a + b) + 2``, ``S = 0``; the coarsest level adds a
+        dense matrix-vector product with the cached inverse, ``W = 2c^2``,
+        ``Q = V(c^2 + 2c)``, ``D = ceil(log2 c) + 1``, ``L = 1``. ``Q`` is the sum
+        of the SpMV and vector-pass bytes of those blocks. ``D`` is
+        about ``sum_l [(a + b)(ceil(log2 m_l) + 4) + 2 (ceil(log2 m_P) + 1)] +
+        ceil(log2 c) + 1`` with ``m_l`` the largest row count of level ``l``,
+        shallow because Jacobi and transfers have no recurrence. The cycle costs
+        about ``(2(a + b) + 4 nnz(P)/z_0) C_op`` fine SpMVs plus the coarse
+        product, with operator complexity ``C_op = sum_l z_l / z_0``.
+        Roofline: ``W/Q`` is about 0.15 flop per byte (memory-bound).
+        Work-depth: ``W/D`` is large (about ``10^4``), the most parallel of the
+        methods here: the iteration count and launches, not depth, set its time.
 
     Args:
         num_candidates (int): Total number of near-null-space candidates.

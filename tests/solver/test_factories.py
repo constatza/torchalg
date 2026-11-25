@@ -285,22 +285,19 @@ def test_pcg_device_override_bypasses_auto_resolution(
     to_torch: Callable[[NDArray], torch.Tensor],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An explicit ``device=`` must win over automatic CUDA/CPU resolution.
+    """An explicit ``device=`` must win over the cost-based placement choice.
 
-    ``_place_on_device`` always calls ``resolve_device()`` and prefers CUDA
-    when available — right for large training-time solves, wrong for many
-    small, short dataset-generation solves, where per-iteration host<->device
-    syncs (``float(torch.linalg.norm(...))`` in the convergence check) cost
-    far more than the tiny matvec they guard. Callers who know their system
-    is small must be able to pin the device explicitly.
+    Callers who know better than the policy (a measured GPU win below the
+    threshold, a pinned CPU for many tiny solves) pin the device explicitly,
+    and the policy must not even run then.
     """
     matrix = to_torch(identity_matrix_small)
     rhs = to_torch(rhs_ones_small)
 
-    def _fail_if_called() -> torch.device:
-        raise AssertionError("resolve_device() must not run when device= is given")
+    def _fail_if_called(problem: object) -> torch.device:
+        raise AssertionError("choose_device() must not run when device= is given")
 
-    monkeypatch.setattr("torchalg.base.resolve_device", _fail_if_called)
+    monkeypatch.setattr("torchalg.base.choose_device", _fail_if_called)
 
     solution, _ = pcg(matrix, rhs, maxiter=5, device=torch.device("cpu"))
 
@@ -313,16 +310,16 @@ def test_pcg_device_none_still_auto_resolves(
     to_torch: Callable[[NDArray], torch.Tensor],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Leaving ``device`` unset keeps today's automatic resolution behavior."""
+    """Leaving ``device`` unset consults the placement policy exactly once."""
     matrix = to_torch(identity_matrix_small)
     rhs = to_torch(rhs_ones_small)
     calls: list[bool] = []
 
-    def _recording_resolve() -> torch.device:
+    def _recording_choice(problem: object) -> torch.device:
         calls.append(True)
         return torch.device("cpu")
 
-    monkeypatch.setattr("torchalg.base.resolve_device", _recording_resolve)
+    monkeypatch.setattr("torchalg.base.choose_device", _recording_choice)
 
     pcg(matrix, rhs, maxiter=5)
 
@@ -492,11 +489,11 @@ def test_fcg_defers_orthogonalization_breakdown_and_coefficient_conversion(
 
     Orthogonalization breakdown (bool) and coefficients (float) stay tensors:
     the breakdown flags fold into one device-side record resolved after the
-    loop. The only deliberate per-iteration ``.item()`` calls are the three
-    overflow guards (finiteness of ``(r, w)``, of ``(d, q)`` and of the
-    window projections); each replaces a ~15-kernel always-on rescaling. The
-    bound of 3.5 per iteration therefore leaves no room for a per-iteration
-    breakdown/coefficient conversion on top of them.
+    loop. The only deliberate per-iteration ``.item()`` calls are the finiteness
+    guard of the window projections (it replaces a ~15-kernel always-on
+    rescaling) and the packed read of the ``(r, w)``/``(d, q)`` finiteness flag
+    with the stopping test. The bound of 2.5 per iteration therefore leaves no
+    room for a per-iteration breakdown/coefficient conversion on top.
     """
     from torchalg.factories import flexible_cg
 
@@ -517,7 +514,7 @@ def test_fcg_defers_orthogonalization_breakdown_and_coefficient_conversion(
 
     assert result.iterations == maxiter
     actual_per_iter = item_call_count / maxiter if maxiter > 0 else 0
-    assert actual_per_iter < 3.5, (
-        f".item() calls per iteration should be <3.5 (the three overflow guards only), "
+    assert actual_per_iter < 2.5, (
+        f".item() calls per iteration should be <2.5 (projection guard and packed flag read), "
         f"got {actual_per_iter:.2f} (total {item_call_count} for {maxiter} iterations)"
     )

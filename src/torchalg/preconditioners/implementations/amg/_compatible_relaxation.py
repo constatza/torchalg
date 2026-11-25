@@ -160,6 +160,12 @@ def _independent_set_of(
     must symmetrize it themselves - ``BAMGCoarsening._coarse_mask`` does,
     and documents why it unions rather than intersects.
 
+    Cost:
+        W: ``O(n^2)`` for the one dense scan plus ``O(n + edges)`` for the
+        greedy loop. Executed: the loop reads native Python integers and
+        booleans instead of one scalar-tensor access and one length-``n``
+        row AND per pick.
+
     Args:
         candidates (torch.Tensor): Boolean mask, shape ``(n,)``, the
             eligible node set ``Z``.
@@ -189,16 +195,22 @@ def _independent_set_of(
     # loop CPU-resident removes that entirely; only `adjacency`/`eligible`
     # need one one-time transfer instead of n syncs.
     order = torch.argsort(priority, descending=True).cpu().tolist()
-    eligible = candidates.cpu().clone()
-    adjacency_cpu = adjacency.cpu()
-    selected = torch.zeros(n, dtype=torch.bool)
+    eligible = candidates.cpu().tolist()
+    # One bulk scan turns the dense rows into neighbor lists: the loop then
+    # visits only each picked node's neighbors instead of AND-ing a full
+    # length-``n`` row (and reading scalar tensors) per pick.
+    edge_rows, edge_cols = adjacency.cpu().nonzero(as_tuple=True)
+    row_start = torch.searchsorted(edge_rows, torch.arange(n + 1)).tolist()
+    neighbors = edge_cols.tolist()
+    selected = [False] * n
     for i in order:
         if not eligible[i]:
             continue
         selected[i] = True
         eligible[i] = False
-        eligible &= ~adjacency_cpu[i]
-    return selected.to(device)
+        for neighbor in neighbors[row_start[i] : row_start[i + 1]]:
+            eligible[neighbor] = False
+    return torch.tensor(selected, dtype=torch.bool, device=device)
 
 
 def compatible_relaxation_coarsening(

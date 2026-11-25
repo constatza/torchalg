@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from torchalg.multigrid.coarse_solve import (
+    CHOLESKY_MIN_DIMENSION,
     CoarseSolve,
     HierarchyNotPreparedError,
     lu_coarse_solver,
@@ -40,6 +41,47 @@ def singular_matrix() -> torch.Tensor:
     matrix = torch.eye(COARSE_SIZE, dtype=torch.float64) * 2.0
     matrix[-1, -1] = 0.0
     return matrix
+
+
+def _spd(size: int) -> torch.Tensor:
+    generator = torch.Generator().manual_seed(SEED)
+    factor = torch.randn(size, size, dtype=torch.float64, generator=generator)
+    return factor @ factor.T + size * torch.eye(size, dtype=torch.float64)
+
+
+@pytest.fixture
+def large_spd_matrix() -> torch.Tensor:
+    """SPD matrix wide enough to take the Cholesky route."""
+    return _spd(CHOLESKY_MIN_DIMENSION)
+
+
+@pytest.fixture
+def large_rhs() -> torch.Tensor:
+    generator = torch.Generator().manual_seed(SEED + 1)
+    return torch.randn(CHOLESKY_MIN_DIMENSION, dtype=torch.float64, generator=generator)
+
+
+@pytest.fixture
+def semidefinite_matrix() -> torch.Tensor:
+    """Symmetric positive semidefinite of rank ``n - 1`` whose Cholesky still succeeds.
+
+    Its last pivot is rounding noise rather than an exact zero (asserted here), so only the
+    pivot-ratio guard keeps it away from a garbage inverse.
+    """
+    generator = torch.Generator().manual_seed(0)
+    size = CHOLESKY_MIN_DIMENSION
+    factor = torch.randn(size, size - 1, dtype=torch.float64, generator=generator)
+    matrix = factor @ factor.T
+    matrix = (matrix + matrix.T) / 2
+    assert int(torch.linalg.cholesky_ex(matrix).info) == 0
+    return matrix
+
+
+@pytest.fixture
+def nonsymmetric_matrix(large_spd_matrix: torch.Tensor) -> torch.Tensor:
+    """Well-conditioned matrix whose lower triangle alone is a different SPD matrix."""
+    skew = torch.triu(torch.ones_like(large_spd_matrix), diagonal=1) * 0.5
+    return large_spd_matrix + skew
 
 
 @pytest.fixture
@@ -81,11 +123,44 @@ class TestFactories:
         with pytest.raises(torch.linalg.LinAlgError):
             lu_coarse_solver(singular_matrix)
 
-    def test_pinv_solver_is_exactly_the_per_call_pinv(
+    def test_small_spd_matrix_keeps_the_exact_pinv(
         self, spd_matrix: torch.Tensor, rhs: torch.Tensor
     ) -> None:
         solve = pseudo_inverse_coarse_solver(spd_matrix)
         assert torch.equal(solve(rhs), torch.linalg.pinv(spd_matrix) @ rhs)
+
+    def test_large_spd_matrix_matches_the_pseudo_inverse(
+        self, large_spd_matrix: torch.Tensor, large_rhs: torch.Tensor
+    ) -> None:
+        solve = pseudo_inverse_coarse_solver(large_spd_matrix)
+        torch.testing.assert_close(
+            solve(large_rhs),
+            torch.linalg.pinv(large_spd_matrix) @ large_rhs,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_large_spd_matrix_is_inverted_without_an_svd(
+        self, large_spd_matrix: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def forbidden(*_args: object, **_kwargs: object) -> torch.Tensor:
+            raise AssertionError("a large SPD coarse matrix must not need the SVD-based pinv")
+
+        monkeypatch.setattr(torch.linalg, "pinv", forbidden)
+        pseudo_inverse_coarse_solver(large_spd_matrix)
+
+    def test_pinv_solver_is_exactly_the_pinv_when_nonsymmetric(
+        self, nonsymmetric_matrix: torch.Tensor, large_rhs: torch.Tensor
+    ) -> None:
+        """Cholesky reads one triangle only, so a nonsymmetric matrix must take the SVD route."""
+        solve = pseudo_inverse_coarse_solver(nonsymmetric_matrix)
+        assert torch.equal(solve(large_rhs), torch.linalg.pinv(nonsymmetric_matrix) @ large_rhs)
+
+    def test_pinv_solver_is_exactly_the_pinv_when_semidefinite(
+        self, semidefinite_matrix: torch.Tensor, large_rhs: torch.Tensor
+    ) -> None:
+        solve = pseudo_inverse_coarse_solver(semidefinite_matrix)
+        assert torch.equal(solve(large_rhs), torch.linalg.pinv(semidefinite_matrix) @ large_rhs)
 
     def test_pinv_solver_returns_minimum_norm_solution_when_singular(
         self, singular_matrix: torch.Tensor, rhs: torch.Tensor

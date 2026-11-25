@@ -30,6 +30,20 @@ the basis, the coarse matrix `Phi^T (A Phi)` and the transfer are dense
 whatever the layout of `A`, so there is no sparse POD sibling.
 `pod2g_preconditioner` takes `snapshots` and fits the basis internally.
 
+The unweighted fit eigendecomposes the `n_samples x n_samples` Gram matrix
+`S S^T` and projects the eigenvectors back through `S` (about 2 times fewer
+flops and 3 times shallower than the thin SVD, which computes all
+`min(n_samples, n_dofs)` triplets). Squared conditioning limits it: the Gram
+route is used only when the smallest selected `sigma_r^2 / sigma_1^2` exceeds
+`eps / 1e-10` (orthonormality error below `1e-10`; never in float32), and
+the SVD runs otherwise and whenever `n_samples > n_dofs`. Both span the same
+subspace and select the same mode count. The weighted (`inner_product`) fit
+already works in the snapshot subspace and is unchanged.
+`PODCoarseningStrategy.build_transfer` forms `Phi^T (A Phi)` as a full
+GEMM (`2 nnz r + 2 n r^2` flops); the symmetric half saves 23% of the flops
+but measured slower (15 launches against 2), so it needs a triangular-output
+GEMM kernel first.
+
 `compute_pod_basis` takes an optional `row_scales`
 (shape `(n_samples,)`), multiplied into each snapshot row before the SVD.
 Because row scaling only touches the sample axis, `snapshots'^T snapshots' =
@@ -153,8 +167,7 @@ stale). The instance holds its last pattern and compares content. Patterns and p
 objects are `@dataclass(frozen=True, slots=True)`.
 
 Names follow the roles. Module-level `prepare_*` functions return a `Prepared*`
-object (`prepare_symmetric_gauss_seidel`; in `sparse`, `prepare_gauss_seidel` picks the
-format and `prepare_csr_gauss_seidel` / `prepare_dense_gauss_seidel` build it). An
+object (`prepare_symmetric_gauss_seidel`; in `sparse`, `prepare_csr_gauss_seidel`). An
 identity memo scoped to one setup run is a `*Memo` (`TransferOperatorMemo`,
 `GaussSeidelMemo`, `NeighborhoodMemo`) and never shares a name with prepared state;
 `build_hierarchy` and `build_transfer` mean "coarsen", not "prepare". Use before
@@ -213,16 +226,34 @@ smoothing** (`AggregationCoarsening`, presets' `prolongation_omega`, one Jacobi
 step on the tentative prolongator at setup) uses `omega = (4/3) / rho`
 (Vanek, Mandel & Brezina 1996). `None` selects the rule, a float fixes the
 value. `rho` is a seeded, hence deterministic, Arnoldi estimate
-(`utils.spectral.approximate_spectral_radius`) from a pure, uncached function:
-there is no global state. Prolongation smoothing estimates it once per level
-inside `build_transfer`; `JacobiSmoother.prepare(A)` estimates it once per level
-(the same fixed-seed start, hence the same value) when the cycle is prepared in
-`setup()`. `apply()` never estimates anything.
+(`utils.spectral.approximate_spectral_radius`), a pure function of `A`. It is
+memoized per matrix object (`utils.weak_cache.tensor_memo`: entries die with the
+matrix, an in-place edit invalidates, inference tensors are never cached), so
+prolongation smoothing inside `build_transfer` and `JacobiSmoother.prepare(A)`
+of the same level share one estimate; both only receive `A`, so object identity
+is the sharing channel. `apply()` never estimates anything. Bootstrap and
+BootCMatch estimate each distinct level matrix once. Adaptive SA also estimates
+inside its prolongator smoothing from the shared `draw` stream, so repeated
+estimates of one matrix start from different vectors and differ at the 1e-5
+level; they are not merged (merging changes the hierarchy). The Arnoldi
+orthogonalizes each new vector against the whole basis by classical
+Gram-Schmidt with one reorthogonalization (two block products per step, O(m)
+launches per pass), not a per-vector modified Gram-Schmidt loop.
 For `rho ~= 2` the rules give about 0.5 and 0.67; unlike a fixed 0.67 they keep
 the smoother convergent when `rho > 3` (`omega` must stay below `2 / rho`).
 The POD helpers `apply_jacobi_damping[_trajectory]` and
 `smoother_persistence_scales` default to the relaxation rule as well.
 Gauss-Seidel has no damping parameter.
+
+Device placement follows the smoother. `MultigridSmoother.placement` and
+`MultigridCycle.placement` are `Placement` members: `JacobiSmoother` is `SPMV_BOUND`,
+`GaussSeidelSmoother` (and the sparse `GaussSeidelMemo`) is `SEQUENTIAL_SWEEP`, a cycle
+exposes its smoother's, and `AMGPreconditioner` and `BootCMatchPreconditioner` (dense and
+sparse) set `placement` on the instance from their solve cycle. So `vcycle_amg`,
+`wcycle_amg`, `pod2g_preconditioner`, `AdaptiveSAPreconditioner`, `BootstrapAMGPreconditioner`
+and BootCMatch are `SPMV_BOUND` by default and `SEQUENTIAL_SWEEP` when given a
+Gauss-Seidel solve smoother; the Gauss-Seidel used inside adaptive/bootstrap setup does not
+count, since setup runs once on the matrix's own device and only `apply` is placed.
 
 Smoothers follow a prepare/apply split. A `MultigridSmoother` holds only
 configuration and exposes `prepare(A) -> PreparedSmoother`; `cycle.prepare(hierarchy)`
@@ -351,6 +382,11 @@ unverifiable [BAMG11] attribution) - see `bootstrap.py`'s
 Each `BootstrapAMGPreconditioner.setup()` builds a fresh `BootstrapSetup` around its
 own `NeighborhoodMemo`, so `depth_neighborhood` of the finest matrix (identical in
 every bootstrap pass) is evaluated once per setup run per depth, not once per pass.
+`batched_select_interpolatory_set` groups the fine rows by candidate count and runs the
+growth loop on each group at its own padded width (`_width_chunks`), so the rows with
+the full coarse set as fallback candidates do not widen every row; the selection is
+bit-identical to the single full-width run, with 44% to 48% fewer padded slots on
+lap2d n = 10 000 and box3d n = 2 744.
 `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
@@ -362,6 +398,9 @@ directional by design, while `_independent_set_of` consults only row `i`,
 so an unsymmetrized graph would let two nodes joined by a one-directional
 edge both be marked coarse; the union is the conservative choice (it blocks
 strictly more simultaneous picks than the intersection would).
+`_independent_set_of`'s greedy loop runs on native Python lists (the adjacency's
+neighbor lists and the eligibility flags, each converted once), not scalar tensor
+reads; the sparse sibling does the same from the CSR `crow`/`col` arrays.
 
 Two deviations from a literal reading of the papers, both deliberate and
 both load-bearing: `select_interpolatory_set` applies [AD11] §4.3's

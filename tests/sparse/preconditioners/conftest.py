@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
-from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 from torchalg.sparse.preconditioners import _pattern_index
 from torchalg.sparse.preconditioners._ic0_pattern import IC0Pattern, analyze_ic0
 from torchalg.sparse.preconditioners._ilu0_pattern import ILU0Pattern, analyze_ilu0
+from torchalg.utils.csr_index import compact_csr_indices
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -83,6 +83,16 @@ def poisson_2d_extra_entry_csr(poisson_2d_dense: torch.Tensor) -> torch.Tensor:
 def indefinite_csr(torch_dtype: torch.dtype) -> torch.Tensor:
     """2x2 symmetric indefinite matrix: IC(0) breaks down at the second pivot."""
     return torch.tensor([[1.0, 2.0], [2.0, 1.0]], dtype=torch_dtype).to_sparse_csr()
+
+
+@pytest.fixture
+def two_breakdown_tridiagonal_csr(torch_dtype: torch.dtype) -> torch.Tensor:
+    """Tridiagonal matrix whose pivots break down at rows 2 and 4; row 2 is the first."""
+    n = 6
+    dense = torch.diag(torch.tensor([2.0, 2.0, 0.5, 2.0, 0.1, 2.0], dtype=torch_dtype))
+    dense -= torch.diag(torch.ones(n - 1, dtype=torch_dtype), 1)
+    dense -= torch.diag(torch.ones(n - 1, dtype=torch_dtype), -1)
+    return dense.to_sparse_csr()
 
 
 @pytest.fixture

@@ -7,6 +7,9 @@ removes that copy: SpMV measured 1.5-2.5x faster at n = 1.7k-90k and an adaptive
 V-cycle 1.45-1.57x faster, with bit-identical results (the same kernel runs on the
 same values). Only apply-time operators are narrowed; setup products (SpGEMM)
 promote back to int64 on their own.
+
+This is a dtype-only leaf so that the dense solver base (``torchalg.base``) can narrow
+a CSR system matrix without importing ``torchalg.sparse``.
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import torch
 
-from torchalg.sparse.kernels.index_dtype import compact_csr_indices
+from torchalg.utils.csr_index import compact_csr_indices
 from torchalg.utils.device import moved_tensor
 
 
@@ -20,6 +20,20 @@ class SparseTransferOperator:
 
     Prolongation: ``P @ coarse`` (inject coarse correction to fine grid).
     Restriction: ``P.T @ fine`` (Galerkin restriction, R = P^T).
+
+    Cost:
+        Construction: one CSR transpose, ``W = 0``, ``I = O(nnz(P))``, paid
+        once per level (``moved_to`` moves the stored pair and never
+        retransposes). Each ``prolongate`` or ``restrict`` is one SpMV with
+        ``p = nnz(P)``, ``k`` columns, ``w`` the index width (4 after
+        ``compact_csr_indices``), ``V = 8`` bytes per ``float64``:
+        ``W = 2pk``, ``Q = p(V + w) + (n_r + 1)w + Vk(n_f + n_c)`` (``n_r``
+        rows of the applied matrix, ``n_f`` and ``n_c`` the fine and coarse
+        sizes), ``D = ceil(log2 m_P) + 1`` with ``m_P`` the largest row count,
+        ``L = 1`` and ``S = 0``.
+        Roofline: ``W/Q`` is about 0.15 flop per byte (memory-bound).
+        Work-depth: ``W/D`` is large, so the transfers parallelize well; a
+        cycle applies one of each per non-coarsest level.
 
     Args:
         P (torch.Tensor): Sparse CSR prolongation matrix (n_fine x
@@ -41,7 +55,7 @@ class SparseTransferOperator:
         """
         with torch.inference_mode(False):
             prolongation = P.clone() if P.is_inference() else P
-            # int32 indices: ``P``/``R`` are applied every cycle (``kernels.index_dtype``).
+            # int32 indices: ``P``/``R`` are applied every cycle (``utils.csr_index``).
             self._P = compact_csr_indices(prolongation)
             self._R = compact_csr_indices(prolongation.t().to_sparse_csr())
 

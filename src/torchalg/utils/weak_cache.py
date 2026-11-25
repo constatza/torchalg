@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Hashable
 from weakref import finalize
+
+import torch
 
 
 def weak_memo[T, R](function: Callable[..., R]) -> Callable[..., R]:
@@ -34,3 +37,30 @@ def weak_memo[T, R](function: Callable[..., R]) -> Callable[..., R]:
         return per_subject[key]
 
     return memoized
+
+
+# Hidden identity cache by design: cycle protocols hand ``prepare``/``build_transfer`` only the
+# matrix, so object identity is the sole channel to share one estimate between their two callers.
+def tensor_memo[R](function: Callable[[torch.Tensor], R]) -> Callable[[torch.Tensor], R]:
+    """Memoize a pure function of one tensor per tensor object, until it is edited in place.
+
+    ``weak_memo`` keyed on the tensor's version counter, which every in-place write
+    bumps, so a stale result is never served for a mutated matrix. Inference tensors
+    carry no version counter, so they bypass the cache and are recomputed on every
+    call. Entries of superseded versions stay until the tensor is collected.
+
+    Args:
+        function (Callable[[torch.Tensor], R]): Pure function of the tensor's values.
+
+    Returns:
+        Callable[[torch.Tensor], R]: Memoized ``function``.
+    """
+    memoized = weak_memo(lambda tensor, _version: function(tensor))
+
+    @functools.wraps(function)
+    def call(tensor: torch.Tensor) -> R:
+        if tensor.is_inference():
+            return function(tensor)
+        return memoized(tensor, tensor._version)
+
+    return call

@@ -8,10 +8,10 @@ divided by its spectral radius ``rho`` (PyAMG's rules):
   Vanek, Mandel & Brezina 1996): ``omega = (4/3) / rho``.
 
 ``rho`` is estimated with the restarted-Arnoldi routine of ``utils/spectral.py``,
-started from a fixed seed so it is deterministic. The estimate is a pure,
-uncached function: it holds no global state, so each setup stage that needs it
+started from a fixed seed so it is deterministic. The estimate is a pure function
+of the matrix, memoized per matrix object: the two setup stages that need it
 (prolongator smoothing at coarsening time, ``JacobiSmoother.prepare`` when the
-cycle is prepared) computes it once for itself, and ``apply`` never estimates.
+cycle is prepared) share one run per level, and ``apply`` never estimates.
 An explicit float always overrides the rule. Unlike a fixed 0.67, the rule keeps
 the iteration convergent when ``rho`` is well above 2 (``omega`` must stay below
 ``2 / rho``).
@@ -27,6 +27,7 @@ from __future__ import annotations
 import torch
 
 from torchalg.utils.spectral import approximate_spectral_radius
+from torchalg.utils.weak_cache import tensor_memo
 
 RELAXATION_NOMINAL = 1.0
 """Nominal Jacobi damping for relaxation: ``omega = 1 / rho``."""
@@ -68,8 +69,21 @@ def _seeded_draw(size: int) -> torch.Tensor:
     return torch.rand(size, generator=generator, dtype=torch.float64)
 
 
+@tensor_memo
 def jacobi_spectral_radius(matrix: torch.Tensor) -> torch.Tensor:
-    """Deterministic Arnoldi estimate of ``rho(D^-1 A)`` (a fresh estimate on every call).
+    """Deterministic Arnoldi estimate of ``rho(D^-1 A)``, memoized per matrix object.
+
+    The start vector is fixed, so the estimate is a pure function of ``A``. The
+    prolongator smoothing (``AggregationCoarsening``) and the relaxation
+    (``JacobiSmoother.prepare``) of one level both receive only that level's matrix,
+    so the shared object identity (``torchalg.utils.weak_cache.tensor_memo``) is the
+    only channel to share one estimate; an in-place edit of ``A`` invalidates it.
+
+    Cost:
+        Algorithmic: one Arnoldi run (see
+        ``torchalg.utils.spectral.approximate_spectral_radius``). Paid once per matrix
+        object instead of once per consumer, so a Jacobi-smoothed,
+        aggregation-coarsened level pays one run, not two.
 
     Args:
         matrix (torch.Tensor): Square matrix ``A``.

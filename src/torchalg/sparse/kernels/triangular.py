@@ -194,6 +194,22 @@ def level_schedule(
     Computed independently per direction - never one derived from the other
     by reversal, see module docstring.
 
+    Cost:
+        ``W = 0``; the cost is index work. With ``z = nnz``, ``lv`` the number of
+        levels and ``d`` the strict dependencies. CPU (a host recurrence over
+        native integers): ``I = O(n + d)``, ``D = n`` (each row's level reads
+        the levels of earlier rows, a sequential recurrence), ``L = O(1)`` tensor
+        kernels and ``S = O(1)`` bulk host copies. Accelerator (one wavefront
+        per level): ``I = O(d log d)`` (one stable sort of the reverse
+        adjacency plus work proportional to the edges leaving each frontier),
+        ``D = lv`` dependent wavefronts, ``L = O(lv)`` and ``S = O(lv)`` (the
+        frontier size and its unique/nonzero selection are read back per
+        level). ``Q`` is the bytes of the index arrays passed per pass,
+        ``O(z w)``. The schedule is a function of the pattern, so callers
+        build it once per matrix.
+        Work-depth: ``I/D`` is about 1 on CPU (a sequential chain) and
+        ``d/lv`` on an accelerator.
+
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
         direction (Literal["forward", "backward"]): Which triangular half's
@@ -279,6 +295,28 @@ class PreparedTriangularSolve(nn.Module):
     The derived tensors are non-persistent buffers, so ``.to()`` moves them with the module.
     The values are captured at construction: gradients flow through that construction to
     ``matrix.values()``, so for differentiable use build and solve inside one forward pass.
+
+    Cost:
+        One ``solve``, ``k`` right-hand-side columns, ``t`` strict entries of the
+        selected triangle, ``lv`` levels, ``m`` the largest strict row count,
+        ``V = 8`` bytes per ``float64``: ``W = (2t + 2n)k`` (a multiply and an
+        add per strict entry, a subtract and a divide per row), ``D = lv
+        (ceil(log2 m) + 1)`` (the levels are a dependent chain, each a segment
+        sum), ``L = O(lv)`` (a constant dozen small kernels per level: gathers,
+        multiply, ``index_add``, subtract, divide, ``where``, scatter) and
+        ``S = 0``. ``Q`` counts the touched entries and rows of each level
+        plus the per-kernel temporaries, so it is a small multiple of
+        ``t (V + 8) k + Vnk``; the kernel count, not the traffic, dominates at
+        small ``n``. A vendor library solve (``LibraryTriangularSolve``) has the
+        same ``W`` with ``L = 1``.
+        Construction: ``I = O(t log t)`` for the schedule and the by-level
+        sort (``level_schedule`` plus one argsort), one host copy of the level
+        sizes and counts (``S = 2``).
+        Roofline: ``W/Q`` is below 0.1 flop per byte (memory- and
+        launch-bound).
+        Work-depth: ``W/D = (2t + 2n)k / (lv (ceil(log2 m) + 1))``, about
+        ``10^3`` for 3D problems: the depth limits parallel speed-up, so this
+        belongs on the CPU or in a library kernel, not on an accelerator.
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
@@ -452,6 +490,20 @@ class LibraryTriangularSolve(nn.Module):
     nonzero. Gradients are not supported by the library call: a target that requires
     grad is solved by a lazily built ``PreparedTriangularSolve`` instead.
 
+    Cost:
+        One ``solve``, ``k`` columns, ``T`` the stored triangle with
+        ``nnz(T)`` entries, ``w`` the index width, ``V = 8`` bytes per
+        ``float64``: ``W = 2 nnz(T) k``, ``Q = nnz(T)(V + w) + (n + 1)w +
+        2Vnk``, ``L = 1`` (one library call, so the launch count does not
+        grow with the dependency depth) and ``S = 0``. The depth ``D = lv``
+        (the number of dependency levels) is the library's own recurrence and
+        is analytic, not measured; the library hides it inside one kernel.
+        Construction extracts the triangle once: ``W = 0``, ``I = O(nnz)``.
+        Roofline: ``W/Q`` is about 0.17 flop per byte with 4-byte indices
+        (memory-bound).
+        Work-depth: ``W/D = 2 nnz(T) k / lv``, the same depth limit as the
+        level-scheduled solve, but without its per-level launch latency.
+
     Args:
         matrix (torch.Tensor): Sparse CSR matrix, shape ``(n, n)``.
         direction (Literal["forward", "backward"]): Which triangular half to solve.
@@ -478,7 +530,9 @@ class LibraryTriangularSolve(nn.Module):
         """
         if target.requires_grad or self.triangle.requires_grad:
             return PreparedTriangularSolve(self.triangle, self._direction).solve(target)
+        # The library call misreads a strided target (a column view of a block): copy it.
         column = target if target.ndim == 2 else target.unsqueeze(-1)
+        column = column.contiguous()
         solution = torch.triangular_solve(
             column, self.triangle, upper=self._direction == "backward"
         ).solution

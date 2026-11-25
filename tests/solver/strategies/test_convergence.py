@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import torch
 
+from tests.solver.conftest import DispatchCounter
 from torchalg.strategies.convergence import CombinedToleranceCriterion
 from torchalg.strategies.norms import energy_norm, euclidean_norm
 
@@ -216,3 +217,22 @@ class TestConvergenceParityWithScipyReference:
 
         for rhs_norm in (1.0, 1e-12, 1e6):
             assert torch_criterion.threshold(rhs_norm) == reference_criterion.threshold(rhs_norm)
+
+
+class TestHasConvergedFromNormCost:
+    """Structural cost of the per-iteration convergence read."""
+
+    def test_matching_tensors_dispatch_no_conversion_and_one_sync(self) -> None:
+        """Two same-dtype tensors need no ``aten.to`` and cost exactly one host read."""
+        criterion = CombinedToleranceCriterion(rtol=1e-6, atol=1e-14)
+        residual_norm = torch.tensor(1e-8, dtype=torch.float64)
+        rhs_norm = torch.tensor(1.0, dtype=torch.float64)
+        counter = DispatchCounter()
+
+        # Solves run in inference mode, where the ops reach the counter undecomposed.
+        with torch.inference_mode(), counter:
+            converged = criterion.has_converged_from_norm(residual_norm, rhs_norm)
+
+        assert converged is True
+        assert not [name for name in counter.ops if name.startswith("aten.to.")]
+        assert counter.syncs == 1

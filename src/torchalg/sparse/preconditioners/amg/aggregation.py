@@ -48,6 +48,19 @@ def sparse_standard_aggregation(strength: torch.Tensor) -> torch.Tensor:
     changes, reading CSR's already row-grouped ``col_indices()`` directly
     instead of scanning a dense boolean matrix.
 
+    Cost:
+        With ``s = nnz`` of ``strength``: ``W = 0`` and ``I = O(n + s)`` (the
+        three passes visit each node and neighbor a constant number of times,
+        the dense version's ``O(n^2)`` scan is gone), ``D = 3n + s`` (a pass
+        reads the markers its own earlier picks wrote, so each is a
+        sequential recurrence), ``Q = O(s w)`` for the one host copy of the
+        index arrays, ``L = 0`` tensor kernels in the loop and ``S = O(1)``
+        (the bulk ``tolist`` reads and the final upload). The step runs on
+        the host at any device placement.
+        Work-depth: ``I/D`` is about 1, essentially no parallelism; a
+        parallel MIS aggregation is a different algorithm with a different
+        hierarchy.
+
     Args:
         strength (torch.Tensor): Sparse CSR boolean strength-of-connection
             matrix, shape ``(n, n)``. Must be symmetric (as produced by

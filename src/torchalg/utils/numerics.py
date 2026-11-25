@@ -62,6 +62,64 @@ def is_finite(value: torch.Tensor) -> bool:
     return bool(torch.isfinite(value).all().item())
 
 
+def pair_is_finite(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Return a 0-d bool tensor that is ``True`` only if two 0-d tensors are both finite.
+
+    Cost:
+        Two launches (add, isfinite) and no host synchronization: the caller
+        reads the flag together with other flags in one transfer. The sum of
+        two finite numbers is non-finite only when it overflows, and then this
+        reports ``False`` conservatively: callers treat ``False`` as "take the
+        slow, per-value path", which recomputes each value correctly, so a
+        false negative costs time and never changes a result.
+
+    Args:
+        a (torch.Tensor): First 0-d tensor.
+        b (torch.Tensor): Second 0-d tensor.
+
+    Returns:
+        torch.Tensor: 0-d bool tensor, ``True`` only if both ``a`` and ``b`` are finite.
+    """
+    return torch.isfinite(a + b)
+
+
+def read_flags(first: torch.Tensor, second: torch.Tensor) -> tuple[bool, bool]:
+    """Read two 0-d bool tensors with one host synchronization.
+
+    Cost:
+        Two launches (``first + 2 * second`` packs both into one integer) and
+        one synchronization, against two synchronizations for two reads. On a
+        GPU each synchronization drains the stream, so the packed read is the
+        one that pays.
+
+    Args:
+        first (torch.Tensor): 0-d bool tensor.
+        second (torch.Tensor): 0-d bool tensor.
+
+    Returns:
+        tuple[bool, bool]: ``(first, second)`` as Python bools.
+    """
+    packed = int((first + 2 * second).item())
+    return bool(packed & 1), bool(packed & 2)
+
+
+def both_finite(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """Return whether two 0-d tensors are both finite, with one host synchronization.
+
+    Cost:
+        ``pair_is_finite`` (two launches) plus one synchronization to read it,
+        against two synchronizations for two ``is_finite`` calls.
+
+    Args:
+        a (torch.Tensor): First 0-d tensor.
+        b (torch.Tensor): Second 0-d tensor.
+
+    Returns:
+        bool: ``True`` only if both ``a`` and ``b`` are finite.
+    """
+    return bool(pair_is_finite(a, b))
+
+
 def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Compute a dot product with overflow prevention via balanced scaling.
 
@@ -86,6 +144,16 @@ def stable_dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         scaled to ``sqrt(sqrt(0.1 * finfo.max))``), which is the previous
         branch-free formulation; the two paths agree to rounding whenever
         both are finite.
+
+        Common path, length ``n``, ``V = 8`` bytes per ``float64``: ``W = 2n``,
+        ``Q = 2Vn`` (the finiteness test reads the 0-d result only, so no
+        ``n``-sized pass is added), ``D = ceil(log2 n) + 1``, ``L = 4``
+        (dot, ``isfinite``, ``all``, read) and ``S = 1``.
+        Roofline: ``W/Q = 0.125`` flops per byte (memory-bound).
+        Work-depth: ``W/D = 2n / (ceil(log2 n) + 1)`` available parallelism.
+        The synchronization, not the flops, is the cost at small ``n``. The
+        rescaled path adds two ``n``-sized ``abs`` passes, two maxima and a
+        few scalar kernels.
 
     Args:
         a (torch.Tensor): First vector for dot product, shape ``(n,)``.

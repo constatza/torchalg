@@ -113,6 +113,47 @@ def single_dominant_row_scales(poisson_snapshots: torch.Tensor) -> torch.Tensor:
     return scales
 
 
+@pytest.fixture
+def snapshots_with_spectrum(test_seed: int) -> Callable[[list[float], int], torch.Tensor]:
+    """Factory of float64 snapshot matrices with a prescribed singular spectrum.
+
+    ``S = U diag(sigma) V^T`` with seeded random orthonormal ``U`` (``n_samples`` rows)
+    and ``V`` (``n_dofs`` columns), so the spectrum, and with it the Gram matrix's
+    conditioning and any rank deficiency, is known exactly.
+
+    Returns:
+        Callable: ``(singular_values, n_samples) -> (n_samples, 200)`` snapshots; a
+            spectrum shorter than ``n_samples`` is padded with exact zeros.
+    """
+    n_dofs = 200
+
+    def build(singular_values: list[float], n_samples: int) -> torch.Tensor:
+        generator = torch.Generator().manual_seed(test_seed)
+        u, _ = torch.linalg.qr(torch.randn(n_samples, n_samples, generator=generator).double())
+        v, _ = torch.linalg.qr(torch.randn(n_dofs, n_samples, generator=generator).double())
+        sigma = torch.zeros(n_samples, dtype=torch.float64)
+        sigma[: len(singular_values)] = torch.tensor(singular_values, dtype=torch.float64)
+        return (u * sigma) @ v.mT
+
+    return build
+
+
+@pytest.fixture
+def forbid_svd(monkeypatch: pytest.MonkeyPatch) -> Callable[..., tuple[torch.Tensor, ...]]:
+    """Make ``torch.linalg.svd`` raise, proving a code path never reaches it.
+
+    Returns:
+        Callable: The real ``torch.linalg.svd``, for building a reference in the same test.
+    """
+    real_svd = torch.linalg.svd
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("torch.linalg.svd was called")
+
+    monkeypatch.setattr(torch.linalg, "svd", refuse)
+    return real_svd
+
+
 @pytest.fixture(params=["strided", "sparse_csr"])
 def energy_weight(request: pytest.FixtureRequest, pod_poisson_1d: torch.Tensor) -> torch.Tensor:
     """``pod_poisson_1d`` as an SPD POD inner product, strided and sparse CSR.

@@ -1,10 +1,10 @@
-"""Tests for ``torchalg.sparse.kernels.index_dtype``."""
+"""Tests for ``torchalg.utils.csr_index``."""
 
 from __future__ import annotations
 
 import torch
 
-from torchalg.sparse.kernels.index_dtype import compact_csr_indices
+from torchalg.utils.csr_index import compact_csr_indices
 
 
 class TestCompactCsrIndices:

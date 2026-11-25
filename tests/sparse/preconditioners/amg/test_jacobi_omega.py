@@ -21,6 +21,7 @@ from torchalg.sparse.preconditioners.amg._jacobi_omega import (
     jacobi_omega,
     jacobi_spectral_radius,
 )
+from torchalg.sparse.preconditioners.amg.variants import vcycle_amg
 from torchalg.utils.spectral import approximate_spectral_radius
 
 _SEED = 0
@@ -61,7 +62,7 @@ class TestSparseJacobiSpectralRadius:
 
 
 class TestJacobiOmega:
-    """``jacobi_omega`` is a pure function of the matrix: nothing is cached across calls."""
+    """``jacobi_omega`` is a pure function of the matrix; its estimate is memoized per matrix object."""
 
     def test_nominal_over_rho(self, poisson_matrix: torch.Tensor) -> None:
         csr = poisson_matrix.to_sparse_csr()
@@ -81,10 +82,10 @@ class TestJacobiOmega:
         omega = jacobi_omega(poisson_matrix.to_sparse_csr(), RELAXATION_NOMINAL, 0.5)
         torch.testing.assert_close(omega, torch.tensor(0.5, dtype=poisson_matrix.dtype))
 
-    def test_every_call_estimates_again(
+    def test_estimate_is_shared_between_the_two_nominals(
         self, poisson_matrix: torch.Tensor, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No hidden id()-keyed cache: repeated calls on one matrix each pay for the estimate."""
+        """Prolongation and relaxation damping of one matrix object cost one estimate."""
         calls: list[int] = []
         original = jacobi_omega_module.approximate_spectral_radius
 
@@ -94,8 +95,25 @@ class TestJacobiOmega:
 
         monkeypatch.setattr(jacobi_omega_module, "approximate_spectral_radius", counting)
         csr = poisson_matrix.to_sparse_csr()
-        jacobi_spectral_radius(csr)
-        jacobi_spectral_radius(csr)
+        jacobi_omega(csr, PROLONGATION_NOMINAL, None)
+        jacobi_omega(csr, RELAXATION_NOMINAL, None)
+        assert len(calls) == 1
+        jacobi_spectral_radius(poisson_matrix.to_sparse_csr())
+        assert len(calls) == 2
+
+    def test_vcycle_estimates_once_per_smoothed_level(
+        self, poisson_matrix: torch.Tensor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Coarsening and Jacobi preparation of a level share one estimate; the coarsest has none."""
+        calls: list[int] = []
+        original = jacobi_omega_module.approximate_spectral_radius
+
+        def counting(matrix: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+            calls.append(matrix.shape[0])
+            return original(matrix, *args, **kwargs)
+
+        monkeypatch.setattr(jacobi_omega_module, "approximate_spectral_radius", counting)
+        vcycle_amg(n_levels=3).setup(poisson_matrix.to_sparse_csr())
         assert len(calls) == 2
 
     def test_module_holds_no_global_cache(self) -> None:

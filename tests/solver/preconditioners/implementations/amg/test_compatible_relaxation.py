@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from torchalg.multigrid.protocols import PreparedSmoother
+from torchalg.preconditioners.base import Placement
 from torchalg.preconditioners.implementations.amg._compatible_relaxation import (
     _independent_set_of,
     compatible_relaxation_coarsening,
@@ -379,6 +380,8 @@ def test_compatible_relaxation_coarsening_prepares_the_smoother_once_per_matrix(
     prepared_for: list[int] = []
 
     class CountingSmoother:
+        placement = Placement.SEQUENTIAL_SWEEP
+
         def prepare(self, A: torch.Tensor) -> PreparedSmoother:
             prepared_for.append(A.shape[0])
             return GaussSeidelSmoother().prepare(A)

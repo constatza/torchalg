@@ -12,10 +12,11 @@ from torchalg.models.protocols import HasEnergyDecrement, HasVectors
 from torchalg.models.result import SolverResult
 from torchalg.models.state import SolverState
 from torchalg.monitoring import IterationHistory, TraceMode
+from torchalg.placement import choose_device, placement_problem
 from torchalg.preconditioners.base import Preconditioner, PreconditionerContext
 from torchalg.strategies.convergence import IConvergenceCriterion
 from torchalg.strategies.norms import euclidean_norm
-from torchalg.utils.device import resolve_device
+from torchalg.utils.csr_index import compact_csr_indices
 from torchalg.utils.grad_mode import inference_unless_differentiable
 from torchalg.utils.validation import validate_matrix, validate_rhs_vector
 
@@ -64,8 +65,8 @@ class IterativeSolverBase[S: SolverState](ABC):
         """Solve ``A x = b`` using the concrete iterative method.
 
         ``A``/``b``/``x0`` (and any ``nn.Module``-based preconditioner) are
-        moved to CUDA automatically when available (see
-        :func:`torchalg.utils.device.resolve_device`); the returned solution
+        moved to the device chosen by :func:`torchalg.placement.choose_device`
+        (CUDA only where it is expected to pay); the returned solution
         and ``SolverResult`` stay on that same device rather than being
         forced back to CPU — callers needing NumPy interop already convert
         explicitly (``.detach().cpu().numpy()``), and forcing a transfer
@@ -87,15 +88,11 @@ class IterativeSolverBase[S: SolverState](ABC):
                 solve, so tracking autograd by default only builds graphs
                 nobody uses. Set ``True`` to keep normal autograd tracking,
                 e.g. to backpropagate through an unrolled solve.
-            device: Overrides automatic CUDA/CPU resolution when given. The
-                convergence check pulls a Python float off the residual
-                every iteration, which forces a blocking device sync — for
-                many small, short solves (e.g. per-sample dataset
-                generation) that sync cost dwarfs the matvec it guards, so
-                auto-placing onto CUDA there is actively slower than CPU.
-                Callers who know their system is small should pin
-                ``torch.device("cpu")`` explicitly instead of relying on
-                automatic resolution.
+            device: Overrides the automatic cost-based choice when given.
+                The convergence check pulls a Python float off the residual
+                every iteration, which forces a blocking device sync, so a
+                GPU only pays for large enough systems; the automatic choice
+                already keeps small and sweep-bound solves on the CPU.
         """
         with inference_unless_differentiable(differentiable):
             self._validate_system(A, b, x0)
@@ -197,12 +194,14 @@ class IterativeSolverBase[S: SolverState](ABC):
     ) -> tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
         """Move the system and preconditioner onto the given or autodetected device.
 
-        Mirrors Lightning-style automatic GPU placement by default: callers
-        who pass no ``device`` get CUDA whenever it's available. Passing an
-        explicit ``device`` opts out of that resolution entirely instead of
-        merely overriding its result, since a caller who already knows a
-        small solve is faster kept on CPU should not pay for a CUDA check it
-        doesn't need. ``A``/``b``/``x0`` are moved first since a failed
+        Callers who pass no ``device`` get the cost-based choice of
+        :func:`torchalg.placement.choose_device`: CUDA only where the GPU is
+        expected to beat the CPU for this matrix size and preconditioner (a
+        sequential-sweep preconditioner such as IC(0) stays on the CPU, small
+        sparse systems stay on the CPU). Passing an explicit ``device`` opts
+        out of that choice entirely. With a matvec callable for ``A`` the
+        operands stay on ``b``'s device, since the callable's own device is
+        not visible here. ``A``/``b``/``x0`` are moved first since a failed
         ``.to()`` on a local variable leaves nothing mutated;
         ``self.preconditioner`` is moved last since ``nn.Module.to()``
         mutates its buffers in place and could otherwise be left half-moved
@@ -216,29 +215,46 @@ class IterativeSolverBase[S: SolverState](ABC):
             b (torch.Tensor): RHS vector.
             x0 (torch.Tensor | None): Optional initial guess.
             device (torch.device | None): Explicit target device; ``None``
-                auto-resolves via :func:`torchalg.utils.device.resolve_device`.
+                chooses by cost via :func:`torchalg.placement.choose_device`.
 
         Returns:
             tuple[LinearSystemOperator, torch.Tensor, torch.Tensor | None]:
                 ``A``, ``b``, ``x0`` moved onto the resolved device.
         """
-        device = device if device is not None else resolve_device()
+        preconditioner = getattr(self, "preconditioner", None)
+        if device is None:
+            device = (
+                choose_device(placement_problem(A, preconditioner))
+                if isinstance(A, torch.Tensor)
+                else b.device
+            )
         if isinstance(A, torch.Tensor):
             A = A.to(device)
         b = b.to(device)
         if x0 is not None:
             x0 = x0.to(device)
-        preconditioner = getattr(self, "preconditioner", None)
         if isinstance(preconditioner, torch.nn.Module):
             preconditioner.to(device)
         return A, b, x0
 
     def _prepare_operator(self, A: LinearSystemOperator) -> Callable[[torch.Tensor], torch.Tensor]:
-        """Wrap dense tensors and callables behind a matvec callable."""
+        """Wrap dense tensors and callables behind a matvec callable.
+
+        Cost:
+            A CSR system matrix is applied through int32 indices when they
+            address it (``compact_csr_indices``): the CPU sparse BLAS works on
+            32-bit indices, so with int64 ones every ``A @ v`` first copies and
+            narrows both index arrays, about 8% of one iteration at lap2d
+            ``n = 10 000``. The narrowing costs ``O(n + nnz)`` once per solve and
+            reuses the values tensor; the caller's matrix is not modified. A
+            matrix that requires grad keeps its own tensor, so the autograd
+            graph is not rebuilt. Dense, COO and callable operators are
+            untouched.
+        """
         if callable(A):
             return cast(Callable[[torch.Tensor], torch.Tensor], A)
 
-        matrix = A
+        matrix = A if A.requires_grad else compact_csr_indices(A)
 
         def _matvec(vector: torch.Tensor) -> torch.Tensor:
             return matrix @ vector

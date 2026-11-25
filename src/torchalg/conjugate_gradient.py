@@ -22,7 +22,7 @@ References:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -43,8 +43,9 @@ from torchalg.strategies.direction import (
     OrthogonalizationDirectionStrategy,
     TwoTermRecurrenceStrategy,
 )
+from torchalg.strategies.norms import euclidean_norm
 from torchalg.strategies.orthogonalization import OrthogonalizationStrategy
-from torchalg.utils.numerics import stable_dot_product
+from torchalg.utils.numerics import is_finite, pair_is_finite, read_flags, stable_dot_product
 from torchalg.utils.validation import check_solution_validity, describe_breakdown_reason
 
 
@@ -72,6 +73,16 @@ def _resolve_first_breakdown(recorded: torch.Tensor | None) -> int | None:
         return None
     iteration = int(recorded)
     return iteration if iteration > 0 else None
+
+
+@dataclass(frozen=True, slots=True)
+class _StateUpdate:
+    """The vectors and scalars one CG step derives from ``(r, w)``, ``d``, ``q`` and ``(d, q)``."""
+
+    energy_decrement: torch.Tensor
+    u: torch.Tensor
+    r: torch.Tensor
+    residual_norm: torch.Tensor
 
 
 class ConjugateGradientSolver(IterativeSolverBase[CGState]):
@@ -154,6 +165,36 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
         invoked so its per-iteration bookkeeping (e.g. the periodic-restart
         window counter) advances identically, and by contract returns a copy
         of ``w`` at iteration 0.
+
+        Cost:
+            Per iteration, beyond the preconditioner apply, the direction
+            strategy and the matvec ``A d``: two plain dots, two fused
+            ``addcmul`` updates (one launch and one temporary fewer each than
+            multiply-then-add), one residual norm, and one packed host read of
+            the finiteness flag of the dot pair together with the stopping
+            test (one synchronization where a read per flag took two). The
+            ``(r, w)`` and ``(d, q)`` values are consumed unchecked until that
+            read, so a non-finite one sends the iteration through
+            ``_recompute_overflow_safe`` (the ``stable_dot_product`` rescaled
+            path) and a second stopping read; the results of both paths agree
+            to rounding. The stopping test is folded into ``state.converged``
+            only for the Euclidean norm, whose value is already in hand.
+
+            Per iteration, ``z = nnz``, ``m`` the largest row count, ``V = 8``
+            bytes per ``float64``, ``w`` the index width: ``W = 2z + 12n``
+            (SpMV, two dots, three vector updates, one norm), ``Q`` = the
+            SpMV bytes ``z(V + w) + (n + 1)w + 2Vn`` plus ``14Vn`` of vector
+            passes (two dots at ``2Vn``, three fused updates at ``3Vn`` and
+            one norm at ``Vn``),
+            ``D = 3 (ceil(log2 n) + 1) + ceil(log2 m) + 1 + O(1)`` (two dots
+            and the norm are reductions, the SpMV a row reduction, the scalar
+            algebra a constant chain), ``S = 1`` (the packed read; ``S = 2``
+            with a non-Euclidean stopping norm) and ``L`` a small constant
+            independent of ``n`` (26 dispatches for PCG, 52 to 55 for FCG).
+            Roofline: ``W/Q`` is about 0.1 flop per byte at ``nnz/n`` near 37
+            (memory-bound).
+            Work-depth: ``W/D`` is about ``10^3`` to ``10^4`` at ``n = 3000``,
+            so the iteration parallelizes well and its limit is bandwidth.
         """
         first_iteration = state.iteration == 0
         w = (
@@ -161,24 +202,36 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             if first_iteration
             else self._apply_preconditioner(self.preconditioner, state.r, state)
         )
-        rw_curr = stable_dot_product(state.r, w)
+        rw_curr = torch.dot(state.r, w)
         d, ortho_breakdown = self.direction_strategy.compute_direction(w, rw_curr, state)
         q = state.q if first_iteration else linear_op(d)
-        curvature = stable_dot_product(d, q)
-        alpha = rw_curr / curvature
-        energy_decrement = alpha * rw_curr
-        u_new = state.u + alpha * d
-        r_new = state.r - alpha * q
-        residual_norm_new = torch.linalg.norm(r_new)
+        curvature = torch.dot(d, q)
+        # Speculative: assumes the dots are finite, so that the finiteness flag and the
+        # stopping test are read together below instead of one synchronization each.
+        finite = pair_is_finite(rw_curr, curvature)
+        update = self._advance(state, rw_curr, d, q, curvature)
+        converged = self._converged_flag(update.residual_norm, state)
+        if converged is None:
+            dots_finite, converged_now = bool(finite), False
+        else:
+            dots_finite, converged_now = read_flags(finite, converged)
+        if not dots_finite:
+            rw_curr, d, ortho_breakdown, q, curvature = self._recompute_overflow_safe(
+                linear_op, state, w, rw_curr, d, ortho_breakdown, q
+            )
+            update = self._advance(state, rw_curr, d, q, curvature)
+            converged = self._converged_flag(update.residual_norm, state)
+            converged_now = converged is not None and bool(converged)
         direction_history = self._updated_direction_history(state, d, q, curvature)
         new_iteration = state.iteration + 1
 
         return replace(
             state,
             iteration=new_iteration,
-            residual_norm=residual_norm_new,
-            u=u_new,
-            r=r_new,
+            converged=converged_now,
+            residual_norm=update.residual_norm,
+            u=update.u,
+            r=update.r,
             w=w,
             d=d,
             q=q,
@@ -187,8 +240,66 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             ortho_breakdown_at=_record_first_breakdown(
                 state.ortho_breakdown_at, ortho_breakdown, new_iteration
             ),
-            energy_decrement=energy_decrement,
+            energy_decrement=update.energy_decrement,
         )
+
+    def _advance(
+        self,
+        state: CGState,
+        rw: torch.Tensor,
+        d: torch.Tensor,
+        q: torch.Tensor,
+        curvature: torch.Tensor,
+    ) -> _StateUpdate:
+        """Apply ``alpha = (r, w) / (d, q)`` to the solution and residual (two fused updates)."""
+        alpha = rw / curvature
+        r = torch.addcmul(state.r, alpha, q, value=-1)
+        return _StateUpdate(
+            energy_decrement=alpha * rw,
+            u=torch.addcmul(state.u, alpha, d),
+            r=r,
+            residual_norm=torch.linalg.norm(r),
+        )
+
+    def _converged_flag(self, residual_norm: torch.Tensor, state: CGState) -> torch.Tensor | None:
+        """Device-side stopping test for the residual just computed, or ``None``.
+
+        Only the Euclidean norm is already in hand (``residual_norm``); another
+        norm needs the residual vector and is evaluated by ``_check_stopping``.
+        """
+        criterion = self.convergence_criterion
+        if criterion.norm is not euclidean_norm:
+            return None
+        return criterion.converged_flag_from_norm(residual_norm, state.rhs_norm)
+
+    def _recompute_overflow_safe(
+        self,
+        linear_op: Callable[[torch.Tensor], torch.Tensor],
+        state: CGState,
+        w: torch.Tensor,
+        rw_plain: torch.Tensor,
+        d: torch.Tensor,
+        ortho_breakdown: torch.Tensor | None,
+        q: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
+        """Redo an iteration's dot products with ``stable_dot_product`` after a non-finite one.
+
+        Called only when a plain ``(r, w)`` or ``(d, q)`` was non-finite
+        (overflow or NaN). A non-finite ``(r, w)`` fed ``d`` and ``q``, so the
+        direction and matrix product are recomputed from the safe value; a
+        finite one leaves both valid. A stateful orthogonalization (window
+        counter) therefore advances twice on such an iteration, which only
+        happens once a dot product has already overflowed.
+
+        Returns:
+            tuple: ``(rw, d, ortho_breakdown, q, curvature)`` as the fast path
+                would have produced them.
+        """
+        rw = stable_dot_product(state.r, w)
+        if not is_finite(rw_plain):
+            d, ortho_breakdown = self.direction_strategy.compute_direction(w, rw, state)
+            q = state.q if state.iteration == 0 else linear_op(d)
+        return rw, d, ortho_breakdown, q, stable_dot_product(d, q)
 
     def _check_stopping(
         self,
@@ -202,6 +313,8 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
             return True
         if state.iteration >= maxiter:
             return True
+        if state.iteration > 0 and self.convergence_criterion.norm is euclidean_norm:
+            return False  # ``_iterate_step`` already folded the test into ``state.converged``
         return self._check_convergence_with_criterion(state, self.convergence_criterion)
 
     def _build_result(
@@ -375,6 +488,19 @@ class PCGSolver(ConjugateGradientSolver):
     parameter docs). ``reorthogonalization`` optionally layers Notay
     (2000)'s periodic-restart reorthogonalization on top, to counter loss of
     A-conjugacy from accumulated rounding error.
+
+    Cost:
+        Per iteration beyond ``preconditioner.apply``, with ``z = nnz``:
+        ``W = 2z + 12n``, ``D = 3 (ceil(log2 n) + 1) + ceil(log2 m) + 1 + O(1)``
+        and ``S = 1`` host synchronization (a non-Euclidean stopping norm adds
+        one); the ``Q`` and ``L`` breakdown is on ``_iterate_step``. A solve of ``k`` iterations applies the
+        preconditioner and the matrix ``k`` times (``k + 1`` with a nonzero
+        ``x0``) and adds no setup, so its total is
+        ``k (W_apply + 2z + 12n)``.
+        Roofline: ``W/Q`` is about 0.1 flop per byte, so the iteration is
+        memory-bound and the iteration count is the lever, not the flop rate.
+        Work-depth: ``W/D`` is large (SpMV and vector updates), so the solver
+        adds no depth limit of its own; the limit is the preconditioner apply.
     """
 
     def __init__(

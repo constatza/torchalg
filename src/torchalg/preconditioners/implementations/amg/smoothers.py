@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from torchalg.preconditioners.base import Placement
+
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 from ._relaxation import PreparedSymmetricGaussSeidel, prepare_symmetric_gauss_seidel
 
@@ -44,7 +46,12 @@ class SmootherBase(ABC):
         the Protocol provides structural typing for cycle extension points; this ABC
         provides the concrete implementation hierarchy for shared documentation and
         type-safe subclassing.
+
+    Attributes:
+        placement (Placement): What bounds one sweep; each concrete smoother sets it.
     """
+
+    placement: Placement
 
     @abstractmethod
     def prepare(self, A: torch.Tensor) -> PreparedSmoother:
@@ -138,6 +145,9 @@ class JacobiSmoother(SmootherBase):
             already-computed spectral-radius-derived value never have to
             round-trip it through Python before passing it back in.
 
+    Attributes:
+        placement (Placement): ``SPMV_BOUND``; a sweep is one matvec plus vector updates.
+
     References:
         - Young, D. M. (1954). Iterative methods for solving partial difference
           equations of elliptic type. Trans. Amer. Math. Soc., 76, 92-111.
@@ -145,6 +155,8 @@ class JacobiSmoother(SmootherBase):
           smoothed aggregation for second and fourth order elliptic problems.
           Computing, 56(3), 179-196. Section 3: omega = 4 / (3 * rho(D^{-1}A)).
     """
+
+    placement = Placement.SPMV_BOUND
 
     def __init__(self, omega: float | torch.Tensor | None = None) -> None:
         """Store the Jacobi damping override.
@@ -180,7 +192,13 @@ class GaussSeidelSmoother(SmootherBase):
     {'sweep': 'symmetric'})``); with equal pre- and post-smoothing counts the
     resulting cycle is symmetric, so plain PCG is valid. Rows with a zero
     diagonal are left unchanged.
+
+    Attributes:
+        placement (Placement): ``SEQUENTIAL_SWEEP``; each sweep is a chain of dependent
+            triangular solves.
     """
+
+    placement = Placement.SEQUENTIAL_SWEEP
 
     def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
         """Build the forward and backward triangular systems of ``A`` once.

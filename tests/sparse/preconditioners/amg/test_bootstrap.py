@@ -376,3 +376,38 @@ class TestBootstrapAMGPreconditioner:
         preconditioner = BootstrapAMGPreconditioner(max_coarse=poisson_1d_csr.shape[0])
         with pytest.raises(ValueError, match="single level"):
             preconditioner.setup(poisson_1d_csr)
+
+
+class TestBootstrapNeighborhoodReuse:
+    """The finest matrix's LS-ring neighborhood depends on ``A`` alone, so one setup
+    run (initial build plus every improvement build) evaluates it once."""
+
+    def test_finest_ls_ring_neighborhood_built_once_per_setup(
+        self,
+        poisson_1d_large_csr: torch.Tensor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import torchalg.sparse.preconditioners.amg.bootstrap as module
+
+        real = module.sparse_depth_neighborhood
+        calls: list[tuple[torch.Tensor, int]] = []
+
+        def counting(matrix: torch.Tensor, depth: int) -> torch.Tensor:
+            calls.append((matrix, depth))
+            return real(matrix, depth)
+
+        monkeypatch.setattr(module, "sparse_depth_neighborhood", counting)
+        module.BootstrapAMGPreconditioner(
+            k_r=6,
+            eta=2,
+            n_bootstrap_cycles=2,
+            nu=3,
+            delta=0.7,
+            caliber=3,
+            max_levels=3,
+            max_coarse=4,
+            seed=5,
+        ).setup(poisson_1d_large_csr)
+
+        finest_builds = [d for m, d in calls if m is poisson_1d_large_csr]
+        assert finest_builds == [3]

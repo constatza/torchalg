@@ -83,6 +83,40 @@ class TestSparseIC0:
         with pytest.raises(ValueError, match="breakdown"):
             sparse_ic0(dense.to_sparse_csr())
 
+    def test_breakdown_names_the_first_failing_pivot(
+        self, two_breakdown_tridiagonal_csr: torch.Tensor
+    ) -> None:
+        """Later pivots are nan or negative too; the error must still report row 2."""
+        with pytest.raises(ValueError, match=r"breakdown at pivot 2: diagonal value -"):
+            sparse_ic0(two_breakdown_tridiagonal_csr)
+
+    def test_failed_setup_after_a_later_level_breakdown_keeps_previous_state(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        two_breakdown_tridiagonal_csr: torch.Tensor,
+    ) -> None:
+        precond = IC0Preconditioner().setup(poisson_2d_csr)
+        previous = (precond._operator, precond._solve_cache, precond._pattern)
+
+        with pytest.raises(ValueError, match="breakdown at pivot 2"):
+            precond.setup(two_breakdown_tridiagonal_csr)
+
+        assert all(
+            now is before
+            for now, before in zip(
+                (precond._operator, precond._solve_cache, precond._pattern), previous, strict=True
+            )
+        )
+
+    def test_factorization_leaves_the_input_values_untouched(
+        self, poisson_2d_csr: torch.Tensor
+    ) -> None:
+        before = poisson_2d_csr.values().clone()
+
+        sparse_ic0(poisson_2d_csr)
+
+        assert torch.equal(poisson_2d_csr.values(), before)
+
     def test_rejects_non_csr_layout(self, poisson_1d_dense: torch.Tensor) -> None:
         with pytest.raises(ValueError, match="sparse CSR"):
             sparse_ic0(poisson_1d_dense)

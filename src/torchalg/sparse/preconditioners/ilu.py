@@ -30,17 +30,27 @@ from typing import Self
 import torch
 from torch import nn
 
-from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
+from torchalg.preconditioners.base import (
+    MatrixSetupPreconditioner,
+    Placement,
+    PreconditionerContext,
+)
 from torchalg.sparse.kernels.triangular import _require_csr
 from torchalg.sparse.preconditioners._ilu0_pattern import ILU0Pattern, analyze_ilu0
 from torchalg.sparse.preconditioners._triangular import (
     PreparedTriangularPair,
     build_sparse_lu_solve_cache,
+    tracks_autograd,
+    write_positions,
 )
 
 
 def _factorize(matrix: torch.Tensor, pattern: ILU0Pattern) -> torch.Tensor:
     """Run the ILU(0) recurrence over ``pattern``'s precomputed gather positions.
+
+    Cost:
+        W: algorithmic minimum. Executed: each step writes only its own
+        positions (no whole-array copy) unless autograd tracks the matrix values.
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix whose structure ``pattern`` matches.
@@ -49,11 +59,11 @@ def _factorize(matrix: torch.Tensor, pattern: ILU0Pattern) -> torch.Tensor:
     Returns:
         torch.Tensor: Combined ``L``/``U`` sparse CSR factor.
     """
-    # See ``.ic0._factorize``'s identical comment: ``values`` is rebuilt
-    # out-of-place at every step (``torch.scatter``, never ``scatter_``/
-    # indexed assignment), to avoid invalidating autograd's saved-tensor
-    # versions across row-slice lookups.
-    values = matrix.values()
+    # See ``.ic0._factorize``'s comment on why autograd forces the out-of-place
+    # path. In place, ``values`` must be a private copy: ``matrix.values()``
+    # aliases the caller's storage.
+    in_place = not tracks_autograd(matrix)
+    values = matrix.values().clone() if in_place else matrix.values()
 
     for step in pattern.steps:
         numerator = values[step.flat_pos]
@@ -67,7 +77,7 @@ def _factorize(matrix: torch.Tensor, pattern: ILU0Pattern) -> torch.Tensor:
 
         u_jj = values[step.diag_pos_of_j]
         new_val = torch.where(step.is_l_side, numerator / u_jj, numerator)
-        values = values.scatter(0, step.flat_pos, new_val)
+        values = write_positions(values, step.flat_pos, new_val, in_place=in_place)
 
     return torch.sparse_csr_tensor(
         pattern.factor_crow,
@@ -139,6 +149,26 @@ class ILUPreconditioner(MatrixSetupPreconditioner, nn.Module):
         (``ILU0Pattern.matches``); otherwise it analyzes anew. Re-running
         ``setup`` after the values change therefore skips all structural work.
 
+    Cost:
+        Setup, once per matrix values (the pattern analysis, ``O(n + nnz)`` host index
+        work, is reused for later matrices of the same structure), ``z = nnz``,
+        ``V = 8`` bytes per ``float64``: algorithmic
+        ``W = 2 sum_{(i,j)} |{k < min(i, j) : (i,k), (k,j) in pattern}| + nnz(L)``
+        (the multiply-adds of the row recurrence plus the divisions), ``Q`` a small
+        multiple of ``V z``. The executed loop is one batch per (level, degree
+        position), the upper side padded to the batch's widest lower count: depth
+        ``D = sum over levels of the maximum row degree``, ``L`` proportional to that
+        step count and ``S = 0``. Setup is latency-bound, not flop-bound.
+        Apply, ``k`` columns, ``w`` the index width: two sparse triangular solves
+        against ``L`` (unit diagonal stored explicitly) and ``U``,
+        ``W = 2 (z + n) k``, ``Q = (z + n)(V + w) + 2(n + 1)w + 4Vnk``,
+        ``D = lv_L + lv_U`` (each solve a recurrence over its dependency levels),
+        ``L = 2`` through the vendor solve (CPU and CUDA; ``O(lv)`` per solve when
+        level-scheduled) and ``S = 0``.
+        Roofline: apply ``W/Q`` is about 0.17 flop per byte (memory-bound).
+        Work-depth: apply ``W/D = (z + n) k / (lv_L + lv_U)``, low: depth, not
+        flops, limits parallel speed-up (``Placement.SEQUENTIAL_SWEEP``).
+
     Mathematical Properties:
         - ``M ≈ A`` via incomplete LU factorization (no fill-in beyond
           ``A``'s original non-zero pattern - natural ordering, no
@@ -153,6 +183,8 @@ class ILUPreconditioner(MatrixSetupPreconditioner, nn.Module):
         >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
+
+    placement = Placement.SEQUENTIAL_SWEEP
 
     def __init__(self) -> None:
         """Register the (not yet computed) combined LU-factor buffer."""

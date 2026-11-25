@@ -1,7 +1,7 @@
 """Spectral damping rules for weighted Jacobi: relaxation ``1/rho`` and prolongation ``(4/3)/rho``.
 
-``rho = rho(D^-1 A)`` is a pure seeded-Arnoldi estimate: nothing is cached, so each
-setup stage (prolongator smoothing, ``JacobiSmoother.prepare``) computes its own once.
+``rho = rho(D^-1 A)`` is a seeded-Arnoldi estimate memoized per matrix object, so the
+prolongator smoothing and ``JacobiSmoother.prepare`` of one level share a single estimate.
 A float still fixes omega explicitly.
 """
 
@@ -91,14 +91,38 @@ class TestSpectralRadius:
             poisson_matrix.clone()
         )
 
-    def test_is_not_cached_per_matrix_object(
+    def test_is_estimated_once_per_matrix_object(
         self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
         matrix = poisson_matrix.clone()
         first = jacobi_spectral_radius(matrix)
         second = jacobi_spectral_radius(matrix)
-        assert len(estimator_calls) == 2
+        assert len(estimator_calls) == 1
         assert first == second
+
+    def test_equal_but_distinct_matrices_are_estimated_separately(
+        self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
+    ) -> None:
+        jacobi_spectral_radius(poisson_matrix.clone())
+        jacobi_spectral_radius(poisson_matrix.clone())
+        assert len(estimator_calls) == 2
+
+    def test_in_place_edit_triggers_a_new_estimate(
+        self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
+    ) -> None:
+        matrix = poisson_matrix.clone()
+        stale = jacobi_spectral_radius(matrix)
+        matrix[0, 0] *= 4.0
+        fresh = jacobi_spectral_radius(matrix)
+        assert len(estimator_calls) == 2
+        assert fresh != stale
+
+    def test_inference_tensor_is_never_cached(
+        self, inference_poisson_matrix: torch.Tensor, estimator_calls: list[int]
+    ) -> None:
+        jacobi_spectral_radius(inference_poisson_matrix)
+        jacobi_spectral_radius(inference_poisson_matrix)
+        assert len(estimator_calls) == 2
 
     def test_works_on_an_inference_tensor(
         self, inference_poisson_matrix: torch.Tensor, exact_radius: float
@@ -184,8 +208,8 @@ class TestPresets:
         for _ in range(4):
             precond.apply(residual)
         assert len(estimator_calls) == after_setup
-        # 2 prolongator smoothings + 2 smoother preparations (the coarsest level has no smoother).
-        assert after_setup == 4
+        # One estimate per level that is coarsened and smoothed; the coarsest level has neither.
+        assert after_setup == 2
 
     def test_pod_preset_uses_smoother_omega(
         self, poisson_matrix: torch.Tensor, torch_dtype: torch.dtype

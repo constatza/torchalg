@@ -7,7 +7,6 @@ from typing import Literal
 import pytest
 import torch
 
-from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 from torchalg.sparse.kernels.triangular import (
     LibraryTriangularSolve,
     PreparedTriangularSolve,
@@ -15,6 +14,7 @@ from torchalg.sparse.kernels.triangular import (
     level_schedule,
     prepare_triangular_solve,
 )
+from torchalg.utils.csr_index import compact_csr_indices
 
 
 @pytest.fixture
@@ -350,6 +350,21 @@ class TestPrepareTriangularSolve:
 
         assert actual.shape == poisson_2d_target.shape
         torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-14)
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_library_solve_accepts_a_strided_column_view(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        """A column of a row-major block is a strided 1-D target and must solve like a copy."""
+        block = torch.linspace(1.0, 2.0, poisson_2d_csr.shape[0] * 3, dtype=poisson_2d_csr.dtype)
+        block = block.reshape(-1, 3)
+        solver = LibraryTriangularSolve(poisson_2d_csr, direction)
+
+        actual = solver.solve(block[:, 1])
+
+        torch.testing.assert_close(actual, solver.solve(block[:, 1].contiguous()))
 
     @pytest.mark.parametrize("direction", ["forward", "backward"])
     @pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])

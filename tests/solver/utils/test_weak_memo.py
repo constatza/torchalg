@@ -7,7 +7,7 @@ import weakref
 
 import torch
 
-from torchalg.utils.weak_cache import weak_memo
+from torchalg.utils.weak_cache import tensor_memo, weak_memo
 
 
 class TestWeakMemo:
@@ -48,3 +48,44 @@ class TestWeakMemo:
         del matrix
         gc.collect()
         assert reference() is None
+
+
+class TestTensorMemo:
+    """``tensor_memo``: one result per tensor object until it is edited in place."""
+
+    def test_same_tensor_computes_once(self) -> None:
+        calls: list[int] = []
+
+        @tensor_memo
+        def total(matrix: torch.Tensor) -> torch.Tensor:
+            calls.append(1)
+            return matrix.sum()
+
+        matrix = torch.ones(3)
+        assert total(matrix) is total(matrix)
+        assert len(calls) == 1
+
+    def test_in_place_edit_recomputes(self) -> None:
+        @tensor_memo
+        def total(matrix: torch.Tensor) -> torch.Tensor:
+            return matrix.sum()
+
+        matrix = torch.ones(3)
+        before = total(matrix)
+        matrix[0] = 5.0
+        assert before == 3.0
+        assert total(matrix) == 7.0
+
+    def test_inference_tensor_bypasses_the_cache(self) -> None:
+        calls: list[int] = []
+
+        @tensor_memo
+        def total(matrix: torch.Tensor) -> torch.Tensor:
+            calls.append(1)
+            return matrix.sum()
+
+        with torch.inference_mode():
+            matrix = torch.ones(3)
+        total(matrix)
+        total(matrix)
+        assert len(calls) == 2

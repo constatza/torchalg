@@ -1,8 +1,18 @@
-"""POD basis construction (snapshot method, via thin SVD)."""
+"""POD basis construction (snapshot method: Gram eigenproblem, thin-SVD fallback)."""
 
 from __future__ import annotations
 
 import torch
+
+# Judgement call: bounds the orthonormality error of the Gram route; looser inputs fall back to
+# the SVD. Same subspace and mode count as the SVD route to 1 - 1.6e-13 on the benchmark cases.
+_GRAM_ORTHOGONALITY_TOLERANCE = 1e-10
+"""Largest loss of orthonormality accepted from the Gram route.
+
+An eigenvalue of ``G = S S^T`` is only accurate to ``eps * lambda_max``, so a mode with
+``lambda_k / lambda_max = q`` has orthonormality and subspace error about ``eps / q``. The
+Gram route is used only when that stays below this bound; otherwise the SVD runs.
+"""
 
 
 def _resolve_rank(singular_values: torch.Tensor, rank: float, max_rank: int) -> int:
@@ -37,6 +47,47 @@ def _resolve_rank(singular_values: torch.Tensor, rank: float, max_rank: int) -> 
     return rank
 
 
+def _gram_basis(snapshots: torch.Tensor, rank: float, max_rank: int) -> torch.Tensor | None:
+    """POD basis from the eigendecomposition of the ``N x N`` Gram matrix, if accurate enough.
+
+    Cost:
+        ``N`` = snapshots, ``n`` = dofs, ``N <= n``, ``r`` = retained modes,
+        ``V = 8`` bytes per ``float64``. ``W = n N^2`` (Gram GEMM, using the
+        symmetry of ``S S^T`` would halve it) ``+ ~9 N^3`` (``eigh``)
+        ``+ 2 n N r`` (back-projection), against ``~6 n N^2 + 20 N^3`` for the thin
+        SVD, so about half the flops. ``Q = O(V (n N + N^2))`` (the snapshots are
+        read by the Gram product and by the back-projection, ``G`` and its
+        eigenvectors move through ``eigh``). ``D = O(N)``: the tridiagonalization in
+        ``eigh`` is a chain of about a third the length of the SVD's bidiagonalization
+        chain (``~60 N``), plus ``ceil(log2 n) + 1`` per GEMM. ``L = O(1)`` (a few
+        library calls against one for the SVD) and ``S = O(1)`` (the rank resolution and
+        the accuracy test each read one value).
+        Roofline: the Gram GEMM has ``W/Q`` of about ``N / 16`` flops per byte, so it is
+        compute-bound from ``N`` of a few tens; the back-projection is memory-bound.
+        Work-depth: ``W/D`` is large in the GEMMs and lowest in ``eigh``'s chain, which
+        bounds the parallel speed-up of the fit.
+
+    Args:
+        snapshots (torch.Tensor): Snapshot matrix, shape ``(N, n)``, ``N <= n``.
+        rank (int | float): Mode count or energy threshold, as in ``compute_pod_basis``.
+        max_rank (int): ``min(N, n)``.
+
+    Returns:
+        torch.Tensor | None: Basis ``(n, k)`` spanning the same subspace the thin SVD gives,
+            or ``None`` when the selected modes are too small relative to the leading one
+            (or the snapshots are zero or non-finite) for squared conditioning to be safe.
+    """
+    eigenvalues, eigenvectors = torch.linalg.eigh(snapshots @ snapshots.mT)  # ascending
+    energy = eigenvalues.flip(0).clamp_min(0.0)  # sigma^2, descending
+    resolved_rank = _resolve_rank(energy.sqrt(), rank, max_rank)
+    smallest_ratio = torch.finfo(snapshots.dtype).eps / _GRAM_ORTHOGONALITY_TOLERANCE
+    if not energy[resolved_rank - 1] > smallest_ratio * energy[0]:
+        return None
+    # Scale the (N, k) factor, not the (n, k) result: u_i / sigma_i, then project onto S.
+    scaled = eigenvectors.flip(1)[:, :resolved_rank] / energy[:resolved_rank].sqrt()
+    return (snapshots.mT @ scaled).contiguous()  # (n, k), orthonormal columns
+
+
 def compute_pod_basis(
     snapshots: torch.Tensor,
     rank: float,
@@ -47,15 +98,19 @@ def compute_pod_basis(
     """Build a truncated POD basis from a snapshot ensemble (snapshot method).
 
     Implements the reduced-basis construction of Nikolopoulos et al. (2022),
-    §3.3, eq. 26-27, via the thin SVD of the snapshot matrix rather than
-    eigendecomposing a Gram matrix: forming UUt or UtU squares the condition
-    number of U, which hurts precision precisely when POD is most useful
-    (highly correlated/redundant snapshots). ``torch.linalg.svd`` computes the
-    same POD modes without ever forming that Gram matrix, at the same
-    asymptotic cost as the snapshot method for n_samples << n_dofs (the
-    paper's own justification for avoiding the full n_dofs x n_dofs
-    eigenproblem still holds), and returns singular values already sorted
-    descending and non-negative - no manual sort or clamp needed.
+    §3.3, eq. 26-27. The unweighted basis is the snapshot method: eigendecompose
+    the ``n_samples x n_samples`` Gram matrix ``S S^T`` and project the
+    eigenvectors back through ``S``. That is about 2 times fewer flops than the
+    thin SVD of ``S`` (which computes all ``min(n_samples, n_dofs)`` triplets
+    although only the leading ``r`` are kept) and 3 times shallower, but it
+    squares the condition number of ``S``: an eigenvalue is only accurate to
+    ``eps * lambda_max``. The Gram route is therefore taken only when the
+    selected modes keep an orthonormality error below ``1e-10`` (smallest
+    selected ``sigma_r^2 / sigma_1^2 > eps / 1e-10``; never in float32);
+    otherwise, and when ``n_samples > n_dofs``, ``torch.linalg.svd`` computes
+    the same modes without forming a Gram matrix. Both routes span the same
+    subspace and select the same mode count to rounding; only the signs and
+    the basis of a degenerate (repeated-``sigma``) eigenspace may differ.
 
     Unlike the reference (``neuralls.domain.solver``), this port has no
     numpy in/out boundary: ``torch.linalg.svd`` was always an internal
@@ -76,6 +131,21 @@ def compute_pod_basis(
       wherever the caller put it, and the SVD (and the returned basis)
       simply run on that same device - preserved implicitly, exactly like
       dtype, with no separate ``device`` parameter needed.
+
+    Cost:
+        ``N`` = ``n_samples``, ``n`` = ``n_dofs``, ``k`` = ``min(N, n)``, ``r`` = retained
+        modes. Unweighted, Gram route (``N <= n``, well-conditioned): ``W ~ n N^2 + 9 N^3 +
+        2 n N r`` (see ``_gram_basis`` for ``Q``, ``D``, ``L``, ``S`` and the roofline). SVD
+        fallback: ``W ~ 6 n N^2 + 20 N^3``, ``Q = O(V (n N + N^2))`` with ``V = 8`` bytes per
+        ``float64``, ``D`` about ``60 N`` (the bidiagonalization chain), ``L = 1``,
+        ``S = O(1)``. Weighted (``inner_product``): ``W = O(n k^2 + k nnz(W))``, ``D = O(k)``
+        (the thin QR and the ``k x k`` factorizations are chains over ``k``).
+        Roofline: ``W/Q`` is large for every route (``O(N)`` flops per byte), so the fit is
+        compute-bound; the flop count, not the traffic, is the cost. Fitting is offline,
+        once per family of matrices, and is the dominant offline flop term when ``N`` is
+        large because it grows as ``n N^2``.
+        Work-depth: ``W/D`` is large in the BLAS3 stages, bounded by the factorization
+        chain (``D = O(N)``).
 
     Args:
         snapshots (torch.Tensor): Solution snapshot ensemble, shape
@@ -146,6 +216,10 @@ def compute_pod_basis(
         snapshots_t = snapshots_t * row_scales.to(dtype=snapshots_t.dtype).unsqueeze(-1)
 
     if inner_product is None:
+        if n_samples <= n_dofs:
+            gram_basis = _gram_basis(snapshots_t, rank, max_rank)
+            if gram_basis is not None:
+                return gram_basis
         _, s, vh = torch.linalg.svd(snapshots_t, full_matrices=False)  # vh: (max_rank, n_dofs)
         resolved_rank = _resolve_rank(s, rank, max_rank)
         # Contiguous copy, not a transposed view: transfers multiply by it every cycle

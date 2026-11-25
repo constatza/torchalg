@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ..base import NonLinearPreconditioner, PreconditionerContext, StaticSetupPreconditioner
+from ..base import (
+    NonLinearPreconditioner,
+    Placement,
+    PreconditionerContext,
+    StaticSetupPreconditioner,
+)
 from ..ports import ExtraInputPredictorPort
 
 if TYPE_CHECKING:
@@ -54,6 +59,8 @@ class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
         ...     precond.bind_inputs(matrix=A)  # done once before CG loop
         ...     z = precond.apply(residual)  # called each CG iteration
     """
+
+    placement = Placement.DENSE_BOUND
 
     def __init__(
         self,

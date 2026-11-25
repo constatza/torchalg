@@ -46,6 +46,18 @@ class PODCoarseningStrategy(nn.Module):
           ``O(r * n^2)``; CSR ``A``: ``O(r * nnz + r^2 * n)``. Evaluated right to left so
           the sparse product never needs a dense-times-sparse kernel.
         - Per application (``prolongate``/``restrict``): ``O(r * n)``.
+
+    Cost:
+        Per application (``prolongate`` or ``restrict``, one right-hand side),
+        ``V = 8`` bytes per ``float64``: a dense matrix-vector product with ``Phi_r``,
+        ``W = 2 n r``, ``Q = V (n r + n + r)``, ``D = ceil(log2 n) + 1`` for
+        ``restrict`` and ``ceil(log2 r) + 1`` for ``prolongate`` (a row reduction),
+        ``L = 1``, ``S = 0``. Roofline: ``W/Q`` is about 0.25 flop per byte
+        (memory-bound). Work-depth: ``W/D`` is large, so the transfers parallelize
+        well; a sparse aggregation transfer costs ``O(n)`` instead of ``O(n r)``
+        because the basis is dense by construction, and these transfers are a large share
+        of the V-cycle at ``r`` in the tens. The one-off ``build_transfer`` cost is on
+        that method.
     """
 
     def __init__(self, basis: torch.Tensor) -> None:
@@ -86,6 +98,22 @@ class PODCoarseningStrategy(nn.Module):
 
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
         """Build the POD-reduced coarse level from the fine-grid matrix ``A``.
+
+        Cost:
+            ``n`` = ``n_dofs``, ``r`` = ``rank``, ``z = nnz(A)`` (``n^2`` if dense),
+            ``V = 8`` bytes per ``float64``, ``w`` the index width, once per matrix.
+            Executed: ``W = 2 z r + 2 n r^2`` (one SpMM, one GEMM),
+            ``Q = z (V + w) + (n + 1) w + 2 V n r`` for a CSR ``A``'s SpMM (``V (n^2 + 2 n r)`` for dense ``A``) plus ``V (2 n r + r^2)``
+            for the GEMM, ``D = ceil(log2 m) + 1 + ceil(log2 n) + 1`` with ``m`` the
+            largest row count of ``A``, ``L = 2`` and ``S = 0``. Algorithmic minimum for
+            the GEMM: ``n r^2``, since ``Phi^T (A Phi)`` is symmetric for symmetric ``A``;
+            a symmetric-panel product cuts ``W`` by a fraction but adds launches, and
+            the full product stays until a triangular-output GEMM kernel exists.
+            Roofline: the SpMM has ``W/Q`` of order 1 (memory-bound), the GEMM about
+            ``r / 8`` flops per byte, so the step leans compute-bound for ``r`` in the tens.
+            Work-depth: ``W/D`` is large (about ``10^6``), the most parallel stage of the
+            POD setup; the spectral estimate for the smoother, not this step, is its
+            long chain.
 
         Args:
             A (torch.Tensor): Fine-grid matrix, shape ``(n_dofs, n_dofs)``, strided or

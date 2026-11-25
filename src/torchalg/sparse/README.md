@@ -66,7 +66,11 @@ the storage position of every `L[i,k]`/`L[j,k]` product, the diagonal positions 
 transpose permutation of `L` - is computed once by `analyze_ic0(A)` into a frozen
 `IC0Pattern` (`preconditioners/_ic0_pattern.py`). `sparse_ic0(A, pattern)` then only
 gathers by those positions, so its numeric loop makes no `searchsorted` and no host
-read except the per-level breakdown check; `pattern=None` analyzes internally for
+read except one breakdown check after the last level (per-level pivots are collected and
+tested together; the error still names the first failing row in level order); each step
+writes its positions in place unless grad mode is on and the matrix values require grad,
+when the out-of-place `scatter` keeps autograd's saved versions valid (shared
+`write_positions`/`tracks_autograd` in `preconditioners/_triangular.py`); `pattern=None` analyzes internally for
 one-off use. The pattern is the stored lower-triangle entries whose value is not zero
 (`|value| > 0`, so zero and NaN drop out; any other value is pattern and there is no drop
 tolerance), and `pattern.matches(A)` compares
@@ -104,8 +108,8 @@ flags, positions of `U[j,j]`) and the structure-only split of the combined facto
 unit-lower and upper triangles (`lower_source`, `upper_source` gather positions). ILU(0)'s
 pattern is `A`'s own stored structure, with no zero mask, so `pattern.matches(A)` compares
 `crow`, `col` and the index dtypes only (a stored zero stays in the pattern).
-`sparse_ilu0(A, pattern)` keeps the exact numeric loop (padded gather, out-of-place
-`scatter`), so factor values are bit-identical and autograd is unchanged; its numeric phase
+`sparse_ilu0(A, pattern)` keeps the exact numeric loop (padded gather; in-place writes into a private copy of the
+values, out-of-place `scatter` when autograd tracks them), so factor values are bit-identical; its numeric phase
 makes no `lookup` call and no host read. `build_sparse_lu_solve_cache(factor, pattern)`
 builds both triangles by gathers, with no argsort or boolean-mask indexing. The structural
 arrays follow the IC(0) width rule (int32 when `max(n, nnz)` fits, via the shared
@@ -117,6 +121,12 @@ passed to `PreparedTriangularSolve` on CPU/CUDA.
 
 ## Prepared smoothers
 
+Each smoother declares a `placement` (`Placement`): `JacobiSmoother` is `SPMV_BOUND`,
+`GaussSeidelSmoother` and `GaussSeidelMemo` are `SEQUENTIAL_SWEEP`. Cycles expose the
+smoother's, and the AMG/BootCMatch preconditioners take their device placement from it, so a
+Jacobi-smoothed sparse AMG is placed like an SpMV and a Gauss-Seidel-smoothed one stays on the
+CPU.
+
 A sparse smoother object holds only configuration; `prepare(A)` does every
 matrix-dependent one-off computation and returns the object that sweeps, so
 `apply()` never estimates, schedules or factors anything.
@@ -127,38 +137,44 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   step for near-zero diagonals. `smooth` is `x + diag_inv * (rhs - A @ x)`
   with no clone; `smooth_from_zero` skips the first `A @ 0`. Both accept a
   vector `(n,)` or a block `(n, k)`.
-- `GaussSeidelSmoother.prepare(A)` returns a prepared symmetric Gauss-Seidel in
-  one of two formats with identical results. Each hop has one role:
-  `_gauss_seidel_format.prepare_gauss_seidel` only picks the format, then
-  `_gauss_seidel.prepare_csr_gauss_seidel` builds `PreparedSymmetricGaussSeidel`
-  (level-scheduled CSR: both direction-specific schedules, the per-entry row index,
-  the strict-triangle entries, each direction a `PreparedTriangularSolve`) or
-  `_dense_gauss_seidel.prepare_dense_gauss_seidel` builds
-  `PreparedDenseGaussSeidel` (the matrix densified once into `D + L` and
-  `D + U` solved with `solve_triangular`); `PreparedGaussSeidel` is their union. A CSR sweep costs
-  about 0.06 ms per dependency level and is flat in `n`; a dense sweep costs about
-  `8e-7 ms * n^2` whatever the density. Rule (CPU, 6 threads): dense for
-  `n <= 1500`, CSR for `n >= 4000`, and in between dense when
-  `8e-7 * n^2 < 0.06 * levels` using the forward schedule's level count, which the
-  CSR format then reuses instead of rebuilding it (the crossover
-  is `n ~ 2500` at 5 nonzeros per row and `n ~ 2750` at 23, so density acts only through
-  the level count). The constants are CPU estimates; CUDA is unmeasured and expected to
-  favour dense longer. Everything else in the sparse tree stays CSR: below `n ~ 200` dense
-  matvecs and Galerkin products save only microseconds per level. Both formats
-  support `smooth`, `smooth_from_zero` (which skips the first strict-upper matvec) and
-  `smooth(..., rows=)` (PyAMG's indexed sweep); a zero pivot freezes a row to the
-  sweep's target in both.
+- `GaussSeidelSmoother.prepare(A)` returns a prepared symmetric Gauss-Seidel
+  (`_gauss_seidel.prepare_csr_gauss_seidel` -> `PreparedSymmetricGaussSeidel`) at every
+  size; there is no dense-backed format. Preparation splits `A` into strict-upper and
+  strict-lower CSR triangles and prepares `D + L` and `D + U` with
+  `kernels.triangular.prepare_triangular_solve`, so the substitution is the vendor
+  solve registered for the device (`TRIANGULAR_SOLVER_BY_DEVICE`: MKL on CPU, cuSPARSE
+  on CUDA) and a sweep pair is two triangular solves plus two SpMVs with launches
+  independent of the dependency depth. A matrix with a zero pivot gets the
+  level-scheduled `PreparedTriangularSolve` instead, which freezes that row to the sweep's
+  target. `smooth(..., rows=)` (PyAMG's indexed sweep, used by adaptive SA's
+  final candidate relaxation) has no vendor form: it runs on level-scheduled substitutions
+  that are built on the first masked sweep of a matrix and kept, so matrices only ever
+  swept unmasked (compatible relaxation, setup cycles) build no level schedule. Both
+  `smooth` and `smooth_from_zero` (which skips the first strict-upper matvec) accept
+  a vector `(n,)` or a block `(n, k)`. A sweep pair dispatches 10 operators (n = 2744 and
+  10000) against 2 950 and 6 370 for the level-scheduled substitution, and adaptive SA and bootstrap
+  AMG build identical hierarchies with identical PCG iteration counts on the
+  `benchmarks/cases.py` cases.
 - Every prepared smoother also implements `residual(rhs, x) = rhs - A x`, and the
   V- and W-cycles form level residuals through it, so the operator each level
   multiplies by is the one `prepare` stored. Sparse prepared smoothers and
   `SparseTransferOperator` store their CSR operators with int32 indices
-  (`kernels.index_dtype.compact_csr_indices`): PyTorch's CPU sparse BLAS narrows
+  (`utils.csr_index.compact_csr_indices`): PyTorch's CPU sparse BLAS narrows
   int64 indices on every product, so narrowing once at setup makes SpMV
   1.5-2.5x faster and the AMG V-cycles 1.2-1.8x faster, bit-identical.
-- `_jacobi_omega.jacobi_omega` / `jacobi_spectral_radius` are pure and
-  uncached. Setup code that needs rho (prolongation smoothing in
-  coarsening and adaptive setup, the Jacobi smoother's `prepare`) calls them
-  once per level at setup. There is no module-level or `id()`-keyed cache.
+- `_jacobi_omega.jacobi_spectral_radius` is a pure function of the matrix,
+  memoized per matrix object (`utils.weak_cache.tensor_memo`: entries die with
+  the matrix, in-place edits invalidate, inference tensors are never cached).
+  Prolongation smoothing in coarsening and the Jacobi smoother's `prepare`
+  receive only the level matrix, so they share one estimate per level through
+  its identity. Nothing estimates in `apply`. Bootstrap and BootCMatch estimate
+  each distinct level matrix once (a later BootCMatch hierarchy on the same fine
+  matrix object reuses the finest estimate). Adaptive setup calls
+  `approximate_spectral_radius` itself, outside the memo, with the start vector
+  drawn from its shared random stream: its estimates of one matrix start from
+  different vectors and differ at the 1e-5 level, so merging them changes the
+  hierarchy (iteration counts hold, a one-application result moves by 3e-7 to
+  1e-5) and they stay separate.
 - Setup algorithms that relax the same level matrices many times (compatible
   relaxation, test-vector relaxation, adaptive trial cycles, bootstrap
   improvement passes) own a `GaussSeidelMemo` and a `TransferOperatorMemo`
@@ -170,6 +186,21 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   Gauss-Seidel prepared once and each prolongation is transposed once.
   `_presets.gs_setup_cycle(stage)` builds the GS V(1,1) setup cycle over a
   stage's smoother.
+- `BootstrapAMGPreconditioner.setup()` also builds one `weak_memo` of
+  `kernels.depth_neighborhood.sparse_depth_neighborhood` per setup run and hands
+  it to every `BAMGCoarsening` as `neighborhood_of`. The finest matrix's
+  LS-ring neighborhood depends on `A` alone, so it is built once across the
+  initial and every improvement hierarchy; coarse matrices are new per
+  hierarchy and are dropped with their matrix. `sparse_depth_neighborhood`
+  itself runs CSR products (not COO) and sorts once at the end, because the
+  CSR product leaves columns unsorted and keeps the diagonal.
+- `form_sparse_sparse` stays on COO: a CSR `P.T @ (A @ P)` is `0.3 ms` faster
+  per call at `n = 10 000` but returns unsorted columns, and restoring sorted
+  rows costs what the COO path already spends.
+- The dense coarsest-level inverse (`multigrid.coarse_solve.pseudo_inverse_coarse_solver`)
+  uses a Cholesky inverse for a symmetric, well-conditioned SPD matrix of
+  dimension `>= CHOLESKY_MIN_DIMENSION` and `pinv` otherwise, so singular,
+  indefinite, nonsymmetric and small coarse operators are unchanged.
 - `kernels.diagonal.sparse_diagonal` scatters masked values instead of
   boolean-indexing them, and `repeat_interleave` row-index expansion passes
   `output_size`, so neither reads a count back from the device.

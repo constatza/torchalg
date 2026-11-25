@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     import torch
 
+    from torchalg.preconditioners.base import Placement
+
     from .hierarchy import MultigridHierarchy, PreparedHierarchy
 
 
@@ -120,7 +122,14 @@ class MultigridSmoother(Protocol):
     OCP hook: implement to add Gauss-Seidel, polynomial, or other smoothers. A smoother
     object holds only configuration (damping override, ...); the per-matrix state lives in
     the ``PreparedSmoother`` it returns, so one smoother serves many matrices.
+
+    Attributes:
+        placement (Placement): What bounds one sweep (``SPMV_BOUND`` for Jacobi,
+            ``SEQUENTIAL_SWEEP`` for Gauss-Seidel); a preconditioner built on this smoother
+            takes its device placement from it.
     """
+
+    placement: Placement
 
     def prepare(self, A: torch.Tensor) -> PreparedSmoother:
         """Do every matrix-dependent one-off computation for ``A``.
@@ -164,7 +173,13 @@ class MultigridCycle(Protocol):
     """Performs one multigrid correction cycle (V, W, F, ...).
 
     OCP hook: implement to add W-cycle, F-cycle, or custom cycles.
+
+    Attributes:
+        placement (Placement): What bounds one cycle application; a cycle takes it from
+            its smoother, which dominates the work per level.
     """
+
+    placement: Placement
 
     def prepare(self, hierarchy: MultigridHierarchy | PreparedHierarchy) -> PreparedHierarchy:
         """Do the one-off, hierarchy-dependent work ``apply`` needs (e.g. factor the coarse level).

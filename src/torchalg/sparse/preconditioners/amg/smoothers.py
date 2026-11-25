@@ -17,10 +17,11 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from torchalg.preconditioners.base import Placement
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
-from torchalg.sparse.kernels.index_dtype import compact_csr_indices
+from torchalg.utils.csr_index import compact_csr_indices
 
-from ._gauss_seidel_format import PreparedGaussSeidel, prepare_gauss_seidel
+from ._gauss_seidel import PreparedSymmetricGaussSeidel, prepare_csr_gauss_seidel
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ class PreparedJacobi:
 
     Attributes:
         matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``, with int32
-            indices where it fits (``kernels.index_dtype``), since every sweep and
+            indices where it fits (``utils.csr_index``), since every sweep and
             residual multiplies by it.
         diag_inv (torch.Tensor): ``omega / diag(A)`` with ``0`` where the
             diagonal is (near) zero, shape ``(n,)``.
@@ -109,7 +110,12 @@ class JacobiSmoother:
         omega (float | torch.Tensor | None): Damping factor. ``None``
             (default) is the relaxation rule ``1 / rho(D^{-1}A)``, estimated
             in ``prepare`` (never during sweeps); a float or 0-d tensor fixes it.
+
+    Attributes:
+        placement (Placement): ``SPMV_BOUND``; a sweep is one SpMV plus vector updates.
     """
+
+    placement = Placement.SPMV_BOUND
 
     def __init__(self, omega: float | torch.Tensor | None = None) -> None:
         """Store the Jacobi damping factor.
@@ -144,19 +150,26 @@ class GaussSeidelSmoother:
     Sparse-CSR sibling of the dense
     ``preconditioners.implementations.amg.smoothers.GaussSeidelSmoother``.
     No factorization step: each sweep is a direct triangular solve against
-    ``A``'s own entries; ``prepare`` builds the level schedules once.
+    ``A``'s own entries; ``prepare`` splits ``A`` and prepares the vendor
+    triangular solves once.
+
+    Attributes:
+        placement (Placement): ``SEQUENTIAL_SWEEP``; each sweep is a chain of dependent
+            triangular solves.
     """
 
-    def prepare(self, A: torch.Tensor) -> PreparedGaussSeidel:
-        """Prepare Gauss-Seidel on ``A`` in the cheaper of the CSR and dense-backed formats.
+    placement = Placement.SEQUENTIAL_SWEEP
+
+    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
+        """Prepare symmetric Gauss-Seidel on ``A``.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
 
         Returns:
-            PreparedGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
+            PreparedSymmetricGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
         """
-        return prepare_gauss_seidel(A)
+        return prepare_csr_gauss_seidel(A)
 
 
 class GaussSeidelMemo:
@@ -165,7 +178,7 @@ class GaussSeidelMemo:
     Setup algorithms (compatible relaxation, adaptive and bootstrap stages)
     relax the same level matrices many times, through callables and cycles that
     only receive the matrix. A stage owns one of these for its duration: the
-    first sweep on a matrix prepares its ``PreparedGaussSeidel`` and
+    first sweep on a matrix prepares its ``PreparedSymmetricGaussSeidel`` and
     every later sweep on that same tensor object reuses it. The memo is keyed
     by tensor identity and holds the matrices alive, so it must not outlive the
     stage (and matrices must not be mutated in place within it); there is no
@@ -177,25 +190,27 @@ class GaussSeidelMemo:
     same kind of frozen object a fresh ``GaussSeidelSmoother().prepare(A)`` returns.
     """
 
+    placement = Placement.SEQUENTIAL_SWEEP
+
     def __init__(self) -> None:
         """Start with no prepared matrices."""
-        self._prepared: dict[int, tuple[torch.Tensor, PreparedGaussSeidel]] = {}
+        self._prepared: dict[int, tuple[torch.Tensor, PreparedSymmetricGaussSeidel]] = {}
 
-    def prepare(self, A: torch.Tensor) -> PreparedGaussSeidel:
+    def prepare(self, A: torch.Tensor) -> PreparedSymmetricGaussSeidel:
         """Return the prepared Gauss-Seidel of ``A``, preparing it on first use.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
 
         Returns:
-            PreparedGaussSeidel: Shared by every later call with this tensor.
+            PreparedSymmetricGaussSeidel: Shared by every later call with this tensor.
         """
         key = id(A)
         entry = self._prepared.get(key)
         if entry is None:
             # The matrix is stored beside its preparation so its id cannot be reused
-            # while the entry lives, whichever format the preparation chose.
-            entry = (A, prepare_gauss_seidel(A))
+            # while the entry lives.
+            entry = (A, prepare_csr_gauss_seidel(A))
             self._prepared[key] = entry
         return entry[1]
 

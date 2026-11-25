@@ -77,12 +77,22 @@ class TwoTermRecurrenceStrategy(DirectionStrategy):
     def compute_direction(
         self, w: torch.Tensor, rw: torch.Tensor, state: CGState
     ) -> tuple[torch.Tensor, None]:
-        """Compute ``d_k = w_k + beta_k d_{k-1}``. Never orthogonalizes."""
+        """Compute ``d_k = w_k + beta_k d_{k-1}``. Never orthogonalizes.
+
+        Cost:
+            One fused ``addcmul`` launch with no ``beta * d`` temporary, instead
+            of a multiply and an add: ``2n`` flops and ``3Vn`` bytes (``V = 8``
+            per ``float64``) against ``5Vn`` for the two-kernel form, one
+            launch fewer per iteration, with the same ``w + beta d`` out of
+            place so autograd sees no in-place write. ``addcmul`` may contract
+            the multiply-add, so the result agrees with the unfused form to
+            rounding. The first iteration is one copy of ``w``.
+        """
         if state.iteration == 0:
             return w.clone(), None
 
         beta = rw / state.rw_prev
-        return w + beta * state.d, None
+        return torch.addcmul(w, beta, state.d), None
 
 
 class OrthogonalizationDirectionStrategy(DirectionStrategy):

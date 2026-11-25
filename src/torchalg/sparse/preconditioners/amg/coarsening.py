@@ -105,6 +105,28 @@ class AggregationCoarsening:
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, SparseTransferOperator]:
         """Build one coarse level from a sparse CSR fine-grid matrix A.
 
+        Cost:
+            Per level, ``z = nnz(A)``, ``z_S`` the strong entries, ``m = 15``
+            Arnoldi steps, ``P`` Arnoldi passes (1 to 2 in practice):
+            strength ``W = O(z)`` (a constant number of passes over the
+            ``z``-sized index and value arrays); aggregation ``W = 0``,
+            ``I = O(n + z_S)``, ``D = 3n + z_S`` (``sparse_standard_aggregation``,
+            host-sequential); tentative ``P0`` ``O(n)``; spectral estimate
+            ``W = P (2zm + 4nm(m + 1))`` (``jacobi_spectral_radius``, paid
+            once per level matrix because the smoother of the same level
+            shares the memoized value); smoothed prolongation ``AP0`` ``W = 2z``
+            (each stored entry of ``A`` meets one entry of ``P0``) plus an
+            ``O(z)`` row scaling; Galerkin ``W = 2 sum nnz(P_k:) + 2 sum
+            nnz((AP)_i:)`` (``form_sparse_sparse``).
+            ``D`` is the sum of the stage depths and is dominated by the
+            host-sequential aggregation and the Arnoldi recurrence, so setup
+            does not speed up with workers; ``S`` is ``O(P)`` plus the
+            aggregation transfers.
+            Roofline: every stage has ``W/Q`` below 1 flop per byte (the
+            index work has none), so setup is memory- and host-bound.
+            Work-depth: strength, ``AP0`` and the Galerkin product are
+            parallel (large ``W/D``); aggregation and Arnoldi are not.
+
         Args:
             A (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``,
                 sparse CSR. Named to match the ``CoarseningStrategy``

@@ -231,72 +231,73 @@ def select_interpolatory_set(
     return torch.tensor(chosen, dtype=torch.long, device=test_vectors.device)
 
 
-def batched_select_interpolatory_set(
+_CHUNK_OVERHEAD_SLOTS = 2048
+"""Cost of one extra width chunk, in padded slots.
+
+A chunk repeats the growth loop's ``O(caliber)`` launches (about 120 at the default caliber,
+roughly 0.6 ms of launch latency), which streams as many slots as one chunk would save once it
+holds about this many; splitting a narrower group off pays only above it.
+"""
+
+
+def _width_chunks(sorted_lengths: list[int], overhead: int) -> list[tuple[int, int]]:
+    """Split ascending row lengths into contiguous chunks that minimize padded slots.
+
+    A chunk of rows ``lo:hi`` runs at width ``max(sorted_lengths[hi - 1], 1)``, so it costs
+    ``(hi - lo) * width`` slots plus ``overhead`` for its own launches. Splits fall only
+    between distinct lengths and the optimum is found by dynamic programming over those runs
+    (a few dozen at most, so the quadratic search is negligible).
+
+    Args:
+        sorted_lengths (list[int]): Real candidate count per row, ascending.
+        overhead (int): Cost of one chunk, in slots.
+
+    Returns:
+        list[tuple[int, int]]: ``(lo, hi)`` row ranges covering ``sorted_lengths`` in order.
+    """
+    count = len(sorted_lengths)
+    run_ends = [0] + [
+        i + 1 for i in range(count) if i + 1 == count or sorted_lengths[i + 1] != sorted_lengths[i]
+    ]
+    cost = {0: 0}
+    start_of: dict[int, int] = {}
+    for end in run_ends[1:]:
+        width = max(sorted_lengths[end - 1], 1)
+        start_of[end] = min(
+            (start for start in run_ends if start < end),
+            key=lambda start: cost[start] + (end - start) * width,
+        )
+        cost[end] = cost[start_of[end]] + (end - start_of[end]) * width + overhead
+    chunks: list[tuple[int, int]] = []
+    end = count
+    while end > 0:
+        chunks.append((start_of[end], end))
+        end = start_of[end]
+    return chunks[::-1]
+
+
+def _select_block(
     padded_candidates: torch.Tensor,
     candidate_mask: torch.Tensor,
     test_vectors: torch.Tensor,
     targets: torch.Tensor,
     weights: torch.Tensor,
     caliber: int,
-    gamma: float = 1.5,
+    gamma: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Batched sibling of ``select_interpolatory_set``, vectorized over ``m`` rows.
-
-    Reproduces ``select_interpolatory_set``'s greedy caliber-bounded growth
-    loop and its normalized penalization test (see that function's docstring
-    for the rule's derivation) for all rows at once. The best candidate per
-    step is found by orthogonal matching pursuit rather than by solving a
-    least-squares system per trial set (see the module docstring): the
-    whitened candidate columns ``sqrt(omega) * v_j`` are gathered once into
-    an ``(m, max_cand, k)`` tensor, kept orthogonalized against the already
-    selected candidates, and the candidate with the largest residual
-    reduction ``(r . c)^2 / ||c||^2`` wins. The residual after each pick is
-    computed directly from the updated residual vector, not by subtracting
-    the gain, so the penalization test compares values free of cancellation.
-
-    Rank-deficient rows need no special handling: a candidate dependent on
-    the selected set (relative orthogonalized norm below ``sqrt(eps)``,
-    which includes exactly-zero columns and a duplicate of a selected
-    candidate) has zero gain and leaves the residual unchanged, so it either
-    loses to any informative candidate or fails the penalization test and
-    stops the row. Because the test is relative to each column's own norm,
-    the selection is invariant to the overall scale of ``test_vectors``
-    (relaxed bootstrap vectors reach ``~1e-8`` magnitude). Equal gains
-    resolve to the lowest candidate slot (``argmax`` returns the first
-    maximum), matching the single-row loop's first-minimum rule.
-
-    Once a row's best candidate at some step fails the penalization test,
-    that row is permanently deactivated (``active``) and never grows again
-    on a later step - exactly matching the single-row loop's ``break``,
-    not merely skipping one step.
-
-    The only Python-level loop is ``for step in range(caliber)`` - a fixed,
-    small (default 4) hyperparameter, not data-dependent.
+    """Greedy selection for one block of rows at the block's own padded width.
 
     Args:
-        padded_candidates (torch.Tensor): Long tensor, shape
-            ``(m, max_cand)``, row ``r``'s eligible candidate indices
-            left-aligned into a dense ``max_cand``-wide slot; padding
-            slots (beyond that row's real candidate count) hold arbitrary
-            values and must be marked ``False`` in ``candidate_mask``.
-        candidate_mask (torch.Tensor): Bool tensor, shape
-            ``(m, max_cand)``, ``True`` where ``padded_candidates`` at that
-            slot is a real (not padding) candidate for its row.
+        padded_candidates (torch.Tensor): Long tensor, shape ``(m, width)``.
+        candidate_mask (torch.Tensor): Bool tensor, shape ``(m, width)``.
         test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
-        targets (torch.Tensor): Long tensor, shape ``(m,)``, each row's
-            fine target index ``i``.
+        targets (torch.Tensor): Long tensor, shape ``(m,)``.
         weights (torch.Tensor): Per-test-vector weights, shape ``(k,)``.
-        caliber (int): Maximum interpolatory-set size ``c``; also the
-            fixed iteration count of this function's outer loop.
-        gamma (float): Penalization exponent (paper default ``1.5``).
+        caliber (int): Maximum interpolatory-set size.
+        gamma (float): Penalization exponent.
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor]: ``(chosen, chosen_mask)``, both
-        shape ``(m, caliber)``. ``chosen_mask`` is a left-aligned prefix
-        mask per row (``True`` for the first ``final_len[row]`` slots,
-        ``False`` after); ``chosen[row, :chosen_mask[row].sum()]`` holds
-        that row's interpolatory-set indices in selection order.
-        ``chosen`` at masked-``False`` positions is unspecified padding.
+        tuple[torch.Tensor, torch.Tensor]: ``(chosen, chosen_mask)``, both ``(m, caliber)``.
     """
     m, _ = padded_candidates.shape
     device = test_vectors.device
@@ -359,6 +360,123 @@ def batched_select_interpolatory_set(
             projection = torch.where(usable, projection, 0.0)
             orthogonal = orthogonal - projection.unsqueeze(-1) * best_direction.unsqueeze(1)
 
+    return chosen, chosen_mask
+
+
+def batched_select_interpolatory_set(
+    padded_candidates: torch.Tensor,
+    candidate_mask: torch.Tensor,
+    test_vectors: torch.Tensor,
+    targets: torch.Tensor,
+    weights: torch.Tensor,
+    caliber: int,
+    gamma: float = 1.5,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Batched sibling of ``select_interpolatory_set``, vectorized over ``m`` rows.
+
+    Reproduces ``select_interpolatory_set``'s greedy caliber-bounded growth
+    loop and its normalized penalization test (see that function's docstring
+    for the rule's derivation) for all rows at once. The best candidate per
+    step is found by orthogonal matching pursuit rather than by solving a
+    least-squares system per trial set (see the module docstring): the
+    whitened candidate columns ``sqrt(omega) * v_j`` are gathered once into
+    an ``(m_b, c_b, k)`` tensor per width chunk, kept orthogonalized against the already
+    selected candidates, and the candidate with the largest residual
+    reduction ``(r . c)^2 / ||c||^2`` wins. The residual after each pick is
+    computed directly from the updated residual vector, not by subtracting
+    the gain, so the penalization test compares values free of cancellation.
+
+    Rank-deficient rows need no special handling: a candidate dependent on
+    the selected set (relative orthogonalized norm below ``sqrt(eps)``,
+    which includes exactly-zero columns and a duplicate of a selected
+    candidate) has zero gain and leaves the residual unchanged, so it either
+    loses to any informative candidate or fails the penalization test and
+    stops the row. Because the test is relative to each column's own norm,
+    the selection is invariant to the overall scale of ``test_vectors``
+    (relaxed bootstrap vectors reach ``~1e-8`` magnitude). Equal gains
+    resolve to the lowest candidate slot (``argmax`` returns the first
+    maximum), matching the single-row loop's first-minimum rule.
+
+    Once a row's best candidate at some step fails the penalization test,
+    that row is permanently deactivated (``active``) and never grows again
+    on a later step - exactly matching the single-row loop's ``break``,
+    not merely skipping one step.
+
+    The only Python-level loop is ``for step in range(caliber)`` - a fixed,
+    small (default 4) hyperparameter, not data-dependent.
+
+    Rows are grouped by candidate count (``_width_chunks``) and each group runs the growth
+    loop at its own padded width, so a few rows with a wide candidate set (the
+    empty-neighborhood fallback hands a row every coarse point) no longer widen every row.
+    Rows are independent, so each row's selection is bit-identical to the single full-width
+    run.
+
+    Cost:
+        ``m`` rows in ``B`` width chunks, chunk ``b`` holding ``m_b`` rows at width ``c_b``
+        (the largest real candidate count in the chunk), ``k`` test vectors, ``V = 8`` bytes
+        per ``float64``. Per step the energy, the correlation, the projection and the
+        orthogonalization each make one pass over a chunk's ``(m_b, c_b, k)`` tensor, so
+        ``W = (8 caliber - 1) k sum_b m_b c_b`` (the last step skips the projection and the
+        orthogonalization) and ``Q`` is about ``9 V caliber k sum_b m_b c_b`` (a no-reuse
+        count of those passes plus their temporaries). ``sum_b m_b c_b`` is within a small
+        factor of the real candidate count, where the single full-width run paid
+        ``m max_cand``: on the lap2d n = 10 000 bootstrap setup 965 282 slots against
+        459 539 real, bucketed to 538 545 (44% fewer bytes and flops, same selection).
+        ``D = caliber (ceil(log2 c_max) + ceil(log2 k) + O(1))`` per chunk, chunks run one
+        after another so the depth is ``B`` times that, ``L = O(B caliber)`` launches
+        (``B`` is 2 to 6 per call, chosen so a chunk's launches cost less than the slots it
+        saves, ``_CHUNK_OVERHEAD_SLOTS``) and ``S = 1``: the chunk widths are read back once
+        before the loop, none inside it.
+        Roofline: ``W/Q`` is about ``(8 caliber - 1) / (9 caliber V)``, below
+        0.12 flop per byte (memory-bound).
+        Work-depth: ``W/D`` is large (every row and slot is independent), so the
+        selection parallelizes well within a chunk.
+
+    Args:
+        padded_candidates (torch.Tensor): Long tensor, shape
+            ``(m, max_cand)``, row ``r``'s eligible candidate indices
+            left-aligned into a dense ``max_cand``-wide slot; padding
+            slots (beyond that row's real candidate count) hold arbitrary
+            values and must be marked ``False`` in ``candidate_mask``. A
+            candidate beyond a row's last ``True`` slot is never read.
+        candidate_mask (torch.Tensor): Bool tensor, shape
+            ``(m, max_cand)``, ``True`` where ``padded_candidates`` at that
+            slot is a real (not padding) candidate for its row.
+        test_vectors (torch.Tensor): Test vectors ``V``, shape ``(n, k)``.
+        targets (torch.Tensor): Long tensor, shape ``(m,)``, each row's
+            fine target index ``i``.
+        weights (torch.Tensor): Per-test-vector weights, shape ``(k,)``.
+        caliber (int): Maximum interpolatory-set size ``c``; also the
+            fixed iteration count of this function's outer loop.
+        gamma (float): Penalization exponent (paper default ``1.5``).
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: ``(chosen, chosen_mask)``, both
+        shape ``(m, caliber)``. ``chosen_mask`` is a left-aligned prefix
+        mask per row (``True`` for the first ``final_len[row]`` slots,
+        ``False`` after); ``chosen[row, :chosen_mask[row].sum()]`` holds
+        that row's interpolatory-set indices in selection order.
+        ``chosen`` at masked-``False`` positions is unspecified padding.
+    """
+    m = padded_candidates.shape[0]
+    slots = torch.arange(1, padded_candidates.shape[1] + 1, device=candidate_mask.device)
+    extent = (candidate_mask * slots).amax(dim=-1)
+    order = torch.argsort(extent, stable=True)
+    sorted_extent = extent[order].tolist()
+    chosen = torch.zeros(m, caliber, dtype=torch.long, device=test_vectors.device)
+    chosen_mask = torch.zeros(m, caliber, dtype=torch.bool, device=test_vectors.device)
+    for lo, hi in _width_chunks(sorted_extent, _CHUNK_OVERHEAD_SLOTS):
+        rows = order[lo:hi]
+        width = max(sorted_extent[hi - 1], 1)
+        chosen[rows], chosen_mask[rows] = _select_block(
+            padded_candidates[rows, :width],
+            candidate_mask[rows, :width],
+            test_vectors,
+            targets[rows],
+            weights,
+            caliber,
+            gamma,
+        )
     return chosen, chosen_mask
 
 

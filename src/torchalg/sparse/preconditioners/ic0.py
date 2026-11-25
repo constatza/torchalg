@@ -36,17 +36,30 @@ from typing import Self
 import torch
 from torch import nn
 
-from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
+from torchalg.preconditioners.base import (
+    MatrixSetupPreconditioner,
+    Placement,
+    PreconditionerContext,
+)
 from torchalg.sparse.kernels.triangular import _require_csr
 from torchalg.sparse.preconditioners._ic0_pattern import IC0Pattern, analyze_ic0
 from torchalg.sparse.preconditioners._triangular import (
     PreparedTriangularPair,
     build_sparse_cholesky_solve_cache,
+    tracks_autograd,
+    write_positions,
 )
 
 
 def _factorize(matrix: torch.Tensor, pattern: IC0Pattern) -> torch.Tensor:
     """Run the IC(0) recurrence over ``pattern``'s precomputed gather positions.
+
+    Cost:
+        W: ``O(sum of row_degree^2)`` arithmetic, as the algorithmic minimum.
+        Executed: each elimination step writes only its own positions (no
+        whole-array copy) unless autograd tracks the matrix values.
+        S: one host sync per call (the breakdown test after the last level),
+        not one per level.
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix whose structure ``pattern`` matches.
@@ -58,13 +71,14 @@ def _factorize(matrix: torch.Tensor, pattern: IC0Pattern) -> torch.Tensor:
     Raises:
         ValueError: If elimination hits a non-positive pivot (IC(0) breakdown).
     """
-    # ``values`` is rebuilt out-of-place at every step (``torch.scatter``,
-    # never ``scatter_``/indexed assignment): slicing the same backing
-    # storage for a gather and then writing back into it in-place would
-    # bump that storage's autograd version between the forward read and
-    # the later backward pass, breaking gradient tracking. A fresh tensor
-    # per step has no such aliasing hazard.
+    # The out-of-place path (a fresh tensor per step) exists only for autograd:
+    # slicing the same backing storage for a gather and then writing back into
+    # it in place would bump that storage's version between the forward read
+    # and the later backward pass. Without tracking there is nothing to save,
+    # and ``values`` is already a private copy (boolean-mask indexing).
+    in_place = not tracks_autograd(matrix)
     values = matrix.values()[pattern.lower_mask]
+    level_pivots: list[torch.Tensor] = []
 
     for level in pattern.levels:
         dot_diag = torch.zeros(level.rows.numel(), dtype=values.dtype, device=values.device)
@@ -81,29 +95,49 @@ def _factorize(matrix: torch.Tensor, pattern: IC0Pattern) -> torch.Tensor:
                 numerator = numerator - dot
 
             new_val = numerator / values[step.diag_pos_of_j]
-            values = values.scatter(0, step.flat_pos, new_val)
+            values = write_positions(values, step.flat_pos, new_val, in_place=in_place)
             dot_diag = dot_diag.scatter_add(0, step.level_local_idx, new_val**2)
 
         pivot = values[level.diag_pos] - dot_diag
-        non_positive = pivot <= 0
-        if bool(non_positive.any()):
-            first = non_positive.nonzero(as_tuple=True)[0][0]
-            bad = int(level.rows[first])
-            bad_value = float(pivot[first])
-            raise ValueError(
-                f"IC(0) breakdown at pivot {bad}: diagonal value {bad_value} is "
-                "non-positive, so no real factor L exists for this matrix "
-                "(Saad, Iterative Methods for Sparse Linear Systems, 2nd ed., "
-                "Sec. 10.3) - not every SPD matrix admits an IC(0) factorization."
-            )
-        values = values.scatter(0, level.diag_pos, torch.sqrt(pivot))
+        level_pivots.append(pivot)
+        values = write_positions(values, level.diag_pos, torch.sqrt(pivot), in_place=in_place)
 
+    _raise_on_breakdown(pattern, level_pivots)
     return torch.sparse_csr_tensor(
         pattern.lower_crow,
         pattern.lower_col,
         values,
         size=matrix.shape,
         check_invariants=False,
+    )
+
+
+def _raise_on_breakdown(pattern: IC0Pattern, level_pivots: list[torch.Tensor]) -> None:
+    """Raise for the first non-positive pivot in level order, with one host sync.
+
+    A breakdown makes later pivots ``nan``, which compare false against zero,
+    so the first non-positive pivot found here is the first that occurred.
+
+    Args:
+        pattern (IC0Pattern): Plan whose levels produced ``level_pivots``.
+        level_pivots (list[torch.Tensor]): One pivot vector per level, level order.
+
+    Raises:
+        ValueError: If any pivot is non-positive.
+    """
+    if not level_pivots:
+        return
+    pivots = torch.cat(level_pivots)
+    non_positive = pivots <= 0
+    if not bool(non_positive.any()):
+        return
+    first = int(non_positive.nonzero(as_tuple=True)[0][0])
+    bad = int(torch.cat([level.rows for level in pattern.levels])[first])
+    raise ValueError(
+        f"IC(0) breakdown at pivot {bad}: diagonal value {float(pivots[first])} is "
+        "non-positive, so no real factor L exists for this matrix "
+        "(Saad, Iterative Methods for Sparse Linear Systems, 2nd ed., "
+        "Sec. 10.3) - not every SPD matrix admits an IC(0) factorization."
     )
 
 
@@ -177,6 +211,29 @@ class IC0Preconditioner(MatrixSetupPreconditioner, nn.Module):
         - Application: two ``O(nnz(L))`` level-scheduled triangular solves;
           the transpose and both schedules are prepared once during setup.
 
+    Cost:
+        Setup, once per matrix values (the pattern analysis, ``O(n + nnz)`` host index
+        work, is reused for later matrices of the same structure), ``V = 8`` bytes per
+        ``float64``: algorithmic ``W = sum_{(i,j)} (2 c_ij + 1) + sum_i (2 d_i + 2)``
+        over the lower pattern, with ``c_ij`` the number of common earlier columns of
+        rows ``i`` and ``j`` and ``d_i`` the row degree, and ``Q = 2V nnz(L)``. The
+        executed loop is one batch per (level, degree position): depth
+        ``D = sum over levels of the maximum row degree``, ``L`` proportional to that
+        step count (a constant dozen kernels per step), and ``S = 1`` (the breakdown
+        test after the last level). The padded gathers and the found-mask make the
+        executed ``W`` a small multiple of the algorithmic count. Setup is
+        latency-bound (``L`` and ``D`` dominate), not flop-bound.
+        Apply, ``k`` right-hand-side columns, ``w`` the index width: two sparse
+        triangular solves, ``W = 4 nnz(L) k``,
+        ``Q = 2 [nnz(L)(V + w) + (n + 1)w + 2Vnk]``, ``D = lv_f + lv_b``
+        (about ``2 lv(L)``, each solve a recurrence over its dependency levels),
+        ``L = 2`` through the vendor solve (CPU and CUDA; the level-scheduled solve
+        has ``L = O(lv)`` per solve) and ``S = 0``.
+        Roofline: apply ``W/Q`` is about 0.17 flop per byte (memory-bound).
+        Work-depth: apply ``W/D = 2 nnz(L) k / lv(L)``, the lowest of the methods
+        here: depth, not flops, limits parallel speed-up, so the solve stays on the
+        CPU or a library kernel (``Placement.SEQUENTIAL_SWEEP``).
+
     Breakdown:
         IC(0) is not guaranteed to exist for every SPD matrix (it can
         require a square root of a non-positive diagonal value).
@@ -201,6 +258,8 @@ class IC0Preconditioner(MatrixSetupPreconditioner, nn.Module):
         >>> precond.setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
+
+    placement = Placement.SEQUENTIAL_SWEEP
 
     def __init__(self) -> None:
         """Configure IC(0) preconditioner; the factorization is built by ``setup()``."""

@@ -40,6 +40,19 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         - O(n) storage, O(nnz) extraction cost, O(n) application cost.
         - SPD if A is SPD.
 
+    Cost:
+        Setup, ``z = nnz``: ``W = n + z`` (the reciprocal, plus the zeros the
+        masked scatter adds), ``I = O(z)`` for the row-index expansion, ``Q``
+        a constant number of passes over the ``z``-sized index and value
+        arrays (the algorithmic minimum is one pass), ``L`` a constant and
+        ``S = 0``.
+        Apply, ``k`` columns: ``W = nk``, ``Q = 3Vnk`` (read ``r``, write
+        ``z``, plus the ``n``-vector ``inv_diag``), ``D = 1``, ``L = 1``,
+        ``S = 0``, with ``V = 8`` bytes per ``float64``.
+        Roofline: apply ``W/Q`` is about 0.04 flop per byte (memory-bound).
+        Work-depth: ``W/D = nk``, fully parallel; the preconditioner adds no
+        depth to the PCG iteration.
+
     Example:
         >>> import torch
         >>> matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0])).to_sparse_csr()
