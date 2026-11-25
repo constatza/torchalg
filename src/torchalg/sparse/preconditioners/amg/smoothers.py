@@ -20,7 +20,7 @@ import torch
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
 from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 
-from ._gauss_seidel_format import SymmetricGaussSeidel, prepare_gauss_seidel
+from ._gauss_seidel_format import PreparedGaussSeidel, prepare_gauss_seidel
 from ._jacobi_omega import RELAXATION_NOMINAL, jacobi_omega
 
 if TYPE_CHECKING:
@@ -147,46 +147,48 @@ class GaussSeidelSmoother:
     ``A``'s own entries; ``prepare`` builds the level schedules once.
     """
 
-    def prepare(self, A: torch.Tensor) -> SymmetricGaussSeidel:
-        """Build both level schedules and the strict-triangle split of ``A``.
+    def prepare(self, A: torch.Tensor) -> PreparedGaussSeidel:
+        """Prepare Gauss-Seidel on ``A`` in the cheaper of the CSR and dense-backed formats.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
 
         Returns:
-            SymmetricGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
+            PreparedGaussSeidel: Symmetric Gauss-Seidel bound to ``A``.
         """
         return prepare_gauss_seidel(A)
 
 
-class GaussSeidelStage:
-    """Gauss-Seidel that prepares each distinct matrix once, for one setup stage.
+class GaussSeidelMemo:
+    """Identity memo of the prepared Gauss-Seidel of each distinct matrix, for one setup stage.
 
     Setup algorithms (compatible relaxation, adaptive and bootstrap stages)
     relax the same level matrices many times, through callables and cycles that
     only receive the matrix. A stage owns one of these for its duration: the
-    first sweep on a matrix builds its ``SymmetricGaussSeidel`` and
-    every later sweep on that same tensor object reuses it. The cache is keyed
+    first sweep on a matrix prepares its ``PreparedGaussSeidel`` and
+    every later sweep on that same tensor object reuses it. The memo is keyed
     by tensor identity and holds the matrices alive, so it must not outlive the
     stage (and matrices must not be mutated in place within it); there is no
     process-global instance.
 
     It is a ``MultigridSmoother``: compatible relaxation, test-vector
-    relaxation and the setup cycle all bind it to level matrices with ``prepare``.
+    relaxation and the setup cycle all bind it to level matrices with ``prepare``,
+    so that protocol verb is memoized rather than renamed; the result is the
+    same kind of frozen object a fresh ``GaussSeidelSmoother().prepare(A)`` returns.
     """
 
     def __init__(self) -> None:
         """Start with no prepared matrices."""
-        self._prepared: dict[int, tuple[torch.Tensor, SymmetricGaussSeidel]] = {}
+        self._prepared: dict[int, tuple[torch.Tensor, PreparedGaussSeidel]] = {}
 
-    def prepare(self, A: torch.Tensor) -> SymmetricGaussSeidel:
-        """Return the prepared Gauss-Seidel of ``A``, building it on first use.
+    def prepare(self, A: torch.Tensor) -> PreparedGaussSeidel:
+        """Return the prepared Gauss-Seidel of ``A``, preparing it on first use.
 
         Args:
             A (torch.Tensor): System matrix (n x n), sparse CSR.
 
         Returns:
-            SymmetricGaussSeidel: Shared by every later call with this tensor.
+            PreparedGaussSeidel: Shared by every later call with this tensor.
         """
         key = id(A)
         entry = self._prepared.get(key)

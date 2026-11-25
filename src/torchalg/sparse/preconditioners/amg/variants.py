@@ -30,13 +30,10 @@ from .coarsening import AggregationCoarsening
 from .smoothers import resolve_jacobi_default
 
 if TYPE_CHECKING:
-    import torch
-
     from torchalg.multigrid.protocols import MultigridSmoother
 
 
 def vcycle_amg(
-    matrix: torch.Tensor,
     theta: float = 0.25,
     omega: float | None = None,
     n_levels: int = 2,
@@ -54,7 +51,6 @@ def vcycle_amg(
     (``dense_lu_coarse_solver``).
 
     Args:
-        matrix (torch.Tensor): System matrix A (n x n), SPD, sparse CSR.
         theta (float): Strength-of-connection threshold theta in (0, 1).
         omega (float | None): Damping of the Jacobi step that smooths the
             tentative prolongator. ``None`` (default) is ``(4/3) /
@@ -70,10 +66,9 @@ def vcycle_amg(
 
     Returns:
         AMGPreconditioner: Wired with sparse smoothed-aggregation coarsening
-        and a V-cycle, ready to ``apply()``.
+        and a V-cycle; call ``.setup(A)`` with the sparse CSR system matrix to build it.
     """
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=AggregationCoarsening(theta=theta, omega=omega),
         cycle=VCycle(
             resolve_jacobi_default(smoother, smoother_omega),
@@ -87,7 +82,6 @@ def vcycle_amg(
 
 
 def wcycle_amg(
-    matrix: torch.Tensor,
     theta: float = 0.25,
     omega: float | None = None,
     n_levels: int = 2,
@@ -104,7 +98,6 @@ def wcycle_amg(
     (two coarse-grid corrections per level, gamma = 2) instead of ``VCycle``.
 
     Args:
-        matrix (torch.Tensor): System matrix A (n x n), SPD, sparse CSR.
         theta (float): Strength-of-connection threshold theta in (0, 1).
         omega (float | None): Prolongation-smoothing damping (same role as
             in ``vcycle_amg``).
@@ -119,10 +112,9 @@ def wcycle_amg(
 
     Returns:
         AMGPreconditioner: Wired with sparse smoothed-aggregation coarsening
-        and a W-cycle, ready to ``apply()``.
+        and a W-cycle; call ``.setup(A)`` with the sparse CSR system matrix to build it.
     """
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=AggregationCoarsening(theta=theta, omega=omega),
         cycle=WCycle(
             resolve_jacobi_default(smoother, smoother_omega),

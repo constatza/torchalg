@@ -38,7 +38,6 @@ class CallablePreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner)
                 residual and returning the preconditioned residual.
         """
         self._func = func
-        self._mark_ready()
 
     def setup(self, context: PreconditionerContext | None = None) -> Self:
         """No-op: the wrapped function is already usable after construction.
@@ -49,7 +48,6 @@ class CallablePreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner)
         Returns:
             Self: This preconditioner, already ready.
         """
-        self._mark_ready()
         return self
 
     def apply(

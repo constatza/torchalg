@@ -18,26 +18,13 @@ from ..base import LinearPreconditioner, PreconditionerContext
 from ._masked_factorization import dense_ic0
 from ._triangular import cholesky_factor_solve
 
-_DEFAULT_THRESHOLD = 0.0
-"""Default drop tolerance: entries with |value| <= threshold are treated as
-zero and excluded from the sparsity pattern.
-
-0.0 only drops exact zeros. A nonzero absolute constant is unsafe as a
-library default: callers may factorize the same matrix at different scales
-(e.g. before/after a data-dependent normalization), and a fixed absolute
-threshold's effective strictness shifts with that scale - it can silently
-drop entries that are structurally real at one scale but fall under the
-threshold at another, corrupting the IC(0) sparsity pattern in a way that's
-invisible until elimination breaks down many steps later. Callers that want
-drop-tolerance behavior should pass an explicit threshold sized relative to
-their own matrix's scale."""
-
 
 class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     """Zero-level incomplete Cholesky preconditioner for SPD systems.
 
     Computes IC(0) factorization: ``L @ L.T ≈ A`` where ``L`` maintains the
-    sparsity pattern of the lower triangle of ``A``.
+    sparsity pattern of the lower triangle of ``A``: every non-zero stored
+    value is pattern, there is no drop tolerance.
 
     Best suited for:
     - Sparse symmetric positive definite matrices.
@@ -90,16 +77,9 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
 
-    def __init__(self, threshold: float = _DEFAULT_THRESHOLD) -> None:
-        """Configure IC(0) preconditioner; the factorization is built by ``setup()``.
-
-        Args:
-            threshold (float): Drop tolerance - entries with ``|value| <=
-                threshold`` are treated as zero. Default: ``0.0`` (only
-                exact zeros are dropped; see ``_DEFAULT_THRESHOLD``).
-        """
+    def __init__(self) -> None:
+        """Configure IC(0) preconditioner; the factorization is built by ``setup()``."""
         nn.Module.__init__(self)
-        self._threshold = threshold
         self._operator: torch.Tensor
         self.register_buffer("_operator", None)
 
@@ -116,7 +96,6 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
             context (PreconditionerContext | None): Ignored.
         """
         self._operator = self._compute_operator(matrix)
-        self._mark_ready()
         return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
@@ -129,24 +108,15 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Returns:
             torch.Tensor: Lower triangular incomplete Cholesky factor ``L``.
         """
-        return dense_ic0(matrix, self._threshold)
-
-    @property
-    def threshold(self) -> float:
-        """Drop tolerance used to build the sparsity pattern.
-
-        Returns:
-            float: The value passed at construction.
-        """
-        return self._threshold
+        return dense_ic0(matrix)
 
     def __str__(self) -> str:
         """Human-readable structural summary.
 
         Returns:
-            str: e.g. ``"IC0(threshold=0e+00)"``.
+            str: ``"IC0()"``.
         """
-        return f"IC0(threshold={self._threshold:.0e})"
+        return "IC0()"
 
     def apply(
         self,

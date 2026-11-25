@@ -26,7 +26,19 @@ from .coarse_solve import (
     pseudo_inverse_coarse_solver,
 )
 from .cycle import VCycle, WCycle
-from .hierarchy import MultigridHierarchy, MultigridLevel, build_hierarchy
+from .hierarchy import (
+    MultigridCoarsestLevel,
+    MultigridFineLevel,
+    MultigridHierarchy,
+    MultigridLevel,
+    PreparedCoarsestLevel,
+    PreparedFineLevel,
+    PreparedHierarchy,
+    PreparedLevel,
+    assemble_hierarchy,
+    build_hierarchy,
+    prepare_hierarchy,
+)
 from .protocols import CoarseningStrategy, MultigridCycle, MultigridSmoother, TransferOperator
 
 __all__ = [
@@ -39,7 +51,15 @@ __all__ = [
     "lu_coarse_solver",
     "pseudo_inverse_coarse_solver",
     "MultigridHierarchy",
+    "MultigridCoarsestLevel",
+    "MultigridFineLevel",
     "MultigridLevel",
+    "PreparedCoarsestLevel",
+    "PreparedFineLevel",
+    "PreparedHierarchy",
+    "PreparedLevel",
+    "prepare_hierarchy",
+    "assemble_hierarchy",
     "build_hierarchy",
     "CoarseningStrategy",
     "MultigridCycle",

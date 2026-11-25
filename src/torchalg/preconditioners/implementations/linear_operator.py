@@ -77,7 +77,6 @@ class LinearOperatorPreconditioner(StaticSetupPreconditioner):
                 applying ``M^{-1}`` to a residual vector.
         """
         self.operator = operator
-        self._mark_ready()
 
     def setup(self, context: PreconditionerContext | None = None) -> Self:
         """No-op: the wrapped callable is already usable after construction.
@@ -88,7 +87,6 @@ class LinearOperatorPreconditioner(StaticSetupPreconditioner):
         Returns:
             Self: This preconditioner, already ready.
         """
-        self._mark_ready()
         return self
 
     def apply(

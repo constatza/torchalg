@@ -1,9 +1,10 @@
 """Shared building blocks for the prebuilt-hierarchy preconditioner presets.
 
 ``adaptive.py`` (alpha-SA) and ``bootstrap.py`` (BAMG) follow the same
-preset shape: run a setup algorithm at construction, then wrap the resulting
-fixed hierarchy in an ``AMGPreconditioner`` whose ``_make_hierarchy`` is
-overridden, so the engine never asks a ``CoarseningStrategy`` for a level.
+preset shape: run a setup algorithm in ``setup()``, then wrap the resulting
+fixed hierarchy in an ``AMGPreconditioner`` subclass whose ``setup`` is
+overridden to ``_commit`` that hierarchy, so the engine never asks a
+``CoarseningStrategy`` for a level.
 That shape needs shared seeded randomness, setup-cycle wiring, solve-cycle
 wiring, and a placeholder ``CoarseningStrategy`` that refuses to build
 anything. They live here once instead of being copied per preset.
@@ -76,8 +77,8 @@ def seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:
 class PrebuiltCoarsening:
     """Placeholder ``CoarseningStrategy``: the levels are prebuilt, never built by the engine.
 
-    Presets that override ``_make_hierarchy`` never let the engine ask a
-    strategy for a level, so this one always raises rather than silently
+    Presets that override ``setup`` and ``_commit`` their own hierarchy never
+    let the engine ask a strategy for a level, so this one always raises rather than silently
     returning something the preset did not compute.
 
     Args:

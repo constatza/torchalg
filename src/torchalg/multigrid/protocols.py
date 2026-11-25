@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     import torch
 
-    from .hierarchy import MultigridHierarchy
+    from .hierarchy import MultigridHierarchy, PreparedHierarchy
 
 
 class TransferOperator(Protocol):
@@ -166,25 +166,26 @@ class MultigridCycle(Protocol):
     OCP hook: implement to add W-cycle, F-cycle, or custom cycles.
     """
 
-    def prepare(self, hierarchy: MultigridHierarchy) -> MultigridHierarchy:
+    def prepare(self, hierarchy: MultigridHierarchy | PreparedHierarchy) -> PreparedHierarchy:
         """Do the one-off, hierarchy-dependent work ``apply`` needs (e.g. factor the coarse level).
 
         Idempotent. Must not store state on the cycle: one cycle instance serves many
         hierarchies.
 
         Args:
-            hierarchy (MultigridHierarchy): Freshly built hierarchy.
+            hierarchy (MultigridHierarchy | PreparedHierarchy): Freshly built hierarchy; an
+                already prepared one is returned as is.
 
         Returns:
-            MultigridHierarchy: Hierarchy that ``apply`` accepts.
+            PreparedHierarchy: Hierarchy that ``apply`` accepts.
         """
         ...
 
-    def apply(self, hierarchy: MultigridHierarchy, rhs: torch.Tensor) -> torch.Tensor:
+    def apply(self, hierarchy: PreparedHierarchy, rhs: torch.Tensor) -> torch.Tensor:
         """Compute an approximate solution to the system on the finest grid.
 
         Args:
-            hierarchy (MultigridHierarchy): Pre-built multigrid hierarchy.
+            hierarchy (PreparedHierarchy): Hierarchy returned by ``prepare``.
             rhs (torch.Tensor): Right-hand side vector on the finest grid.
 
         Returns:

@@ -18,31 +18,25 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from .coarse_solve import (
-    CoarseSolve,
-    CoarseSolverFactory,
-    HierarchyNotPreparedError,
-    lu_coarse_solver,
-)
-from .hierarchy import MultigridHierarchy, MultigridLevel, prepare_hierarchy
+from .coarse_solve import CoarseSolverFactory, HierarchyNotPreparedError, lu_coarse_solver
+from .hierarchy import MultigridHierarchy, PreparedHierarchy, prepare_hierarchy
 
 if TYPE_CHECKING:
-    from .protocols import MultigridSmoother, PreparedSmoother
+    from .protocols import MultigridSmoother
 
 
 _NOT_PREPARED = "Call cycle.prepare(hierarchy) after building a hierarchy and apply the result."
 
 
-def _coarse_solve_of(level: MultigridLevel) -> CoarseSolve:
-    if level.coarse_solve is None:
-        raise HierarchyNotPreparedError(_NOT_PREPARED)
-    return level.coarse_solve
+def _require_prepared(hierarchy: object) -> PreparedHierarchy:
+    """Boundary check: an unprepared hierarchy can still arrive from a caller.
 
-
-def _smoother_of(level: MultigridLevel) -> PreparedSmoother:
-    if level.smoother is None:
+    Everything below ``apply`` works on ``PreparedHierarchy`` by type, so this is the
+    one place that turns a forgotten ``prepare`` into a clear error.
+    """
+    if not isinstance(hierarchy, PreparedHierarchy):
         raise HierarchyNotPreparedError(_NOT_PREPARED)
-    return level.smoother
+    return hierarchy
 
 
 class VCycle:
@@ -88,7 +82,7 @@ class VCycle:
         self._n_post = n_post
         self._coarse_solver_factory = coarse_solver_factory
 
-    def prepare(self, hierarchy: MultigridHierarchy) -> MultigridHierarchy:
+    def prepare(self, hierarchy: MultigridHierarchy | PreparedHierarchy) -> PreparedHierarchy:
         """Prepare every level once and return the prepared hierarchy.
 
         Binds the smoother to each non-coarsest level (diagonal inverse, spectral-radius
@@ -97,52 +91,50 @@ class VCycle:
         instance can serve many matrices.
 
         Args:
-            hierarchy (MultigridHierarchy): Hierarchy from ``build_hierarchy``.
+            hierarchy (MultigridHierarchy | PreparedHierarchy): Hierarchy from
+                ``build_hierarchy``; an already prepared one is returned as is.
 
         Returns:
-            MultigridHierarchy: Hierarchy that ``apply`` accepts.
+            PreparedHierarchy: Hierarchy that ``apply`` accepts.
         """
         return prepare_hierarchy(hierarchy, self._smoother, self._coarse_solver_factory)
 
-    def apply(self, hierarchy: MultigridHierarchy, rhs: torch.Tensor) -> torch.Tensor:
+    def apply(self, hierarchy: PreparedHierarchy, rhs: torch.Tensor) -> torch.Tensor:
         """Compute one V-cycle starting from the finest level.
 
         Args:
-            hierarchy (MultigridHierarchy): Pre-built multigrid hierarchy.
+            hierarchy (PreparedHierarchy): Hierarchy returned by ``prepare``.
             rhs (torch.Tensor): Right-hand side vector on the finest grid.
 
         Returns:
             torch.Tensor: Approximate solution after one V-cycle (zero
                 initial guess).
         """
-        return self._vcycle(hierarchy, rhs, level_idx=0)
+        return self._vcycle(_require_prepared(hierarchy), rhs, level_idx=0)
 
     def _vcycle(
         self,
-        hierarchy: MultigridHierarchy,
+        hierarchy: PreparedHierarchy,
         rhs: torch.Tensor,
         level_idx: int,
     ) -> torch.Tensor:
-        level = hierarchy.levels[level_idx]
-
-        # Coarsest level: prepared direct solve.
-        if level.transfer is None:
-            return _coarse_solve_of(level)(rhs)
-
-        smoother = _smoother_of(level)
+        if level_idx == len(hierarchy.fine):
+            return hierarchy.coarsest.coarse_solve(rhs)
+        level = hierarchy.fine[level_idx]
+        transfer, smoother = level.transfer, level.smoother
 
         # Pre-smooth from the zero initial guess (skips the A @ 0 matvec).
         x = smoother.smooth_from_zero(rhs, self._n_pre)
 
         # Restrict residual to coarse grid.
         r_fine = smoother.residual(rhs, x)
-        r_coarse = level.transfer.restrict(r_fine)
+        r_coarse = transfer.restrict(r_fine)
 
         # Recursive coarse-grid correction.
         e_coarse = self._vcycle(hierarchy, r_coarse, level_idx + 1)
 
         # Prolongate and correct.
-        x = x + level.transfer.prolongate(e_coarse)
+        x = x + transfer.prolongate(e_coarse)
 
         # Post-smooth.
         return smoother.smooth(rhs, x, self._n_post)
@@ -198,7 +190,7 @@ class WCycle:
         self._n_post = n_post
         self._coarse_solver_factory = coarse_solver_factory
 
-    def prepare(self, hierarchy: MultigridHierarchy) -> MultigridHierarchy:
+    def prepare(self, hierarchy: MultigridHierarchy | PreparedHierarchy) -> PreparedHierarchy:
         """Prepare every level once and return the prepared hierarchy.
 
         Binds the smoother to each non-coarsest level (diagonal inverse, spectral-radius
@@ -207,39 +199,37 @@ class WCycle:
         instance can serve many matrices.
 
         Args:
-            hierarchy (MultigridHierarchy): Hierarchy from ``build_hierarchy``.
+            hierarchy (MultigridHierarchy | PreparedHierarchy): Hierarchy from
+                ``build_hierarchy``; an already prepared one is returned as is.
 
         Returns:
-            MultigridHierarchy: Hierarchy that ``apply`` accepts.
+            PreparedHierarchy: Hierarchy that ``apply`` accepts.
         """
         return prepare_hierarchy(hierarchy, self._smoother, self._coarse_solver_factory)
 
-    def apply(self, hierarchy: MultigridHierarchy, rhs: torch.Tensor) -> torch.Tensor:
+    def apply(self, hierarchy: PreparedHierarchy, rhs: torch.Tensor) -> torch.Tensor:
         """Compute one W-cycle starting from the finest level.
 
         Args:
-            hierarchy (MultigridHierarchy): Pre-built multigrid hierarchy.
+            hierarchy (PreparedHierarchy): Hierarchy returned by ``prepare``.
             rhs (torch.Tensor): Right-hand side vector on the finest grid.
 
         Returns:
             torch.Tensor: Approximate solution after one W-cycle (zero
                 initial guess).
         """
-        return self._wcycle(hierarchy, rhs, level_idx=0)
+        return self._wcycle(_require_prepared(hierarchy), rhs, level_idx=0)
 
     def _wcycle(
         self,
-        hierarchy: MultigridHierarchy,
+        hierarchy: PreparedHierarchy,
         rhs: torch.Tensor,
         level_idx: int,
     ) -> torch.Tensor:
-        level = hierarchy.levels[level_idx]
-
-        # Coarsest level: prepared direct solve.
-        if level.transfer is None:
-            return _coarse_solve_of(level)(rhs)
-
-        smoother = _smoother_of(level)
+        if level_idx == len(hierarchy.fine):
+            return hierarchy.coarsest.coarse_solve(rhs)
+        level = hierarchy.fine[level_idx]
+        transfer, smoother = level.transfer, level.smoother
 
         # Pre-smooth from the zero initial guess (skips the A @ 0 matvec).
         x = smoother.smooth_from_zero(rhs, self._n_pre)
@@ -247,9 +237,9 @@ class WCycle:
         # gamma = 2: two coarse-grid corrections, recomputing residual each time.
         for _ in range(2):
             r_fine = smoother.residual(rhs, x)
-            r_coarse = level.transfer.restrict(r_fine)
+            r_coarse = transfer.restrict(r_fine)
             e_coarse = self._wcycle(hierarchy, r_coarse, level_idx + 1)
-            x = x + level.transfer.prolongate(e_coarse)
+            x = x + transfer.prolongate(e_coarse)
 
         # Post-smooth.
         return smoother.smooth(rhs, x, self._n_post)

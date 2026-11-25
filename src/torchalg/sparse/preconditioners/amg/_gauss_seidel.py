@@ -7,9 +7,10 @@ No factorization step: each sweep is a direct triangular solve against
 x_new = rhs - U @ x_old``, backward solves ``(D + U) x_new = rhs - L @
 x_old``, one iteration = one forward sweep followed by one backward sweep.
 
-``PreparedSymmetricGaussSeidel.build`` does every matrix-only computation once
-(both prepared triangular solves - level schedule, diagonal and level-sorted
-entries each - and the strict-triangle entries the off-triangle matvecs read); ``smooth``/``smooth_from_zero`` then
+``prepare_csr_gauss_seidel`` does every computation on the matrix once (both
+prepared triangular solves - level schedule, diagonal and level-sorted entries
+each - and the strict-triangle entries the off-triangle matvecs read) and returns
+the frozen ``PreparedSymmetricGaussSeidel``; ``smooth``/``smooth_from_zero`` then
 only sweep. Callers that relax the same matrix many times (smoothers,
 compatible relaxation, adaptive setup stages) hold one prepared object per
 matrix instead of rebuilding schedules per call.
@@ -23,6 +24,7 @@ import torch
 
 from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 from torchalg.sparse.kernels.triangular import (
+    LevelSchedule,
     PreparedTriangularSolve,
     _expand_row_index,
     _require_csr,
@@ -68,7 +70,8 @@ class _StrictTriangle:
 class PreparedSymmetricGaussSeidel:
     """Symmetric Gauss-Seidel bound to one sparse CSR matrix.
 
-    Build with ``build``; every field is matrix-only structure computed once.
+    Create with ``prepare_csr_gauss_seidel``; every field is computed from the
+    matrix once and captures its values.
 
     Attributes:
         matrix (torch.Tensor): The sparse CSR matrix ``A``, shape ``(n, n)``, with
@@ -96,35 +99,6 @@ class PreparedSymmetricGaussSeidel:
             torch.Tensor: Residual, same shape as ``rhs``.
         """
         return rhs - self.matrix @ x
-
-    @classmethod
-    def build(cls, matrix: torch.Tensor) -> PreparedSymmetricGaussSeidel:
-        """Compute both level schedules and the strict-triangle split of ``matrix``.
-
-        Args:
-            matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
-
-        Returns:
-            PreparedSymmetricGaussSeidel: Reusable sweeps over ``matrix``.
-
-        Raises:
-            ValueError: If ``matrix`` is not sparse CSR.
-        """
-        _require_csr(matrix, "PreparedSymmetricGaussSeidel.build")
-        row_index = _expand_row_index(matrix)
-        col = matrix.col_indices()
-        values = matrix.values()
-
-        def triangle(selected: torch.Tensor) -> _StrictTriangle:
-            return _StrictTriangle(row_index[selected], col[selected], values[selected])
-
-        return cls(
-            matrix=compact_csr_indices(matrix),
-            upper=triangle(col > row_index),
-            lower=triangle(col < row_index),
-            forward=PreparedTriangularSolve(matrix, "forward", row_index=row_index),
-            backward=PreparedTriangularSolve(matrix, "backward", row_index=row_index),
-        )
 
     def smooth(
         self,
@@ -196,3 +170,38 @@ class PreparedSymmetricGaussSeidel:
         """
         x = self.forward.solve(forward_target, active=active, current=current)
         return self.backward.solve(rhs - self.lower.matvec(x), active=active, current=x)
+
+
+def prepare_csr_gauss_seidel(
+    matrix: torch.Tensor, forward_schedule: LevelSchedule | None = None
+) -> PreparedSymmetricGaussSeidel:
+    """Compute both level schedules and the strict-triangle split of ``matrix``.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
+        forward_schedule (LevelSchedule | None): ``matrix``'s forward level
+            schedule if the caller already built it; computed here when ``None``.
+
+    Returns:
+        PreparedSymmetricGaussSeidel: Reusable sweeps over ``matrix``.
+
+    Raises:
+        ValueError: If ``matrix`` is not sparse CSR.
+    """
+    _require_csr(matrix, "prepare_csr_gauss_seidel")
+    row_index = _expand_row_index(matrix)
+    col = matrix.col_indices()
+    values = matrix.values()
+
+    def triangle(selected: torch.Tensor) -> _StrictTriangle:
+        return _StrictTriangle(row_index[selected], col[selected], values[selected])
+
+    return PreparedSymmetricGaussSeidel(
+        matrix=compact_csr_indices(matrix),
+        upper=triangle(col > row_index),
+        lower=triangle(col < row_index),
+        forward=PreparedTriangularSolve(
+            matrix, "forward", schedule=forward_schedule, row_index=row_index
+        ),
+        backward=PreparedTriangularSolve(matrix, "backward", row_index=row_index),
+    )

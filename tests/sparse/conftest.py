@@ -13,7 +13,7 @@ from typing import Protocol
 import pytest
 import torch
 
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo
 from torchalg.utils.spectral import approximate_spectral_radius
 
 
@@ -285,9 +285,9 @@ def dense_relaxation(dense_symmetric_gauss_seidel: DenseSymmetricGaussSeidel) ->
 
 
 @pytest.fixture
-def sparse_relaxation() -> GaussSeidelStage:
+def sparse_relaxation() -> GaussSeidelMemo:
     """Fresh stage-scoped sparse Gauss-Seidel relaxation callable."""
-    return GaussSeidelStage()
+    return GaussSeidelMemo()
 
 
 @pytest.fixture

@@ -320,7 +320,9 @@ class PreparedTriangularSolve(nn.Module):
 
         in_triangle = col < row_index if direction == "forward" else col > row_index
         entry_row = row_index[in_triangle]
-        entry_col = col[in_triangle]
+        # int64 even for an int32 operand: advanced-index gathers (``x[entry_col]``) measured
+        # 10-40% slower with int32 indices.
+        entry_col = col[in_triangle].to(torch.int64)
         entry_val = values[in_triangle]
 
         level_sizes = schedule.level_sizes
@@ -425,11 +427,14 @@ def _triangle(matrix: torch.Tensor, direction: Literal["forward", "backward"]) -
     row = _expand_row_index(matrix)
     col = matrix.col_indices()
     keep = col <= row if direction == "forward" else col >= row
-    counts = torch.zeros(matrix.shape[0] + 1, dtype=torch.int64, device=matrix.device)
+    # ``crow`` takes ``col``'s width: a CSR tensor needs both index arrays in one dtype, and
+    # an int32 triangle keeps the MKL solve from narrowing int64 indices on every call.
+    index_dtype = col.dtype
+    counts = torch.zeros(matrix.shape[0] + 1, dtype=index_dtype, device=matrix.device)
     counts[1:] = torch.bincount(row[keep], minlength=matrix.shape[0])
     # A row-wise filter of a valid CSR is valid; checking it would add O(nnz) to the setup.
     return torch.sparse_csr_tensor(
-        torch.cumsum(counts, 0),
+        torch.cumsum(counts, 0, dtype=index_dtype),
         col[keep],
         matrix.values()[keep],
         matrix.shape,

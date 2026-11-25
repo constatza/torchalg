@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from torchalg.preconditioners.base import PreconditionerContext
+from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 from torchalg.utils.spectral import approximate_spectral_radius
 from torchalg.utils.tentative import fit_candidates
 
@@ -51,7 +51,7 @@ from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded
 from ._prolongation import jacobi_prolongation, make_bridge
 from ._relaxation import prepare_symmetric_gauss_seidel
 from .amg import AMGPreconditioner
-from .hierarchy import MultigridHierarchy, MultigridLevel
+from .hierarchy import MultigridHierarchy, assemble_hierarchy
 from .smoothers import resolve_jacobi_default
 from .transfer import DenseTransferOperator
 
@@ -149,17 +149,9 @@ class AdaptiveSAResult:
         Returns:
             MultigridHierarchy: Levels with dense transfer operators.
         """
-        last = len(self.matrices) - 1
-        return MultigridHierarchy(
-            tuple(
-                MultigridLevel(
-                    matrix=matrix,
-                    transfer=None
-                    if index == last
-                    else DenseTransferOperator(self.prolongations[index]),
-                )
-                for index, matrix in enumerate(self.matrices)
-            )
+        return assemble_hierarchy(
+            self.matrices,
+            [DenseTransferOperator(prolongation) for prolongation in self.prolongations],
         )
 
 
@@ -203,15 +195,9 @@ def _hierarchy_of(levels: list[_Level]) -> MultigridHierarchy:
     Returns:
         MultigridHierarchy: Hierarchy sharing the levels' tensors.
     """
-    last = len(levels) - 1
-    return MultigridHierarchy(
-        tuple(
-            MultigridLevel(
-                matrix=level.A,
-                transfer=None if index == last else DenseTransferOperator(_built(level.P)),
-            )
-            for index, level in enumerate(levels)
-        )
+    return assemble_hierarchy(
+        [level.A for level in levels],
+        [DenseTransferOperator(_built(level.P)) for level in levels[:-1]],
     )
 
 
@@ -495,7 +481,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
     Note (DIP):
         Preset/factory leaf class; unlike ``vcycle_amg`` and
         ``pod2g_preconditioner`` (plain factory functions), this one
-        overrides ``_make_hierarchy()`` with genuinely different
+        overrides ``setup()`` to run its own setup algorithm and then
+        ``_commit()`` the realized hierarchy, with genuinely different
         hierarchy-construction logic, so it remains a subclass of
         ``AMGPreconditioner``.
 
@@ -549,8 +536,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         self._initial_candidates = initial_candidates
         self._seed = seed
         self._draw = draw
+        self._result: AdaptiveSAResult | None = None
         super().__init__(
-            matrix=torch.empty(0),
             coarsening=PrebuiltCoarsening("adaptive SA"),
             cycle=prebuilt_cycle(
                 resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
@@ -590,9 +577,10 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         )
         if len(result.matrices) < 2:
             raise ValueError("adaptive setup produced a single level; lower max_coarse")
+        self._commit(self._hierarchy_of(result, matrix))
         self._result = result
         self._n_levels = len(result.matrices)
-        return super().setup(matrix, context)
+        return self
 
     @property
     def result(self) -> AdaptiveSAResult:
@@ -602,6 +590,10 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
             AdaptiveSAResult: Levels, prolongations, and near-null-space
                 candidates from the setup that last ran.
         """
+        if self._result is None:
+            raise PreconditionerNotReadyError(
+                f"{type(self).__name__}.setup() must be called before the result is available."
+            )
         return self._result
 
     def __str__(self) -> str:
@@ -617,23 +609,30 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
             str: e.g. ``"alpha-SA(n_levels=3, num_candidates=3,
                 coarse_dim=5)"``.
         """
+        if self._result is None:
+            return "alpha-SA(not set up)"
         return (
             f"alpha-SA(n_levels={len(self._result.matrices)}, "
             f"num_candidates={self._result.candidates.shape[1]}, "
             f"coarse_dim={int(self._result.matrices[-1].shape[0])})"
         )
 
-    def _make_hierarchy(self) -> MultigridHierarchy:
-        """Prebuilt levels moved to the current device/dtype of the system matrix.
+    @staticmethod
+    def _hierarchy_of(result: AdaptiveSAResult, matrix: torch.Tensor) -> MultigridHierarchy:
+        """Prebuilt levels of ``result`` moved to the device/dtype of ``matrix``.
+
+        Args:
+            result (AdaptiveSAResult): Realized setup hierarchy.
+            matrix (torch.Tensor): System matrix being bound.
 
         Returns:
             MultigridHierarchy: The adaptive-SA hierarchy.
         """
         moved = AdaptiveSAResult(
-            matrices=tuple(m.to(self._matrix) for m in self._result.matrices),
-            prolongations=tuple(p.to(self._matrix) for p in self._result.prolongations),
-            candidates=self._result.candidates,
-            aggregates=self._result.aggregates,
-            strengths=self._result.strengths,
+            matrices=tuple(m.to(matrix) for m in result.matrices),
+            prolongations=tuple(p.to(matrix) for p in result.prolongations),
+            candidates=result.candidates,
+            aggregates=result.aggregates,
+            strengths=result.strengths,
         )
         return moved.hierarchy

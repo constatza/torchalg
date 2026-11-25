@@ -34,7 +34,7 @@ def _with_identity_rows(triangle: torch.Tensor, rows: torch.Tensor) -> torch.Ten
 
 
 @dataclass(frozen=True, slots=True)
-class DenseBackedSymmetricGaussSeidel:
+class PreparedDenseGaussSeidel:
     """Symmetric Gauss-Seidel bound to one matrix, solved against dense triangles.
 
     Attributes:
@@ -65,27 +65,6 @@ class DenseBackedSymmetricGaussSeidel:
             torch.Tensor: Residual, same shape as ``rhs``.
         """
         return rhs - self.matrix @ x
-
-    @classmethod
-    def build(cls, matrix: torch.Tensor) -> DenseBackedSymmetricGaussSeidel:
-        """Densify ``matrix`` once and split it into the sweep triangles.
-
-        Args:
-            matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
-
-        Returns:
-            DenseBackedSymmetricGaussSeidel: Reusable sweeps over ``matrix``.
-        """
-        dense = matrix.to_dense()
-        frozen = dense.diagonal().abs() <= _PIVOT_TOL
-        return cls(
-            matrix=compact_csr_indices(matrix),
-            frozen=frozen,
-            upper=torch.triu(dense, 1),
-            lower=torch.tril(dense, -1),
-            forward=_with_identity_rows(torch.tril(dense), frozen),
-            backward=_with_identity_rows(torch.triu(dense), frozen),
-        )
 
     def smooth(
         self,
@@ -165,3 +144,24 @@ class DenseBackedSymmetricGaussSeidel:
         if inactive is not None:
             target = torch.where(inactive.unsqueeze(-1), current, target)
         return torch.linalg.solve_triangular(backward, target, upper=True)
+
+
+def prepare_dense_gauss_seidel(matrix: torch.Tensor) -> PreparedDenseGaussSeidel:
+    """Densify ``matrix`` once and split it into the sweep triangles.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
+
+    Returns:
+        PreparedDenseGaussSeidel: Reusable sweeps over ``matrix``.
+    """
+    dense = matrix.to_dense()
+    frozen = dense.diagonal().abs() <= _PIVOT_TOL
+    return PreparedDenseGaussSeidel(
+        matrix=compact_csr_indices(matrix),
+        frozen=frozen,
+        upper=torch.triu(dense, 1),
+        lower=torch.tril(dense, -1),
+        forward=_with_identity_rows(torch.tril(dense), frozen),
+        backward=_with_identity_rows(torch.triu(dense), frozen),
+    )

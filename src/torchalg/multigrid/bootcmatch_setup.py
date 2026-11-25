@@ -31,7 +31,12 @@ import torch
 
 from torchalg.utils.energy import energy_dot
 
-from .hierarchy import MultigridHierarchy, MultigridLevel
+from .hierarchy import (
+    MultigridCoarsestLevel,
+    MultigridFineLevel,
+    MultigridHierarchy,
+    PreparedHierarchy,
+)
 from .protocols import MultigridCycle, TransferOperator
 
 
@@ -77,16 +82,15 @@ def _build_hierarchy(
     Returns:
         MultigridHierarchy: Levels from finest to coarsest.
     """
-    levels: list[MultigridLevel] = []
+    fine: list[MultigridFineLevel] = []
     current = matrix
-    while len(levels) < max_levels - 1 and current.shape[0] > max_coarse:
+    while len(fine) < max_levels - 1 and current.shape[0] > max_coarse:
         coarse_matrix, transfer = coarsening.build_transfer(current)
         if coarse_matrix.shape[0] == 0 or coarse_matrix.shape[0] >= current.shape[0]:
             break
-        levels.append(MultigridLevel(matrix=current, transfer=transfer))
+        fine.append(MultigridFineLevel(matrix=current, transfer=transfer))
         current = coarse_matrix
-    levels.append(MultigridLevel(matrix=current, transfer=None))
-    return MultigridHierarchy(levels=tuple(levels))
+    return MultigridHierarchy(fine=tuple(fine), coarsest=MultigridCoarsestLevel(matrix=current))
 
 
 def _a_norm(matrix: torch.Tensor, vector: torch.Tensor) -> torch.Tensor:
@@ -154,7 +158,7 @@ class BootCMatchSetup:
 
     def run(
         self, matrix: torch.Tensor, seed_vector: torch.Tensor | None = None
-    ) -> tuple[MultigridHierarchy, ...]:
+    ) -> tuple[PreparedHierarchy, ...]:
         """Run the BootCMatch bootstrap outer loop.
 
         Args:
@@ -164,7 +168,7 @@ class BootCMatchSetup:
                 ``w_0``; ``None`` draws one via ``self.draw``.
 
         Returns:
-            tuple[MultigridHierarchy, ...]: The composite's hierarchies,
+            tuple[PreparedHierarchy, ...]: The composite's hierarchies,
             ``B_0, B_1, ..., B_{r-1}``, in application order.
         """
         n = matrix.shape[0]

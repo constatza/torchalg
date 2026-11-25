@@ -33,11 +33,11 @@ type PresetBuilder = Callable[[torch.Tensor], MatrixSetupPreconditioner]
 
 
 def _vcycle(matrix: torch.Tensor) -> MatrixSetupPreconditioner:
-    return vcycle_amg(matrix, n_levels=3)
+    return vcycle_amg(n_levels=3)
 
 
 def _wcycle(matrix: torch.Tensor) -> MatrixSetupPreconditioner:
-    return wcycle_amg(matrix, n_levels=3)
+    return wcycle_amg(n_levels=3)
 
 
 def _adaptive(matrix: torch.Tensor) -> MatrixSetupPreconditioner:
@@ -61,7 +61,7 @@ def _pod(matrix: torch.Tensor) -> MatrixSetupPreconditioner:
         generator=torch.Generator().manual_seed(4),
         dtype=matrix.dtype,
     )
-    return pod2g_preconditioner(matrix, snapshots, rank=POD_RANK)
+    return pod2g_preconditioner(snapshots, rank=POD_RANK)
 
 
 PRESETS: dict[str, PresetBuilder] = {
@@ -125,4 +125,4 @@ def test_the_guard_reaches_the_estimator_import_sites(
     forbid_spectral_estimates()
 
     with pytest.raises(AssertionError, match="outside setup"):
-        vcycle_amg(poisson, n_levels=3).setup(poisson)
+        vcycle_amg(n_levels=3).setup(poisson)

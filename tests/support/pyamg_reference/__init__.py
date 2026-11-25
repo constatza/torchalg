@@ -18,7 +18,10 @@ from pyamg.aggregation.tentative import fit_candidates
 from pyamg.multilevel import MultilevelSolver
 from pyamg.relaxation.smoothing import change_smoothers
 
-from torchalg.preconditioners.implementations.amg.hierarchy import MultigridHierarchy
+from torchalg.preconditioners.implementations.amg.hierarchy import (
+    MultigridFineLevel,
+    MultigridHierarchy,
+)
 
 
 def to_csr(matrix: torch.Tensor) -> sp.csr_matrix:
@@ -77,7 +80,7 @@ def multilevel_from_hierarchy(
     for index, level in enumerate(hierarchy.levels):
         lvl = MultilevelSolver.Level()
         lvl.A = to_csr(level.matrix)
-        if level.transfer is not None:
+        if isinstance(level, MultigridFineLevel):
             coarse_dim = hierarchy.levels[index + 1].matrix.shape[0]
             p = level.transfer.prolongate(torch.eye(coarse_dim, dtype=level.matrix.dtype))
             prolongation = sp.csr_matrix(p.numpy())

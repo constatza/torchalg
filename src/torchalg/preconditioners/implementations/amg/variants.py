@@ -34,13 +34,10 @@ from .cycle import VCycle, WCycle
 from .smoothers import resolve_jacobi_default
 
 if TYPE_CHECKING:
-    import torch
-
     from .protocols import MultigridSmoother
 
 
 def vcycle_amg(
-    matrix: torch.Tensor,
     n_levels: int = 3,
     smoother_omega: float | None = None,
     prolongation_omega: float | None = None,
@@ -56,7 +53,6 @@ def vcycle_amg(
     ``wcycle_amg`` when the convergence factor is poor.
 
     Args:
-        matrix (torch.Tensor): System matrix A (n x n), SPD.
         n_levels (int): Number of hierarchy levels; must be at least 2.
             3 is an unsourced-but-reasonable default for medium-sized
             problems (n ~ 100-10 000); not derived from a specific paper -
@@ -83,7 +79,7 @@ def vcycle_amg(
 
     Returns:
         AMGPreconditioner: Wired with smoothed-aggregation coarsening and a
-        V-cycle.
+        V-cycle; call ``.setup(A)`` with the system matrix to build it.
 
     References:
         - Vanek, Mandel & Brezina (1996), Sections 3-4 (SA-AMG, V-cycle
@@ -91,7 +87,6 @@ def vcycle_amg(
         - Briggs, Henson & McCormick (2000), Algorithm 3.7 (V-cycle).
     """
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
         cycle=VCycle(
             resolve_jacobi_default(smoother, smoother_omega),
@@ -104,7 +99,6 @@ def vcycle_amg(
 
 
 def wcycle_amg(
-    matrix: torch.Tensor,
     n_levels: int = 3,
     smoother_omega: float | None = None,
     prolongation_omega: float | None = None,
@@ -122,7 +116,6 @@ def wcycle_amg(
     fewer than V-cycle.
 
     Args:
-        matrix (torch.Tensor): System matrix A (n x n), SPD.
         n_levels (int): Number of hierarchy levels; must be at least 2.
         smoother_omega (float | None): Relaxation damping (same role as in
             ``vcycle_amg``).
@@ -153,7 +146,6 @@ def wcycle_amg(
           the paper text (paywalled) - cited for the general topic only.
     """
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=AggregationCoarsening(theta=theta, omega=prolongation_omega),
         cycle=WCycle(
             resolve_jacobi_default(smoother, smoother_omega),

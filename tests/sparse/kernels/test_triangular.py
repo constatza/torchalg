@@ -7,6 +7,7 @@ from typing import Literal
 import pytest
 import torch
 
+from torchalg.sparse.kernels.index_dtype import compact_csr_indices
 from torchalg.sparse.kernels.triangular import (
     LibraryTriangularSolve,
     PreparedTriangularSolve,
@@ -245,7 +246,7 @@ class TestTriangularSolveBatchedColumns:
 
 
 class TestPreparedTriangularSolveReuse:
-    """All matrix-only structure is built at construction, never per solve."""
+    """All matrix-dependent work is done when the solve is prepared, never per solve."""
 
     @pytest.mark.parametrize("direction", ["forward", "backward"])
     def test_solve_does_not_rebuild_structure(
@@ -349,6 +350,46 @@ class TestPrepareTriangularSolve:
 
         assert actual.shape == poisson_2d_target.shape
         torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-14)
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    @pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
+    def test_library_triangle_keeps_one_index_dtype(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        direction: Literal["forward", "backward"],
+        index_dtype: torch.dtype,
+    ) -> None:
+        """Both CSR index arrays share the operand's width, so an int32 operand is never mixed."""
+        operand = (
+            compact_csr_indices(poisson_2d_csr) if index_dtype == torch.int32 else poisson_2d_csr
+        )
+
+        triangle = LibraryTriangularSolve(operand, direction).triangle
+
+        assert triangle.crow_indices().dtype == triangle.col_indices().dtype == index_dtype
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_int32_operand_solves_like_int64(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_target: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        narrow = compact_csr_indices(poisson_2d_csr)
+
+        for solver in (LibraryTriangularSolve, PreparedTriangularSolve):
+            assert torch.equal(
+                solver(narrow, direction).solve(poisson_2d_target),
+                solver(poisson_2d_csr, direction).solve(poisson_2d_target),
+            )
+
+    def test_level_scheduled_gather_index_is_int64_for_an_int32_operand(
+        self, poisson_2d_csr: torch.Tensor
+    ) -> None:
+        """int64 gathers measured faster than int32 ones, so the per-solve index is widened."""
+        solver = PreparedTriangularSolve(compact_csr_indices(poisson_2d_csr), "forward")
+
+        assert solver.entry_col.dtype == torch.int64
 
     def test_unregistered_device_type_uses_level_scheduled(
         self, poisson_2d_csr: torch.Tensor, monkeypatch: pytest.MonkeyPatch

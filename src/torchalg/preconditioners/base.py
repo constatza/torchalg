@@ -107,6 +107,17 @@ class Preconditioner(ABC):
     wrapped with this guard automatically (see ``__init_subclass__`` below),
     so no subclass needs to implement the check itself.
 
+    Readiness is derived, never stored: each concrete class defines
+    ``is_ready`` from the state its ``setup()`` builds (a registered buffer
+    that is ``None`` until built, a prepared hierarchy, the readiness of the
+    preconditioners it wraps, ...), so there is no flag to forget to set or
+    to leave stale. ``setup()`` assigns that state only after every step
+    succeeded, so a failed ``setup()`` leaves the previous complete state, and
+    with it the previous readiness, untouched. The exception is a composite
+    that sets up wrapped preconditioners one after the other
+    (``ScheduledPreconditioner``): they mutate in place, so a failure after the
+    first leaves that one on the new matrix.
+
     ``setup()`` itself is deliberately NOT declared here. Forcing every
     preconditioner to accept a ``matrix`` argument - even the ones whose
     setup never reads it (``NeuralPreconditioner``, ``CallablePreconditioner``,
@@ -145,13 +156,12 @@ class Preconditioner(ABC):
         ...     JacobiPreconditioner,
         ... )
         >>> matrix = torch.eye(3, dtype=torch.float64) * 2.0
-        >>> precond = JacobiPreconditioner(matrix)
-        >>> precond.setup(matrix)
+        >>> precond = JacobiPreconditioner().setup(matrix)
         >>> z = precond.apply(torch.ones(3, dtype=torch.float64))
     """
 
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """Wrap a freshly-defined ``apply`` with the ``setup()``-readiness guard.
+        """Wrap a freshly-defined ``apply`` with the ``is_ready`` guard.
 
         Runs once per subclass, at class-definition time, only when that
         subclass itself defines ``apply`` (``"apply" in cls.__dict__``) -
@@ -170,7 +180,7 @@ class Preconditioner(ABC):
 
         @functools.wraps(unguarded_apply)
         def guarded_apply(self: Preconditioner, *args: object, **inner_kwargs: object) -> object:
-            if not getattr(self, "_is_ready", False):
+            if not self.is_ready:
                 raise PreconditionerNotReadyError(
                     f"{type(self).__name__}.setup() must be called before apply()."
                 )
@@ -178,12 +188,18 @@ class Preconditioner(ABC):
 
         cls.apply = guarded_apply  # ty: ignore[invalid-assignment]
 
-    def _mark_ready(self) -> None:
-        """Record that ``setup()`` has completed, unblocking ``apply()``.
+    @property
+    @abstractmethod
+    def is_ready(self) -> bool:
+        """Whether ``apply()`` may run, derived from the state ``setup()`` builds.
 
-        Every ``setup()`` implementation calls this as its last step.
+        A read-only view of that state, not a stored flag: it cannot disagree
+        with what ``apply()`` actually consumes.
+
+        Returns:
+            bool: ``True`` once the state ``apply()`` consumes exists.
         """
-        self._is_ready = True
+        ...
 
     @abstractmethod
     def apply(
@@ -286,9 +302,12 @@ class MatrixSetupPreconditioner(Preconditioner, ABC):
     ) -> Self:
         """Build whatever internal state ``apply()`` needs for ``matrix``.
 
-        Must be called once before the first ``apply()`` call, and again
+        Must be called before the first ``apply()`` call, and again
         (discarding any previously built state) to rebind this
-        preconditioner to a new or changed matrix. After ``setup()``
+        preconditioner to a new or changed matrix. The one exception is a
+        preconditioner that is ready by construction (a
+        ``ScheduledPreconditioner`` over static components), whose
+        ``is_ready`` is already ``True``. After ``setup()``
         returns, ``apply()`` may be called any number of times, including
         across several right-hand sides against the same matrix.
 
@@ -322,12 +341,22 @@ class StaticSetupPreconditioner(Preconditioner, ABC):
     right-hand sides against a fixed matrix.
     """
 
+    @property
+    def is_ready(self) -> bool:
+        """Always ``True``: a static preconditioner is usable from construction.
+
+        Returns:
+            bool: ``True``.
+        """
+        return True
+
     @abstractmethod
     def setup(self, context: PreconditionerContext | None = None) -> Self:
         """Build whatever internal state ``apply()`` needs, independent of any matrix.
 
-        Must be called once before the first ``apply()`` call. After
-        ``setup()`` returns, ``apply()`` may be called any number of times,
+        A static preconditioner is ready from construction (``is_ready`` is
+        ``True``), so ``apply()`` does not require this call; it builds
+        whatever extra state the class defines. After ``setup()`` returns, ``apply()`` may be called any number of times,
         against any sequence of systems.
 
         Args:
@@ -350,14 +379,16 @@ class LinearPreconditioner[T](MatrixSetupPreconditioner):
     - ``__init__`` is config-only.
 
     Type parameter ``T`` defines the internal operator type (e.g.
-    ``torch.Tensor`` for Jacobi).
+    ``torch.Tensor`` for Jacobi). ``_operator`` is that operator, ``None``
+    until ``setup()`` stores it; readiness is derived from it.
 
     Example:
-        >>> # User passes matrix - simple!
-        >>> precond = JacobiPreconditioner(matrix)
-        >>> precond.setup(matrix)
+        >>> # Config-only constructor; ``setup`` binds the matrix.
+        >>> precond = JacobiPreconditioner().setup(matrix)
         >>> z = precond.apply(residual)  # z = D^{-1}r
     """
+
+    _operator: T
 
     def setup(
         self,
@@ -373,9 +404,21 @@ class LinearPreconditioner[T](MatrixSetupPreconditioner):
         Returns:
             Self: This preconditioner, now ready for ``apply()``.
         """
-        self._operator: T = self._compute_operator(matrix)
-        self._mark_ready()
+        self._operator = self._compute_operator(matrix)
         return self
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether ``_operator`` has been built.
+
+        Concrete subclasses initialise ``_operator`` to ``None`` (``nn.Module``
+        ones via ``register_buffer("_operator", None)``) so ``setup()`` replaces
+        it in one assignment.
+
+        Returns:
+            bool: ``True`` once ``setup()`` has stored the operator.
+        """
+        return self._operator is not None
 
     @abstractmethod
     def _compute_operator(self, matrix: torch.Tensor) -> T:
@@ -415,3 +458,65 @@ class NonLinearPreconditioner(Preconditioner):
                 SPD-preserving.
         """
         return True
+
+
+class Identity(StaticSetupPreconditioner):
+    """Identity preconditioner: z = r (no preconditioning).
+
+    Returns the residual unchanged, equivalent to M = I. Used for standard
+    unpreconditioned CG where the system matrix A is already
+    well-conditioned, or for baseline comparisons. It lives with the
+    abstractions, not with the concrete implementations, because it is the
+    null object a solver falls back to when constructed without a
+    preconditioner, and solvers may depend on this module only.
+
+    Stateless - holds no tensor buffers, so it is a plain class (no
+    ``nn.Module``); there is nothing for ``.to(device/dtype)`` to move.
+
+    Mathematical Properties:
+        - M = I (identity matrix).
+        - z = M^{-1}r = Ir = r.
+        - Convergence rate: O(sqrt(kappa(A))) where
+          kappa(A) = lambda_max(A) / lambda_min(A).
+        - No computational overhead.
+
+    Stateless, so it is always ready - construction alone satisfies the
+    ``setup()``-before-``apply()`` contract (``setup()`` is still provided,
+    as a no-op, for callers that always call it uniformly).
+
+    Example:
+        >>> import torch
+        >>> precond = Identity()
+        >>> r = torch.tensor([1.0, 2.0, 3.0])
+        >>> z = precond.apply(r)
+        >>> torch.equal(z, r)
+        True
+    """
+
+    def setup(self, context: PreconditionerContext | None = None) -> Self:
+        """No-op: identity has no state to build at all.
+
+        Args:
+            context (PreconditionerContext | None): Ignored.
+
+        Returns:
+            Self: This preconditioner, already ready.
+        """
+        return self
+
+    def apply(
+        self,
+        residual: torch.Tensor,
+        context: PreconditionerContext | None = None,
+    ) -> torch.Tensor:
+        """Return residual unchanged (identity preconditioning).
+
+        Args:
+            residual (torch.Tensor): Residual vector r.
+            context (PreconditionerContext | None): Ignored (identity
+                doesn't need context).
+
+        Returns:
+            torch.Tensor: Clone of the input residual vector (z = r).
+        """
+        return residual.clone()

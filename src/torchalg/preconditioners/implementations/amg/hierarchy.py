@@ -9,6 +9,20 @@ every existing ``from .hierarchy import ...``/``from ...amg.hierarchy import
 
 from __future__ import annotations
 
-from torchalg.multigrid.hierarchy import MultigridHierarchy, MultigridLevel, build_hierarchy
+from torchalg.multigrid.hierarchy import (
+    MultigridCoarsestLevel,
+    MultigridFineLevel,
+    MultigridHierarchy,
+    MultigridLevel,
+    assemble_hierarchy,
+    build_hierarchy,
+)
 
-__all__ = ["MultigridHierarchy", "MultigridLevel", "build_hierarchy"]
+__all__ = [
+    "MultigridCoarsestLevel",
+    "MultigridFineLevel",
+    "MultigridHierarchy",
+    "MultigridLevel",
+    "assemble_hierarchy",
+    "build_hierarchy",
+]

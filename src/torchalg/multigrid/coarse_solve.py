@@ -6,7 +6,7 @@ for ``solve``) and, on GPU, a host synchronization. A ``CoarseSolverFactory`` in
 turns the coarse matrix into a ``CoarseSolve`` once, at hierarchy preparation, and the
 cycle only applies it.
 
-The prepared solve is stored on the coarsest ``MultigridLevel`` (never on a cycle object:
+The prepared solve is stored on the ``PreparedCoarsestLevel`` (never on a cycle object:
 the setup cycles are shared module-level instances used for many matrices).
 """
 
@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
+
+from torchalg.preconditioners.base import PreconditionerNotReadyError
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +58,11 @@ type CoarseSolverFactory = Callable[[torch.Tensor], CoarseSolve]
 """Builds a ``CoarseSolve`` from a coarsest-level matrix (the one-off expensive step)."""
 
 
-class HierarchyNotPreparedError(RuntimeError):
-    """Raised when a cycle is applied to a hierarchy whose coarsest level has no prepared solve.
+class HierarchyNotPreparedError(PreconditionerNotReadyError):
+    """Raised when a cycle is applied to a hierarchy that ``prepare`` has not produced.
+
+    A ``PreconditionerNotReadyError``, so one ``except`` clause covers "used before it
+    was prepared or set up" for preconditioners and bare cycles alike.
 
     Call ``cycle.prepare(hierarchy)`` once after building a hierarchy; this error makes a
     forgotten preparation fail fast instead of silently re-factorizing on every cycle.

@@ -357,9 +357,9 @@ def _pcg_cells(
                         )
                     elif algorithm == "pcg_sa_amg":
                         preconditioner = (
-                            vcycle_amg(operand, n_levels=3).setup(operand)
+                            vcycle_amg(n_levels=3).setup(operand)
                             if fmt == "dense"
-                            else sparse_vcycle_amg(operand, n_levels=3).setup(operand)
+                            else sparse_vcycle_amg(n_levels=3).setup(operand)
                         )
                     else:
                         # BootCMatch setup is intentionally inside the timed

@@ -4,7 +4,7 @@ Sparse-CSR sibling of
 ``preconditioners.implementations.amg._presets`` - same shared wiring
 (setup cycle, solve-time cycle factory, seeded draw, placeholder
 coarsening), built from this package's own sparse-native
-``GaussSeidelStage``/``dense_pseudo_inverse_coarse_solver`` instead of the dense
+``GaussSeidelMemo``/``dense_pseudo_inverse_coarse_solver`` instead of the dense
 versions.
 """
 
@@ -20,7 +20,7 @@ from torchalg.sparse.preconditioners.amg._presets import (
     seeded_draw,
 )
 from torchalg.sparse.preconditioners.amg.coarse_solve import dense_pseudo_inverse_coarse_solver
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelSmoother, GaussSeidelStage
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo, GaussSeidelSmoother
 
 
 class TestSeededDraw:
@@ -37,7 +37,7 @@ class TestSeededDraw:
 
 class TestGSSetupCycle:
     def test_is_a_vcycle_smoothing_through_the_given_stage(self) -> None:
-        stage = GaussSeidelStage()
+        stage = GaussSeidelMemo()
         cycle = gs_setup_cycle(stage)
         assert isinstance(cycle, VCycle)
         assert cycle._smoother is stage
@@ -47,8 +47,8 @@ class TestGSSetupCycle:
 
     def test_cycles_of_distinct_stages_do_not_share_state(self) -> None:
         assert (
-            gs_setup_cycle(GaussSeidelStage())._smoother
-            is not gs_setup_cycle(GaussSeidelStage())._smoother
+            gs_setup_cycle(GaussSeidelMemo())._smoother
+            is not gs_setup_cycle(GaussSeidelMemo())._smoother
         )
 
 

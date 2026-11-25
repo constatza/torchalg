@@ -9,7 +9,12 @@ import torch
 
 from torchalg.multigrid.coarse_solve import HierarchyNotPreparedError
 from torchalg.multigrid.cycle import VCycle, WCycle
-from torchalg.multigrid.hierarchy import MultigridHierarchy, build_hierarchy
+from torchalg.multigrid.hierarchy import (
+    MultigridHierarchy,
+    PreparedCoarsestLevel,
+    PreparedFineLevel,
+    build_hierarchy,
+)
 from torchalg.multigrid.protocols import PreparedSmoother
 from torchalg.preconditioners.implementations.amg import AggregationCoarsening
 
@@ -78,8 +83,8 @@ class TestPreparedSmoothers:
 
         expected = [level.matrix.shape[0] for level in hierarchy.levels[:-1]]
         assert smoother.prepared_for == expected
-        assert prepared.levels[-1].smoother is None
-        assert all(level.smoother is not None for level in prepared.levels[:-1])
+        assert isinstance(prepared.levels[-1], PreparedCoarsestLevel)
+        assert all(isinstance(level, PreparedFineLevel) for level in prepared.levels[:-1])
 
     def test_prepare_is_idempotent(
         self, cycle_class: type[VCycle | WCycle], hierarchy: MultigridHierarchy
@@ -110,7 +115,7 @@ class TestPreparedSmoothers:
         cycle = cycle_class(RecordingSmoother())
 
         with pytest.raises(HierarchyNotPreparedError):
-            cycle.apply(hierarchy, rhs)
+            cycle.apply(hierarchy, rhs)  # ty: ignore[invalid-argument-type]
 
     def test_residual_comes_from_the_prepared_smoother(
         self, cycle_class: type[VCycle | WCycle], hierarchy: MultigridHierarchy, rhs: torch.Tensor

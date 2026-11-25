@@ -109,7 +109,7 @@ import torch
 
 from torchalg.multigrid import AMGPreconditioner
 from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
-from torchalg.preconditioners.base import PreconditionerContext
+from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 from torchalg.sparse.kernels.algebraic_distance import sparse_algebraic_distance
 from torchalg.sparse.kernels.depth_neighborhood import sparse_depth_neighborhood
 from torchalg.sparse.kernels.diagonal import sparse_diagonal
@@ -119,7 +119,7 @@ from torchalg.sparse.kernels.prolongation import sparse_interpolation_prolongati
 from torchalg.sparse.kernels.strength import sparse_strength_graph
 from torchalg.sparse.preconditioners.amg.transfer import (
     SparseTransferOperator,
-    TransferOperatorCache,
+    TransferOperatorMemo,
 )
 from torchalg.utils.ls_interpolation import (
     batched_ls_interpolation_rows,
@@ -129,7 +129,7 @@ from torchalg.utils.test_vector_weights import test_vector_weights
 
 from ._compatible_relaxation import compatible_relaxation_coarsening
 from ._presets import PrebuiltCoarsening, gs_setup_cycle, prebuilt_cycle, seeded_draw
-from .smoothers import GaussSeidelStage, resolve_jacobi_default
+from .smoothers import GaussSeidelMemo, resolve_jacobi_default
 
 if TYPE_CHECKING:
     from typing import Self
@@ -259,7 +259,7 @@ class BAMGCoarsening:
             seed (int): Seed of the default draw source.
             transfer_operator (Callable[[torch.Tensor], SparseTransferOperator]):
                 Wraps each built prolongation. Pass the setup stage's
-                ``TransferOperatorCache`` so ``build_transfer`` and the
+                ``TransferOperatorMemo`` so ``build_transfer`` and the
                 hierarchy builder share one operator (one transpose) per
                 prolongation instead of building a throwaway.
         """
@@ -676,12 +676,13 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     ``SparseTransferOperator``, the sparse Gauss-Seidel and this package's
     ``_presets.gs_setup_cycle`` in place of the dense equivalents. Every
     ``setup()`` builds a fresh ``BootstrapSetup`` around its own
-    ``GaussSeidelStage`` and ``TransferOperatorCache``, so the level
+    ``GaussSeidelMemo`` and ``TransferOperatorMemo``, so the level
     schedules of each level matrix and the transpose of each prolongation are
     built once per setup run, however many compatible-relaxation sweeps,
     test-vector relaxations and improvement cycles revisit them.
     Kept as a subclass (not converted to a factory function like
-    ``vcycle_amg``/``wcycle_amg``): it overrides ``_make_hierarchy`` with
+    ``vcycle_amg``/``wcycle_amg``): it overrides ``setup`` (running the
+    setup algorithm, then ``_commit``) with
     genuinely different hierarchy-construction logic (the prebuilt-levels
     pattern), the same "earned inheritance" reasoning that keeps the dense
     class a subclass too (see ``docs/plan.md``'s "Correction: validation
@@ -752,8 +753,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         """Store setup hyperparameters; ``setup()`` runs the sparse Bootstrap AMG algorithm."""
 
         def new_bootstrap_setup() -> BootstrapSetup:
-            stage = GaussSeidelStage()
-            transfers = TransferOperatorCache()
+            stage = GaussSeidelMemo()
+            transfers = TransferOperatorMemo()
             return BootstrapSetup(
                 coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
                     vectors,
@@ -781,8 +782,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         self._run_draw = draw if draw is not None else seeded_draw(seed)
         self._seed_vectors = seed_vectors
         self._test_vector_draw = test_vector_draw
+        self._result: BootstrapAMGResult | None = None
         super().__init__(
-            matrix=torch.empty(0),
             coarsening=PrebuiltCoarsening("bootstrap AMG"),
             cycle=prebuilt_cycle(
                 resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
@@ -817,9 +818,10 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         )
         if len(result.matrices) < 2:
             raise ValueError("bootstrap AMG setup produced a single level; lower max_coarse")
+        self._commit(self._hierarchy_of(result, matrix))
         self._result = result
         self._n_levels = len(result.matrices)
-        return super().setup(matrix, context)
+        return self
 
     @property
     def result(self) -> BootstrapAMGResult:
@@ -829,6 +831,10 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             BootstrapAMGResult: Levels, prolongations, and relaxation-derived
                 test vectors from the setup that last ran.
         """
+        if self._result is None:
+            raise PreconditionerNotReadyError(
+                f"{type(self).__name__}.setup() must be called before the result is available."
+            )
         return self._result
 
     def __str__(self) -> str:
@@ -837,22 +843,29 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         Returns:
             str: e.g. ``"BAMG(n_levels=3, k_r=8, coarse_dim=5)"``.
         """
+        if self._result is None:
+            return "BAMG(not set up)"
         return (
             f"BAMG(n_levels={len(self._result.matrices)}, "
             f"k_r={self._result.candidates.shape[1]}, "
             f"coarse_dim={int(self._result.matrices[-1].shape[0])})"
         )
 
-    def _make_hierarchy(self) -> MultigridHierarchy:
-        """Prebuilt levels moved to the current device/dtype of the system matrix.
+    @staticmethod
+    def _hierarchy_of(result: BootstrapAMGResult, matrix: torch.Tensor) -> MultigridHierarchy:
+        """Prebuilt levels of ``result`` moved to the device/dtype of ``matrix``.
+
+        Args:
+            result (BootstrapAMGResult): Realized setup hierarchy.
+            matrix (torch.Tensor): System matrix being bound.
 
         Returns:
             MultigridHierarchy: The Bootstrap AMG hierarchy.
         """
         moved = BootstrapAMGResult(
-            matrices=tuple(m.to(self._matrix) for m in self._result.matrices),
-            prolongations=tuple(p.to(self._matrix) for p in self._result.prolongations),
-            candidates=self._result.candidates,
-            transfer_operator_factory=self._result.transfer_operator_factory,
+            matrices=tuple(m.to(matrix) for m in result.matrices),
+            prolongations=tuple(p.to(matrix) for p in result.prolongations),
+            candidates=result.candidates,
+            transfer_operator_factory=result.transfer_operator_factory,
         )
         return moved.hierarchy

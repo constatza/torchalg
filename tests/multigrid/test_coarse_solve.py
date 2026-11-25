@@ -19,7 +19,8 @@ from torchalg.multigrid.coarse_solve import (
     pseudo_inverse_coarse_solver,
 )
 from torchalg.multigrid.cycle import VCycle, WCycle
-from torchalg.multigrid.hierarchy import MultigridHierarchy, build_hierarchy
+from torchalg.multigrid.hierarchy import MultigridHierarchy, PreparedCoarsestLevel, build_hierarchy
+from torchalg.preconditioners.base import PreconditionerNotReadyError
 from torchalg.preconditioners.implementations.amg import AggregationCoarsening, JacobiSmoother
 
 SEED = 7
@@ -127,7 +128,8 @@ class TestPreparedHierarchy:
 
         cycle.prepare(hierarchy)
 
-        assert hierarchy.levels[-1].coarse_solve is None
+        assert isinstance(hierarchy, MultigridHierarchy)
+        assert not isinstance(hierarchy.levels[-1], PreparedCoarsestLevel)
         assert vars(cycle) == state_before
 
     def test_apply_rejects_unprepared_hierarchy(self, hierarchy: MultigridHierarchy) -> None:
@@ -135,7 +137,10 @@ class TestPreparedHierarchy:
         rhs = torch.ones(hierarchy.levels[0].matrix.shape[0], dtype=torch.float64)
 
         with pytest.raises(HierarchyNotPreparedError):
-            cycle.apply(hierarchy, rhs)
+            cycle.apply(hierarchy, rhs)  # ty: ignore[invalid-argument-type]
+
+    def test_unprepared_hierarchy_error_is_a_not_ready_error(self) -> None:
+        assert issubclass(HierarchyNotPreparedError, PreconditionerNotReadyError)
 
     @pytest.mark.parametrize("cycle_class", [VCycle, WCycle])
     def test_prepared_apply_matches_per_call_solve(

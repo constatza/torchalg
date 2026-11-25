@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Self
 
 import torch
 
@@ -33,7 +32,7 @@ from torchalg.models.history import DirectionHistory
 from torchalg.models.result import SolverResult
 from torchalg.models.state import CGState, SolverState
 from torchalg.monitoring import IterationHistory, TraceMode
-from torchalg.preconditioners.base import Preconditioner, PreconditionerContext
+from torchalg.preconditioners.base import Identity, Preconditioner
 from torchalg.strategies.convergence import (
     CombinedToleranceCriterion,
     IConvergenceCriterion,
@@ -75,31 +74,6 @@ def _resolve_first_breakdown(recorded: torch.Tensor | None) -> int | None:
     return iteration if iteration > 0 else None
 
 
-class _IdentityPreconditioner(Preconditioner):
-    """Internal identity preconditioner used when solvers are constructed directly."""
-
-    def __init__(self) -> None:
-        """Mark ready immediately; identity has no matrix-dependent state."""
-        self._mark_ready()
-
-    def setup(
-        self,
-        matrix: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> Self:
-        """No-op: identity has no matrix-dependent state to build."""
-        self._mark_ready()
-        return self
-
-    def apply(
-        self,
-        residual: torch.Tensor,
-        context: PreconditionerContext | None = None,
-    ) -> torch.Tensor:
-        """Return a clone of ``residual``."""
-        return residual.clone()
-
-
 class ConjugateGradientSolver(IterativeSolverBase[CGState]):
     """Common CG iteration engine parameterized by a direction strategy."""
 
@@ -113,7 +87,7 @@ class ConjugateGradientSolver(IterativeSolverBase[CGState]):
     ) -> None:
         """Initialize CG solver."""
         self.direction_strategy = direction_strategy
-        self.preconditioner = preconditioner or _IdentityPreconditioner()
+        self.preconditioner = preconditioner or Identity()
         self.convergence_criterion = convergence_criterion or CombinedToleranceCriterion(
             rtol=DEFAULT_RTOL,
             atol=DEFAULT_ATOL,

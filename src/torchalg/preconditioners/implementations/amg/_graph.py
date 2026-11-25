@@ -7,7 +7,7 @@ from collections.abc import Callable
 import torch
 
 type NeighborhoodOf = Callable[[torch.Tensor, int], torch.Tensor]
-"""``(matrix, depth) -> boolean neighborhood``: ``depth_neighborhood`` or a cache of it."""
+"""``(matrix, depth) -> boolean neighborhood``: ``depth_neighborhood`` or its memo."""
 
 
 def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
@@ -29,13 +29,13 @@ def depth_neighborhood(matrix: torch.Tensor, depth: int) -> torch.Tensor:
     return reachable & off_diagonal
 
 
-class NeighborhoodCache:
+class NeighborhoodMemo:
     """``depth_neighborhood`` memoized per matrix object and depth, for one setup run.
 
     Every bootstrap pass revisits the finest matrix, whose neighborhoods depend
     on ``A`` alone, so they are evaluated once per run instead of once per pass.
     Holds the matrices (and their ``(n, n)`` boolean results) alive, so it must
-    not outlive the run, and a cached matrix must not be mutated in place.
+    not outlive the run, and a memoized matrix must not be mutated in place.
     """
 
     def __init__(self) -> None:

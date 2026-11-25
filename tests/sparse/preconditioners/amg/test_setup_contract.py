@@ -20,8 +20,7 @@ from torchalg.multigrid import AMGPreconditioner, VCycle
 from torchalg.preconditioners.base import MatrixSetupPreconditioner
 from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.kernels import triangular as triangular_kernel
-from torchalg.sparse.preconditioners.amg import _gauss_seidel
-from torchalg.sparse.preconditioners.amg._dense_gauss_seidel import DenseBackedSymmetricGaussSeidel
+from torchalg.sparse.preconditioners.amg import _gauss_seidel_format
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner,
     adaptive_sa_hierarchy,
@@ -64,7 +63,6 @@ def pod_snapshots_large(poisson_1d_large_dense: torch.Tensor, test_seed: int) ->
 
 def _pod2g(matrix: torch.Tensor, snapshots: torch.Tensor) -> AMGPreconditioner:
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=PODCoarseningStrategy(compute_pod_basis(snapshots, _POD_RANK)),
         cycle=VCycle(JacobiSmoother(), coarse_solver_factory=dense_lu_coarse_solver),
         n_levels=2,
@@ -80,8 +78,8 @@ def preconditioner_factory(
 ) -> Callable[[torch.Tensor], MatrixSetupPreconditioner]:
     """Unsetup preconditioner builders for every sparse preset that smooths with Jacobi."""
     factories: dict[str, Callable[[torch.Tensor], MatrixSetupPreconditioner]] = {
-        "vcycle_amg": lambda matrix: vcycle_amg(matrix, n_levels=3),
-        "wcycle_amg": lambda matrix: wcycle_amg(matrix, n_levels=3),
+        "vcycle_amg": lambda matrix: vcycle_amg(n_levels=3),
+        "wcycle_amg": lambda matrix: wcycle_amg(n_levels=3),
         "adaptive_sa": lambda matrix: AdaptiveSAPreconditioner(
             num_candidates=2, candidate_iters=2, max_levels=3, max_coarse=4, seed=0
         ),
@@ -131,9 +129,7 @@ class TestGaussSeidelSolveWorkIsPrepared:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(triangular_kernel, "level_schedule", counting)
-        preconditioner = vcycle_amg(
-            poisson_1d_large_csr, n_levels=3, smoother=GaussSeidelSmoother()
-        )
+        preconditioner = vcycle_amg(n_levels=3, smoother=GaussSeidelSmoother())
         preconditioner.setup(poisson_1d_large_csr)
         built_in_setup = len(calls)
         assert built_in_setup == 2 * 2  # forward + backward on each of the 2 smoothed levels
@@ -146,16 +142,16 @@ class TestGaussSeidelSolveWorkIsPrepared:
 class TestSetupStagesPrepareEachMatrixOnce:
     @pytest.fixture
     def built_matrices(self, monkeypatch: pytest.MonkeyPatch) -> list[torch.Tensor]:
-        """Matrices handed to either Gauss-Seidel ``build`` (CSR or dense-backed), in call order."""
+        """Matrices handed to either Gauss-Seidel preparer (CSR or dense-backed), in call order."""
         matrices: list[torch.Tensor] = []
-        for cls in (_gauss_seidel.PreparedSymmetricGaussSeidel, DenseBackedSymmetricGaussSeidel):
-            original = cls.build.__func__  # type: ignore[attr-defined]
+        for name in ("prepare_csr_gauss_seidel", "prepare_dense_gauss_seidel"):
+            original = getattr(_gauss_seidel_format, name)
 
-            def recording(cls: type, matrix: torch.Tensor, original: Any = original):
+            def recording(matrix: torch.Tensor, *args: Any, original: Any = original):
                 matrices.append(matrix)
-                return original(cls, matrix)
+                return original(matrix, *args)
 
-            monkeypatch.setattr(cls, "build", classmethod(recording))
+            monkeypatch.setattr(_gauss_seidel_format, name, recording)
         return matrices
 
     @pytest.fixture

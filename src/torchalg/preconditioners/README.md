@@ -5,7 +5,9 @@ predictor ports, and concrete torch-native preconditioner implementations.
 
 `base.py` and `ports.py` are interface layers. Solver orchestration should
 depend on those abstractions; `factories.py` is the composition root that may
-instantiate concrete implementations such as `Identity`.
+instantiate concrete implementations such as `JacobiPreconditioner`. `Identity` is
+defined in `base.py` (the null object a solver defaults to) and re-exported by
+`implementations`, so the solver needs no concrete import.
 
 Implementation modules keep validation local to their own scheduling or
 factorization rules. `ScheduledPreconditioner` rejects negative `start_iter`
@@ -97,6 +99,24 @@ wraps every concrete subclass's `apply` with this guard automatically
 itself. `pcg()`/`flexible_cg()` (`factories.py`) only ever call `.apply()` -
 the caller is responsible for calling `.setup()` first.
 
+Readiness is derived from state, never stored: the abstract read-only property
+`Preconditioner.is_ready` is what the guard reads, and each concrete class defines it
+from the state its `setup()` builds. The `_operator` buffer family (dense IC0, ILU, ICholesky
+and sparse ICholesky derive from `LinearPreconditioner`, whose `setup` calls the
+`_compute_operator` hook; sparse IC0 and ILU extend `MatrixSetupPreconditioner` and define
+`is_ready` themselves, because their `setup` also stores a pattern and a solve pair) is
+ready once `_operator` is not `None` (`register_buffer("_operator", None)` until `setup`),
+Jacobi once `inv_diag` is,
+`AMGPreconditioner` once it holds a `PreparedHierarchy`, BootCMatch once its matrix buffer
+is bound, and `ScheduledPreconditioner` once both wrapped preconditioners are ready.
+`StaticSetupPreconditioner` is `True` from construction, so a `ScheduledPreconditioner`
+whose components are all static (`Identity`, neural, callable) is ready before `setup` and
+applies without it. Because `setup` assigns that state only after every step succeeded, a
+failed `setup` leaves the previous state and readiness. The exception is
+`ScheduledPreconditioner`: it sets its components up one after the other, and they mutate in
+place, so a failure after the first leaves the first on the new matrix and the second on the
+old one.
+
 `setup()`'s signature is split by role rather than declared once on
 `Preconditioner` (an Interface Segregation fix - several implementations
 used to carry an unused `matrix` parameter for no reason but uniformity):
@@ -112,11 +132,68 @@ not of "neural vs classical" - a future neural preconditioner whose setup
 does depend on the matrix (e.g. a GNN building edges from connectivity)
 is a `MatrixSetupPreconditioner`.
 
-`AMGPreconditioner.setup` calls `_make_hierarchy` unconditionally and stores
-the result; `_make_hierarchy` is the hook subclasses override when their
-levels are computed elsewhere (as `AdaptiveSAPreconditioner` does). Calling
-`setup()` again - e.g. after `bind_inputs()` changes an extra input, or to
-rebind to a new/changed matrix - simply rebuilds the hierarchy from scratch.
+Lifecycle roles (config / analyze / prepare / setup), as `sparse` IC(0) and ILU(0) apply them:
+
+1. **Config** is the constructor: parameters only, never a matrix.
+2. **`analyze(matrix) -> <X>Pattern`** is a pure function returning a frozen,
+   values-free plan (beyond the non-zero mask) that holds everything depending on the
+   sparsity pattern alone. `pattern.matches(matrix)` is an O(nnz) content check
+   (`crow`, `col` - held as copies, so in-place edits of the matrix's indices are seen - plus IC(0)'s non-zero mask). Plain tensor ops, no device registry.
+3. **`prepare(...) -> Prepared<X>`** is a pure function returning a frozen object that
+   captures values and is used at solve time (the existing smoother and cycle meaning).
+4. **`setup(matrix)`**, on preconditioner instances only, is the one mutating verb: reuse
+   the instance's pattern when it `matches`, else `analyze`; then factorize and prepare;
+   assign state only after every step succeeded (a failed `setup` keeps the previous
+   complete state); return `self`. The `setup(matrix, context=None)` signature is
+   unchanged.
+
+Caching rule: patterns are never memoized by `id()` or in a module-level cache (a new
+matrix object with the same pattern would miss, and an in-place mutation would hit
+stale). The instance holds its last pattern and compares content. Patterns and prepared
+objects are `@dataclass(frozen=True, slots=True)`.
+
+Names follow the roles. Module-level `prepare_*` functions return a `Prepared*`
+object (`prepare_symmetric_gauss_seidel`; in `sparse`, `prepare_gauss_seidel` picks the
+format and `prepare_csr_gauss_seidel` / `prepare_dense_gauss_seidel` build it). An
+identity memo scoped to one setup run is a `*Memo` (`TransferOperatorMemo`,
+`GaussSeidelMemo`, `NeighborhoodMemo`) and never shares a name with prepared state;
+`build_hierarchy` and `build_transfer` mean "coarsen", not "prepare". Use before
+preparation or setup raises `PreconditionerNotReadyError`, including its
+`HierarchyNotPreparedError` subclass for a cycle applied to an unprepared hierarchy.
+
+Preparation of a multigrid hierarchy is a type change. A hierarchy holds its levels
+structurally: a tuple `fine` of fine levels plus exactly one `coarsest` level, so one
+without a coarsest level, or with one in the middle, cannot be represented (the
+constructors also reject a mis-typed level at runtime with `TypeError`). `levels` is the
+read-only `(*fine, coarsest)` view; a single-level hierarchy has an empty `fine`.
+`build_hierarchy` returns a `MultigridHierarchy` of `MultigridFineLevel`s (matrix and
+transfer) plus a `MultigridCoarsestLevel` (matrix only; no smoother, no coarse solve);
+`MultigridLevel` is their union. `cycle.prepare` / `prepare_hierarchy` return a
+`PreparedHierarchy` of `PreparedFineLevel`s (matrix, transfer, bound smoother) plus a
+`PreparedCoarsestLevel` (matrix, factorized solve); `PreparedLevel` is their union. A
+cycle's `apply` takes a `PreparedHierarchy` and recurses over `fine` down to `coarsest`
+without matching on level kinds; the one runtime `HierarchyNotPreparedError` check sits
+at `apply`'s entry, where a caller can still hand in an unprepared hierarchy. `prepare`
+of a `PreparedHierarchy` returns it unchanged. `assemble_hierarchy(matrices, transfers)`
+builds a `MultigridHierarchy` from level matrices and the transfers between them.
+
+`AMGPreconditioner(coarsening, cycle, n_levels, linear)` is configuration only: the
+constructor takes no matrix and builds nothing, and the presets (`vcycle_amg`,
+`wcycle_amg`, `pod2g_preconditioner`, `AdaptiveSAPreconditioner`,
+`BootstrapAMGPreconditioner`) follow, so the typical call is
+`vcycle_amg(n_levels=3).setup(A)`. Its only prepared state is the `PreparedHierarchy`,
+whose finest level carries the system matrix (`AMGPreconditioner.matrix` reads it, and
+raises `PreconditionerNotReadyError` before `setup`), so matrix and hierarchy cannot
+disagree. `setup(matrix)` calls `_make_hierarchy(matrix)` unconditionally, prepares the
+result with the cycle, and only then replaces the stored hierarchy, so a failure keeps the
+previous matrix and hierarchy. `_make_hierarchy` is the base hook that builds the levels with the
+coarsening strategy; no subclass overrides it. `AdaptiveSAPreconditioner` and
+`BootstrapAMGPreconditioner` instead override `setup`: they run their setup algorithm first
+and `_commit` its realized hierarchy together with `result` and `n_levels` (`result` raises `PreconditionerNotReadyError` before `setup`).
+Calling `setup()` again - e.g. after `bind_inputs()` changes an extra input, or to rebind
+to a new/changed matrix - simply rebuilds the hierarchy from scratch. `.to()`/`.double()`
+move the hierarchy (`AMGPreconditioner._apply`) instead of registering one buffer per
+level, and do nothing before `setup`.
 
 Dense `IC0Preconditioner` and `ILUPreconditioner` factorize in
 `implementations/_masked_factorization.py` with a right-looking elimination:
@@ -244,8 +321,8 @@ whole hierarchy from the combined set. `BootstrapAMGPreconditioner` is the
 `amg/_presets.py`'s GS-only `GS_SETUP_CYCLE`, solve-cycle factory
 (`prebuilt_cycle`, sweep counts `n_pre`/`n_post` configurable on both
 presets, V(1,1) by default), `seeded_draw`, and `PrebuiltCoarsening` (a
-placeholder `CoarseningStrategy` that always raises, since `_make_hierarchy`
-is overridden). BAMG's solve-time cycle defaults to weighted Jacobi like the
+placeholder `CoarseningStrategy` that always raises, since the hierarchy comes
+from the setup algorithm, never from the strategy). BAMG's solve-time cycle defaults to weighted Jacobi like the
 rest of the preset family; CR's own relaxation (`BootstrapSetup.run`'s
 `relaxation`) stays symmetric GS unconditionally, since it defines the
 coarsening rather than merely smoothing it. Every deviation from
@@ -272,7 +349,7 @@ unverifiable [BAMG11] attribution) - see `bootstrap.py`'s
 `TODO(bamg-fidelity, needs-check)` marker.
 
 Each `BootstrapAMGPreconditioner.setup()` builds a fresh `BootstrapSetup` around its
-own `NeighborhoodCache`, so `depth_neighborhood` of the finest matrix (identical in
+own `NeighborhoodMemo`, so `depth_neighborhood` of the finest matrix (identical in
 every bootstrap pass) is evaluated once per setup run per depth, not once per pass.
 `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default

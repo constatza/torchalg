@@ -4,7 +4,7 @@ Dense-as-oracle, this project's standing rule: every function is checked
 against its dense sibling
 (``preconditioners.implementations.amg._compatible_relaxation``) given the
 same matrix (one dense, one its sparse CSR twin), the same coarse
-mask/priority/seeded draw, and the sparse ``GaussSeidelStage`` relaxation in
+mask/priority/seeded draw, and the sparse ``GaussSeidelMemo`` relaxation in
 place of a dense symmetric Gauss-Seidel oracle built from ``solve_triangular``
 (``tests/sparse/conftest.py``), so the comparison does not depend on the dense
 smoother classes.
@@ -37,7 +37,7 @@ from torchalg.sparse.preconditioners.amg._compatible_relaxation import (
     cr_rate,
     hcr_operator,
 )
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo
 
 if TYPE_CHECKING:
     from tests.sparse.conftest import DenseRelaxation
@@ -91,7 +91,7 @@ class TestHcrOperator:
     def test_matches_dense(
         self,
         dense_relaxation: DenseRelaxation,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         two_of_eight_coarse_mask: torch.Tensor,
         ones_vector_8: torch.Tensor,
@@ -117,7 +117,7 @@ class TestHcrOperator:
 
     def test_zeros_coarse_entries(
         self,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         two_of_eight_coarse_mask: torch.Tensor,
         ones_vector_8: torch.Tensor,
@@ -138,7 +138,7 @@ class TestCrRate:
     def test_matches_dense(
         self,
         dense_relaxation: DenseRelaxation,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -166,7 +166,7 @@ class TestCrRate:
 
     def test_bounded_in_zero_one(
         self,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -225,7 +225,7 @@ class TestCompatibleRelaxationCoarsening:
     def test_matches_dense(
         self,
         dense_relaxation: DenseRelaxation,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -242,7 +242,7 @@ class TestCompatibleRelaxationCoarsening:
 
     def test_terminates_and_grows_c(
         self,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -255,7 +255,7 @@ class TestCompatibleRelaxationCoarsening:
 
     def test_preserves_initial_coarse(
         self,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         two_of_eight_coarse_mask: torch.Tensor,
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
@@ -273,7 +273,7 @@ class TestCompatibleRelaxationCoarsening:
 
     def test_raises_when_max_iterations_exhausted(
         self,
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
     ) -> None:
@@ -296,7 +296,7 @@ class TestStageScopedGaussSeidelInCompatibleRelaxation:
         self,
         poisson_1d_factory: Callable[[int], torch.Tensor],
         seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
-        sparse_relaxation: GaussSeidelStage,
+        sparse_relaxation: GaussSeidelMemo,
         monkeypatch: pytest.MonkeyPatch,
         csr_gauss_seidel: None,
     ) -> None:

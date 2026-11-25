@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pytest
 import torch
 
@@ -364,47 +363,6 @@ def ones_residual_5x2(torch_dtype: torch.dtype) -> torch.Tensor:
         torch.Tensor: ``torch.ones(5, 2)``.
     """
     return torch.ones(5, 2, dtype=torch_dtype)
-
-
-@pytest.fixture
-def tridiagonal_spd_small_perturbed_torch(
-    tridiagonal_spd_small: NDArray,
-    test_seed: int,
-    to_torch: Callable[[NDArray], torch.Tensor],
-) -> torch.Tensor:
-    """``tridiagonal_spd_small`` with tiny (~1e-12) seeded lower-triangular noise added.
-
-    Mirrors the reference's perturbation used to exercise IC(0)'s
-    ``threshold`` parameter: small enough to be dropped by an aggressive
-    threshold but not by a strict one.
-
-    Args:
-        tridiagonal_spd_small: 10x10 numpy tridiagonal SPD matrix.
-        test_seed: Fixed random seed for reproducibility.
-        to_torch: Numpy -> torch adapter fixture.
-
-    Returns:
-        torch.Tensor: Perturbed, re-symmetrized, diagonally-boosted SPD
-            matrix.
-    """
-    rng = np.random.default_rng(test_seed)
-    perturbed = tridiagonal_spd_small.copy()
-    perturbed += np.tril(rng.standard_normal((10, 10)) * 1e-12)
-    perturbed = (perturbed + perturbed.T) / 2
-    perturbed += 0.1 * np.eye(10)
-    return to_torch(perturbed)
-
-
-@pytest.fixture
-def near_singular_matrix_torch(torch_dtype: torch.dtype) -> torch.Tensor:
-    """10x10 identity matrix with one near-zero diagonal entry.
-
-    Returns:
-        torch.Tensor: ``I`` with ``A[5, 5] = 1e-15``.
-    """
-    matrix = torch.eye(10, dtype=torch_dtype)
-    matrix[5, 5] = 1e-15
-    return matrix
 
 
 @pytest.fixture

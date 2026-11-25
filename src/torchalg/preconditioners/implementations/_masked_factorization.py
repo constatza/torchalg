@@ -86,12 +86,12 @@ def dense_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     return factors
 
 
-def ic0_sparsity_mask(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
+def ic0_sparsity_mask(matrix: torch.Tensor) -> torch.Tensor:
     """Compute IC(0)'s target sparsity pattern without factorizing.
 
     This is the structural half of ``dense_ic0``, split out because it
-    answers "does IC(0) stay non-filling at this threshold?" on its own:
-    the pattern is fixed by ``matrix`` and ``threshold`` alone (an ``&`` of
+    answers "which entries does IC(0) keep?" on its own:
+    the pattern is fixed by ``matrix`` alone (an ``&`` of
     two boolean tensors), before any elimination, square root, or pivot
     check runs. Checking it directly is ``O(n^2)`` with no loop and no
     breakdown risk, versus ``dense_ic0``'s ``O(n^3)`` elimination that can
@@ -101,30 +101,26 @@ def ic0_sparsity_mask(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     Args:
         matrix (torch.Tensor): Symmetric positive-definite system matrix
             ``A``, shape ``(n, n)``.
-        threshold (float): Drop tolerance - entries with ``|value| <=
-            threshold`` are treated as zero and excluded from the sparsity
-            pattern.
 
     Returns:
         torch.Tensor: Boolean mask, shape ``(n, n)``, true where the IC(0)
             factor is allowed to be non-zero (lower triangle, ``|A_ij| >
-            threshold``).
+            0``; NaN is not pattern).
     """
     n = matrix.shape[0]
     row_index = torch.arange(n, device=matrix.device).unsqueeze(1)
     col_index = torch.arange(n, device=matrix.device).unsqueeze(0)
     lower_triangle = row_index >= col_index
-    return lower_triangle & (matrix.abs() > threshold)
+    return lower_triangle & (matrix.abs() > 0)
 
 
-def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
+def dense_ic0(matrix: torch.Tensor) -> torch.Tensor:
     """Compute a dense zero-fill incomplete Cholesky (IC(0)) factor ``L``.
 
     For a symmetric positive-definite ``matrix``, computes a lower
     triangular ``L`` such that ``L @ L.T`` approximates ``matrix``, where
     ``L`` keeps the same sparsity pattern as the lower triangle of
-    ``matrix`` (entries with ``|value| <= threshold`` are treated as zero
-    and never filled in).
+    ``matrix`` (zero entries are never filled in).
 
     Right-looking Cholesky-Crout: at each step ``k``, the stored entries
     of column ``k`` below the diagonal are scaled by the (square-rooted)
@@ -146,16 +142,13 @@ def dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
     Args:
         matrix (torch.Tensor): Symmetric positive-definite system matrix
             ``A``, shape ``(n, n)``.
-        threshold (float): Drop tolerance - entries with ``|value| <=
-            threshold`` are treated as zero and excluded from the sparsity
-            pattern.
 
     Returns:
         torch.Tensor: Lower triangular incomplete Cholesky factor ``L``,
             shape ``(n, n)``.
     """
     n = matrix.shape[0]
-    sparsity_mask = ic0_sparsity_mask(matrix, threshold)
+    sparsity_mask = ic0_sparsity_mask(matrix)
     rows_below = _indices_per_row(sparsity_mask.tril(-1).T)
 
     factor = torch.where(sparsity_mask, torch.tril(matrix), torch.zeros_like(matrix))

@@ -41,7 +41,6 @@ IC0_SPARSITY_COUNT_TOLERANCE = (
 )
 IC0_SOLUTION_RTOL = 1e-10  # Relative tolerance for solution comparison
 IC0_SOLUTION_ATOL = 1e-12  # Absolute tolerance for solution comparison
-IC0_THRESHOLD = 0.0  # Use no thresholding to match reference
 # Note: Integer metrics (sparsity counts, iteration counts) use exact equality (zero tolerance)
 
 

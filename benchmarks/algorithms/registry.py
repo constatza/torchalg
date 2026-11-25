@@ -153,7 +153,6 @@ def _fixed_cap(iterations: int) -> Callable[[int], int]:
 
 def _pod_amg(problem: Problem) -> AMGPreconditioner:
     return AMGPreconditioner(
-        matrix=problem.matrix,
         coarsening=PODCoarseningStrategy(compute_pod_basis(problem.snapshots, POD_RANK)),
         cycle=VCycle(
             resolve_jacobi_default(None, None),
@@ -213,7 +212,7 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
         Tree.DENSE,
         lambda _p: ICholeskyPreconditioner(),
         _sqrt_cap(6),
-        operand=lambda p: dense_ic0(p.matrix, 0.0),
+        operand=lambda p: dense_ic0(p.matrix),
         max_n=DENSE_FACTOR_CAP,
         cap_reason=DENSE_FACTOR_REASON,
         setup_repeats=5,
@@ -245,7 +244,7 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
     PreconditionerSpec(
         "amg",
         Tree.DENSE,
-        lambda p: vcycle_amg(p.matrix, n_levels=AMG_LEVELS, theta=AMG_THETA),
+        lambda _p: vcycle_amg(n_levels=AMG_LEVELS, theta=AMG_THETA),
         _fixed_cap(60),
         max_n=DENSE_AMG_CAP,
         cap_reason=DENSE_AMG_REASON,
@@ -253,7 +252,7 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
     PreconditionerSpec(
         "amg",
         Tree.CSR,
-        lambda p: sparse_vcycle_amg(p.matrix, n_levels=AMG_LEVELS, theta=AMG_THETA),
+        lambda _p: sparse_vcycle_amg(n_levels=AMG_LEVELS, theta=AMG_THETA),
         _fixed_cap(60),
     ),
     PreconditionerSpec(
@@ -315,7 +314,7 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
     PreconditionerSpec(
         "pod2g",
         Tree.DENSE,
-        lambda p: pod2g_preconditioner(p.matrix, p.snapshots, rank=POD_RANK),
+        lambda p: pod2g_preconditioner(p.snapshots, rank=POD_RANK),
         _sqrt_cap(12),
         max_n=DENSE_AMG_CAP,
         cap_reason=DENSE_AMG_REASON,

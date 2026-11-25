@@ -57,7 +57,8 @@ Public API:
         - NeuralTransferOperator: P/R backed by neural predictors (stub).
 
     Data:
-        - MultigridHierarchy, MultigridLevel: Frozen dataclasses for the grid hierarchy.
+        - MultigridHierarchy, MultigridFineLevel, MultigridCoarsestLevel: Frozen dataclasses
+          for the grid hierarchy; ``MultigridLevel`` is their union.
 """
 
 from .adaptive import AdaptiveSAPreconditioner, AdaptiveSAResult, adaptive_sa_hierarchy
@@ -70,7 +71,12 @@ from .bootstrap import (
 )
 from .coarsening import AggregationCoarsening, NeuralCoarseningStrategy, TargetDimensionCoarsening
 from .cycle import VCycle, WCycle
-from .hierarchy import MultigridHierarchy, MultigridLevel
+from .hierarchy import (
+    MultigridCoarsestLevel,
+    MultigridFineLevel,
+    MultigridHierarchy,
+    MultigridLevel,
+)
 from .protocols import (
     CoarseningStrategy,
     MultigridCycle,
@@ -117,5 +123,7 @@ __all__ = [
     "NeuralTransferOperator",
     # Data
     "MultigridHierarchy",
+    "MultigridCoarsestLevel",
+    "MultigridFineLevel",
     "MultigridLevel",
 ]

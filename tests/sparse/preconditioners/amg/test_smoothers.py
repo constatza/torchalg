@@ -315,7 +315,7 @@ class TestPreparedGaussSeidel:
         assert len(count_level_schedules) == built_by_prepare
 
 
-class TestGaussSeidelStage:
+class TestGaussSeidelMemo:
     """Stage-scoped cache: each distinct matrix is prepared once per stage."""
 
     def test_repeated_calls_on_one_matrix_build_schedules_once(
@@ -325,7 +325,7 @@ class TestGaussSeidelStage:
         x0: torch.Tensor,
         count_level_schedules: list[int],
     ) -> None:
-        stage = smoothers.GaussSeidelStage()
+        stage = smoothers.GaussSeidelMemo()
         for _ in range(5):
             stage.prepare(csr_matrix).smooth(rhs, x0, 1)
         assert len(count_level_schedules) == 2
@@ -337,7 +337,7 @@ class TestGaussSeidelStage:
         x0: torch.Tensor,
         count_level_schedules: list[int],
     ) -> None:
-        stage = smoothers.GaussSeidelStage()
+        stage = smoothers.GaussSeidelMemo()
         other = csr_matrix.clone()
         stage.prepare(csr_matrix).smooth(rhs, x0, 1)
         stage.prepare(other).smooth(rhs, x0, 1)
@@ -346,7 +346,7 @@ class TestGaussSeidelStage:
     def test_matches_prepared_smoother(
         self, csr_matrix: torch.Tensor, rhs: torch.Tensor, x0: torch.Tensor
     ) -> None:
-        stage = smoothers.GaussSeidelStage()
+        stage = smoothers.GaussSeidelMemo()
         torch.testing.assert_close(
             stage.prepare(csr_matrix).smooth(rhs, x0, 2),
             GaussSeidelSmoother().prepare(csr_matrix).smooth(rhs, x0, 2),
@@ -359,8 +359,8 @@ class TestGaussSeidelStage:
         x0: torch.Tensor,
         count_level_schedules: list[int],
     ) -> None:
-        smoothers.GaussSeidelStage().prepare(csr_matrix)
-        smoothers.GaussSeidelStage().prepare(csr_matrix)
+        smoothers.GaussSeidelMemo().prepare(csr_matrix)
+        smoothers.GaussSeidelMemo().prepare(csr_matrix)
         assert len(count_level_schedules) == 4
 
 

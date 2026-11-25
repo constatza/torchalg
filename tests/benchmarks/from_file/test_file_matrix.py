@@ -25,7 +25,6 @@ from .conftest import (
     IC0_SOLUTION_ATOL,
     IC0_SOLUTION_RTOL,
     IC0_SPARSITY_COUNT_TOLERANCE,
-    IC0_THRESHOLD,
     SPARSITY_THRESHOLD,
 )
 
@@ -90,7 +89,7 @@ def test_ic0_quality_vs_reference(system, convergence_tolerances) -> None:
     """
     a, _b, _x_exact, l_reference = system
 
-    ic0_precond = IC0Preconditioner(threshold=IC0_THRESHOLD).setup(a)
+    ic0_precond = IC0Preconditioner().setup(a)
     l_computed = ic0_precond._operator
 
     a_lower = torch.tril(a)
@@ -138,7 +137,7 @@ def test_ic0_solver_performance_vs_reference(system, convergence_tolerances) -> 
     a, b, _x_exact, l_reference = system
     rtol, atol = convergence_tolerances
 
-    ic0_precond = IC0Preconditioner(threshold=IC0_THRESHOLD).setup(a)
+    ic0_precond = IC0Preconditioner().setup(a)
     ref_precond = ICholeskyPreconditioner().setup(l_reference)
 
     x_ic0, result_ic0 = flexible_cg(

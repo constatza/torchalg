@@ -7,7 +7,7 @@ and sparse must be separate implementations, not an internal branch"). Same
 name, disambiguated by package, never imported by the dense class. Like its
 dense sibling, no factorization happens here - the caller supplies the
 sparse CSR lower triangular factor ``L`` directly (e.g. from
-``sparse_ic0``). Reuses ``_triangular.SparseTriangularSolveCache``, the exact
+``sparse_ic0``). Reuses ``_triangular.PreparedTriangularPair``, the exact
 setup-prepared forward/backward solve state ``IC0Preconditioner`` already
 uses - the plan's own framing for this class: "mostly reuse, not new numerical
 code."
@@ -22,7 +22,7 @@ from torch import nn
 
 from torchalg.preconditioners.base import LinearPreconditioner, PreconditionerContext
 from torchalg.sparse.preconditioners._triangular import (
-    SparseTriangularSolveCache,
+    PreparedTriangularPair,
     build_sparse_cholesky_solve_cache,
 )
 
@@ -59,7 +59,7 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           schedules; ``_compute_operator`` returns the supplied ``L`` unchanged.
         - Application: two ``O(nnz(L))`` level-scheduled triangular solves,
           same as ``IC0Preconditioner``'s application cost (both share
-          ``_triangular.SparseTriangularSolveCache``).
+          ``_triangular.PreparedTriangularPair``).
 
     Example:
         >>> import torch
@@ -75,7 +75,7 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """Register the (not yet stored) lower-triangular-factor buffer."""
         nn.Module.__init__(self)
         self._operator: torch.Tensor
-        self._solve_cache: SparseTriangularSolveCache
+        self._solve_cache: PreparedTriangularPair
         self.register_buffer("_operator", None)
 
     def setup(
@@ -94,7 +94,6 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         solve_cache = build_sparse_cholesky_solve_cache(operator)
         self._operator = operator
         self._solve_cache = solve_cache
-        self._mark_ready()
         return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:

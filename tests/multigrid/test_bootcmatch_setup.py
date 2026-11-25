@@ -17,6 +17,7 @@ import torch
 
 from torchalg.multigrid import VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
+from torchalg.multigrid.hierarchy import PreparedCoarsestLevel, PreparedFineLevel
 from torchalg.preconditioners.implementations.amg.bootcmatch_coarsening import (
     BootCMatchCoarsening,
 )
@@ -60,8 +61,8 @@ class TestBootCMatchSetupRun:
             sizes = [level.matrix.shape[0] for level in hierarchy.levels]
             assert sizes == sorted(sizes, reverse=True)
             assert all(a > b for a, b in itertools.pairwise(sizes))
-            assert hierarchy.levels[-1].transfer is None
-            assert all(level.transfer is not None for level in hierarchy.levels[:-1])
+            assert isinstance(hierarchy.levels[-1], PreparedCoarsestLevel)
+            assert all(isinstance(level, PreparedFineLevel) for level in hierarchy.levels[:-1])
 
     def test_low_rho_desired_grows_composite_and_computes_finite_rate(
         self, poisson_matrix: torch.Tensor, seeded_draw: Callable[[int], torch.Tensor]

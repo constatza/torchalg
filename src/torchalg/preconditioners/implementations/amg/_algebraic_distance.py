@@ -70,11 +70,11 @@ import torch
 
 from torchalg.utils.test_vector_weights import test_vector_weights
 
-from ._graph import NeighborhoodCache, NeighborhoodOf, depth_neighborhood
+from ._graph import NeighborhoodMemo, NeighborhoodOf, depth_neighborhood
 from ._least_squares import lsr_correction
 
 __all__ = [
-    "NeighborhoodCache",
+    "NeighborhoodMemo",
     "NeighborhoodOf",
     "algebraic_distance",
     "depth_neighborhood",
@@ -158,7 +158,7 @@ def algebraic_distance(
             through to ``test_vector_weights``; ``None`` for the ``T = I``
             reduction (see that function's docstring).
         neighborhood_of (NeighborhoodOf): Evaluates ``(matrix, depth)``'s
-            neighborhood; pass a ``NeighborhoodCache`` to share it across calls.
+            neighborhood; pass a ``NeighborhoodMemo`` to share it across calls.
 
     Returns:
         torch.Tensor: Dense algebraic-distance matrix ``r``, shape

@@ -10,31 +10,18 @@ their multiplicative composition as a fixed linear preconditioner -
 Deliberately does **not** subclass ``torchalg.multigrid.AMGPreconditioner``:
 that class hard-assumes exactly one ``(hierarchy, cycle)`` pair (its
 ``apply`` is literally ``self._cycle.apply(self._hierarchy, residual)``,
-singular). Forcing a composite of several hierarchies into its
-single-hierarchy constructor would need a meaningless dummy argument.
+singular), while this one owns a tuple of hierarchies.
 Instead this class implements ``MatrixSetupPreconditioner`` + ``nn.Module`` directly,
 the established pattern for any preconditioner owning precomputed tensor
-state (``JacobiPreconditioner``, ``BootstrapAMGPreconditioner``, etc.):
-``register_buffer`` for ``.to(device/dtype)`` propagation, never
-``register_parameter`` since none of this is learnable.
+state (``JacobiPreconditioner``, etc.): the constructor takes configuration only,
+``register_buffer`` holds the bound matrix for ``.to(device/dtype)`` propagation,
+never ``register_parameter`` since none of this is learnable.
 
-Device/dtype moves: unlike ``AMGPreconditioner`` (whose ``_apply`` override
-drops its cached hierarchy after a device/dtype move, requiring a fresh
-``setup()`` call before the next ``apply()``), this class has no such
-override - every hierarchy here is built once by ``setup()`` and kept as-is
-until ``setup()`` runs again.
-A ``.to()`` call after ``setup()`` moves the registered ``_matrix`` buffer
-but intentionally leaves the already-built hierarchies' tensors on their
-original device: rebuilding the whole composite bootstrap loop on every
-device move would be surprising, expensive (it is multiple multigrid
-setups, not a cheap recompute), and inconsistent with how every other
-prebuilt-hierarchy preset (``BootstrapAMGPreconditioner``,
-``AdaptiveSAPreconditioner``) handles this - they override ``_make_hierarchy``
-to move their *single* stored hierarchy's tensors via ``.to(self._matrix)``
-on every ``apply()``. This class follows that same precedent: ``apply()``
-moves each stored hierarchy's level matrices to the current buffer's
-device/dtype before using it, so a ``.to()`` move is still honored, just
-applied lazily inside ``apply()`` rather than via an ``_apply`` override.
+Device/dtype moves: a ``.to()`` call moves the registered ``_matrix`` buffer, and the
+``_apply`` override then moves every prepared hierarchy with ``utils.device.moved_to``,
+once, so a preconditioner set up on the CPU stays ready after a move without
+rebuilding the composite bootstrap loop (it is multiple multigrid setups, not a cheap
+recompute).
 """
 
 from __future__ import annotations
@@ -44,7 +31,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 
-from torchalg.multigrid import MultigridHierarchy, VCycle
+from torchalg.multigrid import PreparedHierarchy, VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
 from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
 from torchalg.utils.device import moved_to
@@ -142,7 +129,7 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
             rho_desired=rho_desired,
             max_hierarchies=max_hierarchies,
         )
-        self._hierarchies: tuple[MultigridHierarchy, ...] = ()
+        self._hierarchies: tuple[PreparedHierarchy, ...] = ()
         self._matrix: torch.Tensor
         self.register_buffer("_matrix", None)
 
@@ -162,8 +149,16 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         """
         self._hierarchies = self._bootcmatch_setup.run(matrix)
         self._matrix = matrix
-        self._mark_ready()
         return self
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether ``setup()`` has bound a matrix and built its hierarchies.
+
+        Returns:
+            bool: ``True`` once the ``_matrix`` buffer is set.
+        """
+        return self._matrix is not None
 
     def _apply(self, fn: Callable, recurse: bool = True) -> Self:
         """Re-bind the prepared hierarchies when the matrix buffer changes device/dtype.
@@ -186,11 +181,11 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         return result
 
     @property
-    def hierarchies(self) -> tuple[MultigridHierarchy, ...]:
+    def hierarchies(self) -> tuple[PreparedHierarchy, ...]:
         """The composite's hierarchies, in application order.
 
         Returns:
-            tuple[MultigridHierarchy, ...]: ``B_0, B_1, ..., B_{r-1}``.
+            tuple[PreparedHierarchy, ...]: ``B_0, B_1, ..., B_{r-1}``.
         """
         return self._hierarchies
 

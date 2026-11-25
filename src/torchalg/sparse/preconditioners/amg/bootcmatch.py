@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch import nn
 
-from torchalg.multigrid import MultigridHierarchy, VCycle
+from torchalg.multigrid import PreparedHierarchy, VCycle
 from torchalg.multigrid.bootcmatch_setup import BootCMatchSetup
 from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
 from torchalg.utils.device import moved_to
@@ -115,7 +115,7 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
             rho_desired=rho_desired,
             max_hierarchies=max_hierarchies,
         )
-        self._hierarchies: tuple[MultigridHierarchy, ...] = ()
+        self._hierarchies: tuple[PreparedHierarchy, ...] = ()
         self._matrix: torch.Tensor
         self.register_buffer("_matrix", None)
 
@@ -135,8 +135,16 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         """
         self._hierarchies = self._bootcmatch_setup.run(matrix)
         self._matrix = matrix
-        self._mark_ready()
         return self
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether ``setup()`` has bound a matrix and built its hierarchies.
+
+        Returns:
+            bool: ``True`` once the ``_matrix`` buffer is set.
+        """
+        return self._matrix is not None
 
     def _apply(self, fn: Callable, recurse: bool = True) -> Self:
         """Re-bind the prepared hierarchies when the matrix buffer changes device/dtype.
@@ -159,11 +167,11 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
         return result
 
     @property
-    def hierarchies(self) -> tuple[MultigridHierarchy, ...]:
+    def hierarchies(self) -> tuple[PreparedHierarchy, ...]:
         """The composite's hierarchies, in application order.
 
         Returns:
-            tuple[MultigridHierarchy, ...]: ``B_0, B_1, ..., B_{r-1}``.
+            tuple[PreparedHierarchy, ...]: ``B_0, B_1, ..., B_{r-1}``.
         """
         return self._hierarchies
 

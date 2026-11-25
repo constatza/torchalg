@@ -19,14 +19,16 @@ import torch
 from torch import nn
 
 from torchalg.sparse.kernels.triangular import TriangularSolver, prepare_triangular_solve
+from torchalg.sparse.preconditioners._ic0_pattern import IC0Pattern
+from torchalg.sparse.preconditioners._ilu0_pattern import ILU0Pattern
 
 
-class SparseTriangularSolveCache(nn.Module):
+class PreparedTriangularPair(nn.Module):
     """Setup-owned prepared forward and backward solves for a triangular pair.
 
     Each half comes from ``prepare_triangular_solve``, which picks the implementation
     registered for the factors' device type (``TRIANGULAR_SOLVER_BY_DEVICE``). The
-    factors are kept as the canonical state; when ``.to()`` moves the cache to another
+    factors are kept as the canonical state; when ``.to()`` moves the pair to another
     device type, both halves are re-resolved for the new device instead of carrying the
     old device's implementation along (the CPU library solve faults on ROCm). ``apply``
     never branches on the device.
@@ -44,19 +46,6 @@ class SparseTriangularSolveCache(nn.Module):
         self.register_buffer("lower", lower, persistent=False)
         self.register_buffer("upper", upper, persistent=False)
         self._resolve_solvers()
-
-    @classmethod
-    def build(cls, lower: torch.Tensor, upper: torch.Tensor) -> SparseTriangularSolveCache:
-        """Prepare both substitutions for a fixed lower/upper factor pair.
-
-        Args:
-            lower: Explicit sparse CSR lower factor.
-            upper: Explicit sparse CSR upper factor.
-
-        Returns:
-            Complete reusable solve cache.
-        """
-        return cls(lower, upper)
 
     def _resolve_solvers(self) -> None:
         self.forward_solve: TriangularSolver = prepare_triangular_solve(self.lower, "forward")
@@ -81,14 +70,65 @@ class SparseTriangularSolveCache(nn.Module):
         return self.backward_solve.solve(self.forward_solve.solve(residual))
 
 
-def build_sparse_cholesky_solve_cache(factor: torch.Tensor) -> SparseTriangularSolveCache:
+def build_sparse_cholesky_solve_cache(
+    factor: torch.Tensor, pattern: IC0Pattern | None = None
+) -> PreparedTriangularPair:
     """Materialize ``factor.T`` and both schedules for repeated application.
 
     Args:
         factor: Sparse CSR lower triangular Cholesky-style factor.
+        pattern: IC(0) plan whose lower structure ``factor`` has; its
+            precomputed transpose permutation replaces the COO round trip.
+            ``None`` transposes ``factor`` generically.
 
     Returns:
-        Reusable solve cache for ``factor @ factor.T``.
+        Reusable solve pair for ``factor @ factor.T``.
     """
-    upper = factor.to_sparse_coo().t().to_sparse_csr()
-    return SparseTriangularSolveCache.build(factor, upper)
+    if pattern is None:
+        upper = factor.to_sparse_coo().t().to_sparse_csr()
+    else:
+        upper = torch.sparse_csr_tensor(
+            pattern.upper_crow,
+            pattern.upper_col,
+            factor.values()[pattern.transpose_perm],
+            size=factor.shape,
+            check_invariants=False,
+        )
+    return PreparedTriangularPair(factor, upper)
+
+
+def build_sparse_lu_solve_cache(
+    factor: torch.Tensor, pattern: ILU0Pattern
+) -> PreparedTriangularPair:
+    """Split a combined ILU(0) factor into its two triangles for repeated application.
+
+    ``L`` keeps its implicit unit diagonal out of the combined factor, but the
+    triangular solve divides by whatever diagonal is stored, so the lower
+    triangle gets an explicit ``1.0`` diagonal. ``U`` is the combined factor's
+    own diagonal-and-upper part. Both are gathered by the pattern's
+    precomputed positions.
+
+    Args:
+        factor: Combined ``L``/``U`` sparse CSR factor from ``sparse_ilu0``.
+        pattern: ILU(0) plan whose stored structure ``factor`` has.
+
+    Returns:
+        Reusable solve pair for ``(L @ U)^{-1}``.
+    """
+    values = factor.values()
+    with_unit = torch.cat([values, values.new_ones(1)])
+    lower = torch.sparse_csr_tensor(
+        pattern.lower_crow,
+        pattern.lower_col,
+        with_unit[pattern.lower_source],
+        size=factor.shape,
+        check_invariants=False,
+    )
+    upper = torch.sparse_csr_tensor(
+        pattern.upper_crow,
+        pattern.upper_col,
+        values[pattern.upper_source],
+        size=factor.shape,
+        check_invariants=False,
+    )
+    return PreparedTriangularPair(lower, upper)

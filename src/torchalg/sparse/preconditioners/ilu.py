@@ -7,12 +7,13 @@ implementations, not an internal branch"). Row-oriented ("left-looking")
 level-scheduled factorization - see ``sparse.preconditioners.ic0``'s module
 docstring and ``docs/plan.md``'s "Correction: the row-oriented recurrence
 sparse_ic0/sparse_ilu0 actually need" section for the shared design
-rationale; ``_lookup``/``_build_lookup`` are reused from ``.ic0`` rather
-than duplicated, since both factorizations need the identical global
-sparse-element lookup primitive.
+rationale.
 
-The Python loop is bounded by ``num_levels * max_row_degree_in_level``, not
-``nnz``, same as ``.ic0``'s batching - see that module's docstring. ILU0's
+Everything that depends only on the stored structure (schedule, gather
+positions, the split into the two solve triangles) is planned once by
+``_ilu0_pattern.analyze_ilu0``; the numeric loop below consumes that
+``ILU0Pattern`` and is bounded by ``num_levels * max_row_degree_in_level``,
+not ``nnz``, same as ``.ic0``'s batching - see that module's docstring. ILU0's
 own wrinkle: a row's L-side entries (``j < row``) need exactly ``d`` of the
 row's own earlier columns at degree-position ``d`` (uniform across a
 batch, like IC0), but its U-side entries (``j >= row``) each need the
@@ -29,103 +30,55 @@ from typing import Self
 import torch
 from torch import nn
 
-from torchalg.preconditioners.base import LinearPreconditioner, PreconditionerContext
-from torchalg.sparse.kernels.triangular import _require_csr, level_schedule
-from torchalg.sparse.preconditioners._triangular import SparseTriangularSolveCache
+from torchalg.preconditioners.base import MatrixSetupPreconditioner, PreconditionerContext
+from torchalg.sparse.kernels.triangular import _require_csr
+from torchalg.sparse.preconditioners._ilu0_pattern import ILU0Pattern, analyze_ilu0
+from torchalg.sparse.preconditioners._triangular import (
+    PreparedTriangularPair,
+    build_sparse_lu_solve_cache,
+)
 
-from .ic0 import LevelSchedule, _build_lookup, _lookup
 
-
-def _expand_row_index(matrix: torch.Tensor) -> torch.Tensor:
-    """Expand ``crow_indices()`` into a per-nonzero-entry row index.
-
-    Same crow-expansion idiom as ``torchalg.sparse.kernels.triangular``'s
-    private helper of the same name, duplicated here rather than imported
-    across the kernels/preconditioners module boundary (matches the dense
-    sibling's existing precedent for this exact idiom).
+def _factorize(matrix: torch.Tensor, pattern: ILU0Pattern) -> torch.Tensor:
+    """Run the ILU(0) recurrence over ``pattern``'s precomputed gather positions.
 
     Args:
-        matrix (torch.Tensor): Sparse CSR matrix.
+        matrix (torch.Tensor): Sparse CSR matrix whose structure ``pattern`` matches.
+        pattern (ILU0Pattern): Plan from ``analyze_ilu0``.
 
     Returns:
-        torch.Tensor: int64, one row index per stored nonzero entry.
+        torch.Tensor: Combined ``L``/``U`` sparse CSR factor.
     """
-    n = matrix.shape[0]
-    crow = matrix.crow_indices()
-    row_nnz = crow[1:] - crow[:-1]
-    return torch.repeat_interleave(torch.arange(n, device=matrix.device), row_nnz)
+    # See ``.ic0._factorize``'s identical comment: ``values`` is rebuilt
+    # out-of-place at every step (``torch.scatter``, never ``scatter_``/
+    # indexed assignment), to avoid invalidating autograd's saved-tensor
+    # versions across row-slice lookups.
+    values = matrix.values()
 
+    for step in pattern.steps:
+        numerator = values[step.flat_pos]
+        if step.gather is not None:
+            gather = step.gather
+            # Masking the gathered value (not the product) keeps an ``inf``/``nan``
+            # at the unfound positions' index 0 from leaking in as ``inf * 0 = nan``.
+            u_kj = torch.where(gather.found, values[gather.pos_kj], 0.0)
+            dot = (values[gather.pos_ik] * u_kj).sum(dim=1)
+            numerator = numerator - dot
 
-def _csr_from_mask(matrix: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """Rebuild a sparse CSR tensor from a boolean submask of ``matrix``'s own entries.
+        u_jj = values[step.diag_pos_of_j]
+        new_val = torch.where(step.is_l_side, numerator / u_jj, numerator)
+        values = values.scatter(0, step.flat_pos, new_val)
 
-    Same crow-rebuild idiom as ``.ic0``'s ``_csr_from_boolean_submask``,
-    duplicated here rather than imported, matching the dense sibling's
-    precedent of not sharing this exact helper across its own ic0/ilu split.
-
-    Args:
-        matrix (torch.Tensor): Source sparse CSR matrix.
-        mask (torch.Tensor): Boolean mask, same shape as ``matrix.values()``.
-
-    Returns:
-        torch.Tensor: Sparse CSR tensor containing only the masked-in entries.
-    """
-    n = matrix.shape[0]
-    row_index = _expand_row_index(matrix)[mask]
-    col = matrix.col_indices()[mask]
-    values = matrix.values()[mask]
-
-    counts = torch.bincount(row_index, minlength=n)
-    crow = torch.zeros(n + 1, dtype=torch.int64, device=matrix.device)
-    crow[1:] = torch.cumsum(counts, 0)
-    return torch.sparse_csr_tensor(crow, col, values, size=matrix.shape, check_invariants=False)
-
-
-def _materialize_unit_lower(combined: torch.Tensor) -> torch.Tensor:
-    """Extract ``combined``'s strictly-lower part with an explicit unit diagonal.
-
-    ``sparse_ilu0``'s combined factor packs ``L`` with an *implicit* unit
-    diagonal - never actually stored as ``1.0``. ``triangular_solve`` has no
-    unit-diagonal convention of its own; it divides by whatever diagonal is
-    actually stored, so solving ``L``'s system against it requires
-    materializing that unit diagonal as real stored entries first.
-
-    Args:
-        combined (torch.Tensor): Sparse CSR combined ``L``/``U`` factor.
-
-    Returns:
-        torch.Tensor: Sparse CSR lower-triangular matrix with ``combined``'s
-            strictly-lower entries plus an explicit ``1.0`` diagonal.
-    """
-    n = combined.shape[0]
-    row_index = _expand_row_index(combined)
-    col = combined.col_indices()
-    values = combined.values()
-
-    strictly_lower = col < row_index
-    lower_row = row_index[strictly_lower]
-    lower_col = col[strictly_lower]
-    lower_val = values[strictly_lower]
-
-    diag_index = torch.arange(n, device=combined.device)
-    diag_val = torch.ones(n, dtype=combined.dtype, device=combined.device)
-
-    all_row = torch.cat([lower_row, diag_index])
-    all_col = torch.cat([lower_col, diag_index])
-    all_val = torch.cat([lower_val, diag_val])
-
-    order = torch.argsort(all_row * n + all_col, stable=True)
-    all_row, all_col, all_val = all_row[order], all_col[order], all_val[order]
-
-    counts = torch.bincount(all_row, minlength=n)
-    crow = torch.zeros(n + 1, dtype=torch.int64, device=combined.device)
-    crow[1:] = torch.cumsum(counts, 0)
     return torch.sparse_csr_tensor(
-        crow, all_col, all_val, size=combined.shape, check_invariants=False
+        pattern.factor_crow,
+        pattern.factor_col,
+        values,
+        size=matrix.shape,
+        check_invariants=False,
     )
 
 
-def sparse_ilu0(matrix: torch.Tensor) -> torch.Tensor:
+def sparse_ilu0(matrix: torch.Tensor, pattern: ILU0Pattern | None = None) -> torch.Tensor:
     """Compute a sparse zero-fill incomplete LU (ILU(0)) combined factor.
 
     Row-oriented recurrence (see ``.ic0``'s module docstring), general (not
@@ -146,95 +99,26 @@ def sparse_ilu0(matrix: torch.Tensor) -> torch.Tensor:
         matrix (torch.Tensor): Sparse CSR system matrix ``A``, shape
             ``(n, n)``. Uses ``A``'s own full pattern - no threshold, no
             lower-only filtering.
+        pattern (ILU0Pattern | None): Plan from ``analyze_ilu0`` for a matrix
+            with the same stored structure; ``None`` analyzes ``matrix`` here,
+            which suits one-off use.
 
     Returns:
         torch.Tensor: Combined ``L``/``U`` sparse CSR factor tensor.
 
     Raises:
-        ValueError: If ``matrix`` is not sparse CSR.
+        ValueError: If ``matrix`` is not sparse CSR or ``pattern`` does not
+            match ``matrix``.
     """
     _require_csr(matrix, "sparse_ilu0")
-
-    n = matrix.shape[0]
-    col = matrix.col_indices()
-    crow = matrix.crow_indices()
-    row_start = crow[:-1]
-    row_end = crow[1:]
-    degrees = row_end - row_start
-    row_index_full = _expand_row_index(matrix)
-
-    # Position of each row's own diagonal entry within that row (= count of
-    # that row's strictly-lower stored entries, since CSR columns are
-    # ascending and L-side entries therefore come first).
-    is_lower = col < row_index_full
-    idx_diag = torch.bincount(row_index_full[is_lower], minlength=n)
-    diag_flat_pos = row_start + idx_diag
-
-    keys = _build_lookup(row_index_full, col, n)
-
-    # See ``.ic0.sparse_ic0``'s identical comment: ``values`` is rebuilt
-    # out-of-place at every step (``torch.scatter``, never ``scatter_``/
-    # indexed assignment), to avoid invalidating autograd's saved-tensor
-    # versions across row-slice lookups.
-    values = matrix.values()
-
-    schedule: LevelSchedule = level_schedule(matrix, direction="forward")
-    level_sizes = schedule.level_sizes.tolist()
-    row_order = schedule.row_order
-
-    offset = 0
-    for level_size in level_sizes:
-        level_rows = row_order[offset : offset + level_size]
-        offset += level_size
-
-        level_degrees = degrees[level_rows]
-        max_degree = int(level_degrees.max()) if level_size > 0 else 0
-
-        for d in range(max_degree):
-            active_mask = level_degrees > d
-            active_rows = level_rows[active_mask]
-            if active_rows.numel() == 0:
-                continue
-
-            active_start = row_start[active_rows]
-            flat_pos = active_start + d
-            j_d = col[flat_pos]
-            idx_diag_active = idx_diag[active_rows]
-            is_l_side = d < idx_diag_active
-            boundary = torch.where(is_l_side, torch.full_like(idx_diag_active, d), idx_diag_active)
-            max_boundary = int(boundary.max())
-
-            if max_boundary > 0:
-                k_idx = torch.arange(max_boundary, device=values.device)
-                valid = k_idx.unsqueeze(0) < boundary.unsqueeze(1)
-                row_degree_active = degrees[active_rows]
-                safe_k = torch.minimum(
-                    k_idx.unsqueeze(0).expand(active_rows.numel(), -1),
-                    (row_degree_active - 1).unsqueeze(1),
-                )
-                pos2d = active_start.unsqueeze(1) + safe_k
-                k_cols = col[pos2d]
-                l_row_k = values[pos2d]
-                query_rows = k_cols.reshape(-1)
-                query_cols = j_d.unsqueeze(1).expand(-1, max_boundary).reshape(-1)
-                found, u_kj = _lookup(keys, values, query_rows, query_cols, n)
-                found = found.reshape(-1, max_boundary) & valid
-                u_kj = u_kj.reshape(-1, max_boundary)
-                dot = (l_row_k * u_kj * found).sum(dim=1)
-            else:
-                dot = torch.zeros(active_rows.numel(), dtype=values.dtype, device=values.device)
-
-            a_val = values[flat_pos]
-            u_jj = values[diag_flat_pos[j_d]]
-            new_val_l = (a_val - dot) / u_jj
-            new_val_u = a_val - dot
-            new_val = torch.where(is_l_side, new_val_l, new_val_u)
-            values = values.scatter(0, flat_pos, new_val)
-
-    return torch.sparse_csr_tensor(crow, col, values, size=matrix.shape, check_invariants=False)
+    if pattern is None:
+        pattern = analyze_ilu0(matrix)
+    elif not pattern.matches(matrix):
+        raise ValueError("sparse_ilu0: pattern does not match the matrix's stored structure")
+    return _factorize(matrix, pattern)
 
 
-class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
+class ILUPreconditioner(MatrixSetupPreconditioner, nn.Module):
     """Incomplete LU preconditioner for sparse CSR systems: ``z = (LU)^{-1}r``.
 
     Sparse-CSR sibling of the dense
@@ -248,6 +132,12 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     (never ``register_parameter`` - it is never learned or
     autograd-tracked) so it participates in ``.to(device=..., dtype=...)``
     propagation.
+
+    Pattern reuse:
+        The instance keeps the ``ILU0Pattern`` of its last ``setup`` and reuses it
+        for the next matrix with the same stored structure
+        (``ILU0Pattern.matches``); otherwise it analyzes anew. Re-running
+        ``setup`` after the values change therefore skips all structural work.
 
     Mathematical Properties:
         - ``M ≈ A`` via incomplete LU factorization (no fill-in beyond
@@ -267,11 +157,10 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     def __init__(self) -> None:
         """Register the (not yet computed) combined LU-factor buffer."""
         nn.Module.__init__(self)
+        self._pattern: ILU0Pattern | None = None
         self._operator: torch.Tensor
-        self._lower: torch.Tensor
-        self._solve_cache: SparseTriangularSolveCache
+        self._solve_cache: PreparedTriangularPair
         self.register_buffer("_operator", None)
-        self.register_buffer("_lower", None, persistent=False)
 
     def setup(
         self,
@@ -280,34 +169,37 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     ) -> Self:
         """Compute and register the sparse ILU(0) factorization of ``matrix``.
 
+        State is assigned only after every step succeeded, so a failed setup
+        keeps the previous complete factor, solve pair and pattern.
+
         Args:
             matrix (torch.Tensor): Sparse CSR system matrix ``A``, shape
                 ``(n, n)``.
             context (PreconditionerContext | None): Ignored.
         """
-        operator = self._compute_operator(matrix)
-        row_index = _expand_row_index(operator)
-        upper_mask = operator.col_indices() >= row_index
-        lower = _materialize_unit_lower(operator)
-        upper = _csr_from_mask(operator, upper_mask)
-        solve_cache = SparseTriangularSolveCache.build(lower, upper)
+        pattern = self._pattern_for(matrix)
+        operator = _factorize(matrix, pattern)
+        solve_cache = build_sparse_lu_solve_cache(operator, pattern)
 
+        self._pattern = pattern
         self._operator = operator
-        self._lower = lower
         self._solve_cache = solve_cache
-        self._mark_ready()
         return self
 
-    def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
-        """Compute the sparse ILU(0) factorization of the system matrix.
+    def _pattern_for(self, matrix: torch.Tensor) -> ILU0Pattern:
+        """Return the held pattern when it matches ``matrix``, else a fresh analysis."""
+        if self._pattern is not None and self._pattern.matches(matrix):
+            return self._pattern
+        return analyze_ilu0(matrix)
 
-        Args:
-            matrix (torch.Tensor): Sparse CSR system matrix ``A``.
+    @property
+    def is_ready(self) -> bool:
+        """Whether ``setup`` has stored a factor.
 
         Returns:
-            torch.Tensor: Combined ``L``/``U`` sparse CSR factor tensor.
+            bool: ``True`` once ``setup()`` has replaced the ``None`` placeholder.
         """
-        return sparse_ilu0(matrix)
+        return self._operator is not None
 
     def apply(
         self,
@@ -317,7 +209,7 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         """Solve ``(LU) z = r`` via sparse forward/backward triangular solves.
 
         ``L``'s implicit unit diagonal (never stored in the combined
-        factor) is materialized explicitly via ``_materialize_unit_lower``
+        factor) is materialized explicitly by ``build_sparse_lu_solve_cache``
         before being handed to ``triangular_solve`` - which has no
         unit-diagonal convention of its own and would otherwise divide by
         a structurally-zero diagonal (frozen to ``target``, per

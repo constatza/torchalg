@@ -85,14 +85,14 @@ class SparseTransferOperator:
         return moved
 
 
-class TransferOperatorCache:
+class TransferOperatorMemo:
     """Builds one ``SparseTransferOperator`` per prolongation tensor, for one setup stage.
 
     Setup algorithms rebuild sub-hierarchies over the same prolongations many
     times (adaptive ``_solve`` per candidate, bootstrap improvement passes);
-    wrapping each ``P`` through this cache transposes it once per stage
+    wrapping each ``P`` through this memo transposes it once per stage
     instead of once per sub-hierarchy. Keyed by tensor identity and holding
-    the prolongations alive, so it must not outlive the stage and a cached
+    the prolongations alive, so it must not outlive the stage and a memoized
     ``P`` must not be mutated in place. Callable as the
     ``prolongation -> TransferOperator`` factory ``BootstrapSetup`` expects.
     """

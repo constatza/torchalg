@@ -12,6 +12,7 @@ import torch
 
 from torchalg.preconditioners.base import PreconditionerContext
 from torchalg.preconditioners.implementations import (
+    IC0Preconditioner,
     Identity,
     JacobiPreconditioner,
     ScheduledPreconditioner,
@@ -36,6 +37,26 @@ def residual_vector(torch_dtype: torch.dtype) -> torch.Tensor:
         torch.Tensor: ``[2.0, 4.0]``.
     """
     return torch.tensor([2.0, 4.0], dtype=torch_dtype)
+
+
+@pytest.fixture
+def spd_diagonal_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
+    """Provide an SPD diagonal matrix that IC(0) factorizes.
+
+    Returns:
+        torch.Tensor: ``diag([2.0, 4.0, 8.0])``.
+    """
+    return torch.diag(torch.tensor([2.0, 4.0, 8.0], dtype=torch_dtype))
+
+
+@pytest.fixture
+def indefinite_matrix(torch_dtype: torch.dtype) -> torch.Tensor:
+    """Provide a symmetric indefinite matrix: IC(0) breaks down at its second pivot.
+
+    Returns:
+        torch.Tensor: ``[[1, 2, 0], [2, 1, 0], [0, 0, 1]]``.
+    """
+    return torch.tensor([[1.0, 2.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch_dtype)
 
 
 def test_scheduled_preconditioner_limit_iters(
@@ -215,3 +236,32 @@ def test_to_moves_the_wrapped_preconditioners(diagonal_matrix: torch.Tensor) -> 
 
     assert moved is scheduled
     assert primary.inv_diag.dtype == torch.float32
+
+
+def test_failed_setup_leaves_the_first_component_on_the_new_matrix(
+    spd_diagonal_matrix: torch.Tensor, indefinite_matrix: torch.Tensor
+) -> None:
+    """Components are set up one after the other, so a late failure is not rolled back.
+
+    The schedule's own state is its components', and they mutate in place: when
+    the fallback's ``setup`` raises, the primary has already been rebound.
+    """
+    primary = JacobiPreconditioner()
+    scheduled = ScheduledPreconditioner(primary, IC0Preconditioner()).setup(spd_diagonal_matrix)
+
+    with pytest.raises(ValueError, match="pivot"):
+        scheduled.setup(indefinite_matrix)
+
+    torch.testing.assert_close(primary.inv_diag, 1.0 / indefinite_matrix.diagonal())
+
+
+def test_static_over_static_schedule_is_ready_and_applies_before_setup(
+    residual_vector: torch.Tensor,
+) -> None:
+    """Readiness is the components', so a schedule of ready-by-construction ones needs no setup."""
+    scheduled = ScheduledPreconditioner(Identity(), Identity(), limit_iters=1)
+    assert scheduled.is_ready
+
+    ctx = PreconditionerContext(iteration=0, residual_norm=1.0, rhs_norm=1.0)
+
+    torch.testing.assert_close(scheduled.apply(residual_vector, ctx), residual_vector)

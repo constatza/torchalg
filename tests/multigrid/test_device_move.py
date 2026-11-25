@@ -42,13 +42,13 @@ CAST_ATOL = 1e-5
 type Builder = Callable[[torch.Tensor], MatrixSetupPreconditioner]
 
 DENSE_BUILDERS: dict[str, Builder] = {
-    "aggregation": lambda matrix: vcycle_amg(matrix, theta=STRENGTH_THETA),
+    "aggregation": lambda matrix: vcycle_amg(theta=STRENGTH_THETA),
     "adaptive_sa": lambda _matrix: AdaptiveSAPreconditioner(),
     "bootstrap": lambda _matrix: BootstrapAMGPreconditioner(),
     "bootcmatch": lambda _matrix: BootCMatchPreconditioner(),
 }
 SPARSE_BUILDERS: dict[str, Builder] = {
-    "aggregation": lambda matrix: sparse_vcycle_amg(matrix, theta=STRENGTH_THETA),
+    "aggregation": lambda matrix: sparse_vcycle_amg(theta=STRENGTH_THETA),
     "adaptive_sa": lambda _matrix: SparseAdaptiveSAPreconditioner(),
     "bootstrap": lambda _matrix: SparseBootstrapAMGPreconditioner(),
     "bootcmatch": lambda _matrix: SparseBootCMatchPreconditioner(),

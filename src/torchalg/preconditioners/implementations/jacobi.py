@@ -49,7 +49,7 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
     Example:
         >>> import torch
         >>> matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0]))
-        >>> precond = JacobiPreconditioner(matrix)
+        >>> precond = JacobiPreconditioner().setup(matrix)
         >>> z = precond.apply(torch.tensor([2.0, 4.0, 1.0]))  # z = D^{-1}r
     """
 
@@ -71,8 +71,16 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
             context (PreconditionerContext | None): Ignored.
         """
         self.inv_diag = self._compute_operator(matrix)
-        self._mark_ready()
         return self
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether the inverse diagonal has been computed.
+
+        Returns:
+            bool: ``True`` once ``setup()`` has stored ``inv_diag``.
+        """
+        return self.inv_diag is not None
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:
         """Extract and invert the diagonal from matrix.

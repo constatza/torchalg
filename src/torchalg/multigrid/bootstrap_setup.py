@@ -61,7 +61,7 @@ from typing import Protocol
 
 import torch
 
-from .hierarchy import MultigridHierarchy, MultigridLevel
+from .hierarchy import MultigridHierarchy, PreparedHierarchy, assemble_hierarchy
 from .protocols import MultigridCycle, MultigridSmoother, TransferOperator
 
 
@@ -186,7 +186,7 @@ def _relax_columns(
 def _improve_test_vectors(
     matrix: torch.Tensor,
     vectors: torch.Tensor,
-    hierarchy: MultigridHierarchy,
+    hierarchy: MultigridHierarchy | PreparedHierarchy,
     iterations: int,
     setup_cycle: MultigridCycle,
 ) -> torch.Tensor:
@@ -205,7 +205,7 @@ def _improve_test_vectors(
     Args:
         matrix (torch.Tensor): Finest-level matrix, shape ``(n, n)``.
         vectors (torch.Tensor): Test vectors to improve, shape ``(n, k)``.
-        hierarchy (MultigridHierarchy): Current (partial) hierarchy.
+        hierarchy (MultigridHierarchy | PreparedHierarchy): Current (partial) hierarchy.
         iterations (int): Number of cycles per test vector.
         setup_cycle (MultigridCycle): The setup-time cycle (e.g. dense/sparse
             GS V(1,1)) - injected, not hardcoded.
@@ -239,15 +239,8 @@ def _hierarchy_of(
     Returns:
         MultigridHierarchy: Hierarchy sharing the given tensors.
     """
-    last = len(levels) - 1
-    return MultigridHierarchy(
-        tuple(
-            MultigridLevel(
-                matrix=matrix,
-                transfer=None if index == last else transfer_operator_factory(prolongations[index]),
-            )
-            for index, matrix in enumerate(levels)
-        )
+    return assemble_hierarchy(
+        levels, [transfer_operator_factory(prolongation) for prolongation in prolongations]
     )
 
 
@@ -394,7 +387,7 @@ class BootstrapSetup:
             levels[index].shape[0]: _improve_test_vectors(
                 levels[index],
                 level_vectors[levels[index].shape[0]],
-                MultigridHierarchy(prepared.levels[index:]),
+                PreparedHierarchy(prepared.fine[index:], prepared.coarsest),
                 self.eta,
                 self.setup_cycle,
             )

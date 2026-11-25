@@ -53,7 +53,7 @@ class TestSparseVCycleAMGMultiLevel:
         the hierarchy itself never stores a dense matrix.
         """
         factory = getattr(sparse_variants, preset_name)
-        precond = factory(poisson_1d_large_csr, n_levels=_N_LEVELS)
+        precond = factory(n_levels=_N_LEVELS)
         precond.setup(poisson_1d_large_csr)
         precond.apply(torch.ones(poisson_1d_large_csr.shape[0], dtype=poisson_1d_large_csr.dtype))
 
@@ -75,9 +75,9 @@ class TestSparseVCycleAMGMultiLevel:
         dense_factory = getattr(dense_variants, preset_name)
         sparse_factory = getattr(sparse_variants, preset_name)
 
-        dense_precond = dense_factory(poisson_1d_large_dense, n_levels=_N_LEVELS)
+        dense_precond = dense_factory(n_levels=_N_LEVELS)
         dense_precond.setup(poisson_1d_large_dense)
-        sparse_precond = sparse_factory(poisson_1d_large_csr, n_levels=_N_LEVELS)
+        sparse_precond = sparse_factory(n_levels=_N_LEVELS)
         sparse_precond.setup(poisson_1d_large_csr)
 
         expected = dense_precond.apply(rhs)
@@ -93,13 +93,9 @@ class TestSparseVCycleAMGMultiLevel:
         poisson_1d_large_rhs: torch.Tensor,
     ) -> None:
         """A full PCG solve agrees when the hierarchy is dense or sparse CSR."""
-        dense_preconditioner = getattr(dense_variants, preset_name)(
-            poisson_1d_large_dense, n_levels=_N_LEVELS
-        )
+        dense_preconditioner = getattr(dense_variants, preset_name)(n_levels=_N_LEVELS)
         dense_preconditioner.setup(poisson_1d_large_dense)
-        sparse_preconditioner = getattr(sparse_variants, preset_name)(
-            poisson_1d_large_csr, n_levels=_N_LEVELS
-        )
+        sparse_preconditioner = getattr(sparse_variants, preset_name)(n_levels=_N_LEVELS)
         sparse_preconditioner.setup(poisson_1d_large_csr)
 
         dense_solution, dense_info = pcg(

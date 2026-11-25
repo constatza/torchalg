@@ -185,17 +185,26 @@ depends_on = ["torchalg.sparse.preconditioners.amg._gauss_seidel", "torchalg.spa
 path = "torchalg.sparse.preconditioners._protocol_conformance"
 depends_on = ["torchalg.multigrid.protocols", "torchalg.sparse.preconditioners.amg.coarsening", "torchalg.sparse.preconditioners.amg.transfer"]
 [[modules]]
+path = "torchalg.sparse.preconditioners._pattern_index"
+depends_on = ["torchalg.sparse.kernels.index_dtype"]
+[[modules]]
+path = "torchalg.sparse.preconditioners._ic0_pattern"
+depends_on = ["torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._pattern_index"]
+[[modules]]
+path = "torchalg.sparse.preconditioners._ilu0_pattern"
+depends_on = ["torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._pattern_index"]
+[[modules]]
 path = "torchalg.sparse.preconditioners._triangular"
-depends_on = ["torchalg.sparse.kernels.triangular"]
+depends_on = ["torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._ic0_pattern", "torchalg.sparse.preconditioners._ilu0_pattern"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.ic0"
-depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._triangular"]
+depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._ic0_pattern", "torchalg.sparse.preconditioners._triangular"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.icholesky"
 depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.preconditioners._triangular"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.ilu"
-depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._triangular", "torchalg.sparse.preconditioners.ic0"]
+depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.triangular", "torchalg.sparse.preconditioners._ilu0_pattern", "torchalg.sparse.preconditioners._triangular"]
 [[modules]]
 path = "torchalg.sparse.preconditioners.jacobi"
 depends_on = ["torchalg.preconditioners.base", "torchalg.sparse.kernels.diagonal"]

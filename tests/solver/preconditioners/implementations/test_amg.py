@@ -34,13 +34,13 @@ from collections.abc import Callable
 import pytest
 import torch
 
+from torchalg.multigrid import PreparedCoarsestLevel, PreparedHierarchy
 from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 from torchalg.preconditioners.implementations import AMGPreconditioner, Identity
 from torchalg.preconditioners.implementations.amg import (
     AggregationCoarsening,
     DenseTransferOperator,
     JacobiSmoother,
-    MultigridHierarchy,
     MultigridSmoother,
     NeuralCoarseningStrategy,
     NeuralTransferOperator,
@@ -77,7 +77,6 @@ def amg_preconditioner(poisson_1d: torch.Tensor) -> AMGPreconditioner:
         AMGPreconditioner instance with VCycle + JacobiSmoother.
     """
     precond = AMGPreconditioner(
-        poisson_1d,
         coarsening=AggregationCoarsening(),
         cycle=VCycle(smoother=JacobiSmoother()),
         n_levels=2,
@@ -574,7 +573,6 @@ class TestVCycle:
     def test_output_shape(self, poisson_1d: torch.Tensor, poisson_rhs: torch.Tensor) -> None:
         """V-cycle output must match rhs shape."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
             n_levels=2,
@@ -588,7 +586,6 @@ class TestVCycle:
     ) -> None:
         """V-cycle output dtype must match the working dtype (no float64 hardcode)."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -623,7 +620,6 @@ class TestAMGPreconditioner:
     def test_apply_before_setup_raises(self, poisson_1d: torch.Tensor) -> None:
         """``apply()`` before ``setup()`` must raise ``PreconditionerNotReadyError``."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -634,7 +630,6 @@ class TestAMGPreconditioner:
     def test_setup_builds_hierarchy_once(self, poisson_1d: torch.Tensor) -> None:
         """``setup()`` builds the hierarchy; a later ``apply()`` does not rebuild it."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -645,20 +640,18 @@ class TestAMGPreconditioner:
         precond.apply(torch.ones(poisson_1d.shape[0], dtype=poisson_1d.dtype))
         assert precond._hierarchy is hierarchy
 
-    def test_linear_requires_flexible_cg_false(self, poisson_1d: torch.Tensor) -> None:
+    def test_linear_requires_flexible_cg_false(self) -> None:
         """Classical AMG (linear=True) must not request FCG."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
             linear=True,
         )
         assert precond.requires_flexible_cg is False
 
-    def test_nonlinear_requires_flexible_cg_true(self, poisson_1d: torch.Tensor) -> None:
+    def test_nonlinear_requires_flexible_cg_true(self) -> None:
         """AMG with linear=False must request FCG (neural AMG case)."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
             linear=False,
@@ -684,7 +677,6 @@ class TestAMGPreconditioner:
     ) -> None:
         """``bind_inputs`` no longer invalidates anything; only a fresh ``setup()`` rebuilds."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -698,9 +690,8 @@ class TestAMGPreconditioner:
         assert precond._hierarchy is not hierarchy
 
     def test_hierarchy_has_correct_n_levels(self, poisson_1d: torch.Tensor) -> None:
-        """Built hierarchy must have exactly n_levels MultigridLevel entries."""
+        """Built hierarchy must have exactly n_levels level entries."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
             n_levels=2,
@@ -709,26 +700,24 @@ class TestAMGPreconditioner:
         assert precond._hierarchy is not None
         assert len(precond._hierarchy.levels) == 2
 
-    def test_rejects_single_level_hierarchy(self, poisson_1d: torch.Tensor) -> None:
+    def test_rejects_single_level_hierarchy(self) -> None:
         """AMG must have at least one coarse level; n_levels=1 is a direct solve."""
         with pytest.raises(ValueError, match="n_levels"):
             AMGPreconditioner(
-                poisson_1d,
                 coarsening=AggregationCoarsening(),
                 cycle=VCycle(smoother=JacobiSmoother()),
                 n_levels=1,
             )
 
-    def test_coarsest_level_has_no_transfer(self, poisson_1d: torch.Tensor) -> None:
-        """The coarsest level must have transfer=None."""
+    def test_coarsest_level_is_a_prepared_coarsest_level(self, poisson_1d: torch.Tensor) -> None:
+        """The last level carries the coarse solve, not a transfer."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
         precond.setup(poisson_1d)
         assert precond._hierarchy is not None
-        assert precond._hierarchy.levels[-1].transfer is None
+        assert isinstance(precond._hierarchy.levels[-1], PreparedCoarsestLevel)
 
     def test_move_keeps_the_prepared_hierarchy(self, poisson_1d: torch.Tensor) -> None:
         """``.to()`` moves the prepared hierarchy with the matrix instead of dropping it.
@@ -737,7 +726,6 @@ class TestAMGPreconditioner:
         state follows the new dtype, and the moved cycle reproduces the original one.
         """
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -767,7 +755,6 @@ class TestUniformContextInterface:
         jacobi = JacobiPreconditioner()
         jacobi.setup(poisson_1d)
         amg = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -807,7 +794,6 @@ class TestWCycle:
     def test_output_shape(self, poisson_1d: torch.Tensor, poisson_rhs: torch.Tensor) -> None:
         """W-cycle output must match rhs shape."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=WCycle(smoother=JacobiSmoother()),
             n_levels=2,
@@ -821,7 +807,6 @@ class TestWCycle:
     ) -> None:
         """W-cycle output dtype must match the working dtype (no float64 hardcode)."""
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=WCycle(smoother=JacobiSmoother()),
             n_levels=2,
@@ -842,13 +827,9 @@ class TestWCycle:
         smoother = JacobiSmoother()
         coarsening = AggregationCoarsening()
 
-        v_precond = AMGPreconditioner(
-            poisson_1d, coarsening=coarsening, cycle=VCycle(smoother), n_levels=2
-        )
+        v_precond = AMGPreconditioner(coarsening=coarsening, cycle=VCycle(smoother), n_levels=2)
         v_precond.setup(poisson_1d)
-        w_precond = AMGPreconditioner(
-            poisson_1d, coarsening=coarsening, cycle=WCycle(smoother), n_levels=2
-        )
+        w_precond = AMGPreconditioner(coarsening=coarsening, cycle=WCycle(smoother), n_levels=2)
         w_precond.setup(poisson_1d)
 
         e_v = v_precond.apply(poisson_rhs)
@@ -872,7 +853,7 @@ class TestAMGPresets:
         poisson_rhs: torch.Tensor,
     ) -> None:
         """apply() output must match residual shape for both preset classes."""
-        precond = amg_preset_class(poisson_1d, n_levels=2)
+        precond = amg_preset_class(n_levels=2)
         precond.setup(poisson_1d)
         z = precond.apply(poisson_rhs)
         assert z.shape == poisson_rhs.shape
@@ -884,7 +865,7 @@ class TestAMGPresets:
         poisson_rhs: torch.Tensor,
     ) -> None:
         """apply() output dtype must match the working dtype for both preset classes."""
-        precond = amg_preset_class(poisson_1d, n_levels=2)
+        precond = amg_preset_class(n_levels=2)
         precond.setup(poisson_1d)
         assert precond.apply(poisson_rhs).dtype == poisson_1d.dtype
 
@@ -895,7 +876,7 @@ class TestAMGPresets:
         raising_smoother: MultigridSmoother,
     ) -> None:
         """Every SA-AMG preset must delegate solve-time smoothing to the injected strategy."""
-        precond = amg_preset_class(poisson_1d, n_levels=2, smoother=raising_smoother)
+        precond = amg_preset_class(n_levels=2, smoother=raising_smoother)
         with pytest.raises(RuntimeError, match="configured smoother used"):
             precond.setup(poisson_1d)
 
@@ -908,7 +889,7 @@ class TestAMGPresets:
         """FCG with three-level AMG must handle inference-created coarse matrices."""
         from torchalg import flexible_cg
 
-        precond = amg_preset_class(poisson_1d, n_levels=3)
+        precond = amg_preset_class(n_levels=3)
         precond.setup(poisson_1d)
         x, info = flexible_cg(poisson_1d, poisson_rhs, preconditioner=precond, rtol=1e-8)
         assert info.converged, f"AMG preset + FCG did not converge: {info}"
@@ -927,7 +908,7 @@ class TestAMGPresets:
         basis vector, then check symmetry and positive-definiteness via eigenvalues.
         """
         n = poisson_1d.shape[0]
-        precond = amg_preset_class(poisson_1d, n_levels=2)
+        precond = amg_preset_class(n_levels=2)
         precond.setup(poisson_1d)
         identity = torch.eye(n, dtype=poisson_1d.dtype)
         m = torch.stack([precond.apply(identity[:, i]) for i in range(n)], dim=1)
@@ -947,15 +928,15 @@ class TestAMGPresets:
         self, amg_preset_class: Callable[..., AMGPreconditioner], poisson_1d: torch.Tensor
     ) -> None:
         """Both presets are linear preconditioners and must not request FCG."""
-        precond = amg_preset_class(poisson_1d, n_levels=2)
+        precond = amg_preset_class(n_levels=2)
         assert precond.requires_flexible_cg is False
 
     def test_rejects_single_level_hierarchy(
-        self, amg_preset_class: Callable[..., AMGPreconditioner], poisson_1d: torch.Tensor
+        self, amg_preset_class: Callable[..., AMGPreconditioner]
     ) -> None:
         """Preset AMG variants must reject n_levels=1 for two-grid clarity."""
         with pytest.raises(ValueError, match="n_levels"):
-            amg_preset_class(poisson_1d, n_levels=1)
+            amg_preset_class(n_levels=1)
 
     def test_wcycle_iters_not_worse_than_vcycle(
         self, poisson_1d: torch.Tensor, poisson_rhs: torch.Tensor
@@ -967,9 +948,9 @@ class TestAMGPresets:
         """
         from torchalg import flexible_cg
 
-        v_precond = vcycle_amg(poisson_1d, n_levels=2)
+        v_precond = vcycle_amg(n_levels=2)
         v_precond.setup(poisson_1d)
-        w_precond = wcycle_amg(poisson_1d, n_levels=2)
+        w_precond = wcycle_amg(n_levels=2)
         w_precond.setup(poisson_1d)
         _, info_v = flexible_cg(
             poisson_1d,
@@ -999,7 +980,6 @@ class TestAMGWithFCGSolver:
         from torchalg import flexible_cg
 
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -1016,7 +996,6 @@ class TestAMGWithFCGSolver:
 
         _, info_unprecond = flexible_cg(poisson_1d, poisson_rhs, rtol=1e-8)
         precond = AMGPreconditioner(
-            poisson_1d,
             coarsening=AggregationCoarsening(),
             cycle=VCycle(smoother=JacobiSmoother()),
         )
@@ -1094,22 +1073,21 @@ class _RecordingPredictor(ExtraInputPredictorPort):
 
 
 # ---------------------------------------------------------------------------
-# MultigridHierarchy sanity (frozen dataclass import check)
+# PreparedHierarchy sanity (frozen dataclass check)
 # ---------------------------------------------------------------------------
 
 
-def test_multigrid_hierarchy_is_frozen(poisson_1d: torch.Tensor) -> None:
-    """MultigridHierarchy instances must be immutable (frozen dataclass)."""
+def test_prepared_hierarchy_is_frozen(poisson_1d: torch.Tensor) -> None:
+    """PreparedHierarchy instances must be immutable (frozen dataclass)."""
     precond = AMGPreconditioner(
-        poisson_1d,
         coarsening=AggregationCoarsening(),
         cycle=VCycle(smoother=JacobiSmoother()),
     )
     precond.setup(poisson_1d)
     hierarchy = precond._hierarchy
-    assert isinstance(hierarchy, MultigridHierarchy)
+    assert isinstance(hierarchy, PreparedHierarchy)
     with pytest.raises(AttributeError):
-        hierarchy.levels = ()  # ty: ignore[invalid-assignment]
+        hierarchy.fine = ()  # ty: ignore[invalid-assignment]
 
 
 def test_cached_candidates_do_not_keep_the_matrix_alive(

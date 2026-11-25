@@ -72,7 +72,6 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
             context (PreconditionerContext | None): Ignored.
         """
         self._operator = self._compute_operator(matrix)
-        self._mark_ready()
         return self
 
     def _compute_operator(self, matrix: torch.Tensor) -> torch.Tensor:

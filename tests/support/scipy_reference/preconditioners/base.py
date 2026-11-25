@@ -73,8 +73,8 @@ class Preconditioner(ABC):
     where the goal is to accelerate convergence of the iterative solver.
 
     Examples:
-        >>> # Direct instantiation - simple!
-        >>> precond = JacobiPreconditioner(matrix)
+        >>> # Config-only constructor, then bind the matrix with ``setup``
+        >>> precond = JacobiPreconditioner().setup(matrix)
         >>> z = precond.apply(residual)
         >>>
         >>> # Neural preconditioner (GPU cleanup automatic on GC)
@@ -179,8 +179,8 @@ class LinearPreconditioner[T_Operator](Preconditioner):
     (e.g., NDArray for Jacobi, SuperLU for ILU).
 
     Example:
-        >>> # User passes matrix - simple!
-        >>> precond = JacobiPreconditioner(matrix)
+        >>> # ``setup`` binds the matrix; the constructor is config-only
+        >>> precond = JacobiPreconditioner().setup(matrix)
         >>>
         >>> # Preconditioner extracts diagonal and inverts it internally
         >>> z = precond.apply(residual)  # z = D^{-1}r

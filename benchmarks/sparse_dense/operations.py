@@ -248,17 +248,16 @@ def triangular_apply_sparse_prepared(
 # ---------------------------------------------------------------------------
 
 
-def factorize_ic0(matrix: torch.Tensor, threshold: float = 0.0) -> torch.Tensor:
+def factorize_ic0(matrix: torch.Tensor) -> torch.Tensor:
     """Dense incomplete Cholesky factorization - reuses torchalg's own kernel.
 
     Args:
         matrix: Dense SPD ``(n, n)`` matrix.
-        threshold: Drop tolerance (see ``dense_ic0``).
 
     Returns:
         torch.Tensor: Dense lower-triangular factor ``L``.
     """
-    return dense_ic0(matrix, threshold)
+    return dense_ic0(matrix)
 
 
 def factorize_ilu0(matrix: torch.Tensor) -> torch.Tensor:
@@ -273,17 +272,16 @@ def factorize_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     return dense_ilu0(matrix)
 
 
-def factorize_sparse_ic0(matrix: torch.Tensor, threshold: float = 0.0) -> torch.Tensor:
+def factorize_sparse_ic0(matrix: torch.Tensor) -> torch.Tensor:
     """Sparse incomplete Cholesky factorization - reuses torchalg.sparse's own kernel.
 
     Args:
         matrix: Sparse CSR SPD ``(n, n)`` matrix.
-        threshold: Drop tolerance (see ``sparse_ic0``).
 
     Returns:
         torch.Tensor: Sparse CSR lower-triangular factor ``L``.
     """
-    return sparse_ic0(matrix, threshold)
+    return sparse_ic0(matrix)
 
 
 def to_scipy_csc(matrix_sparse: torch.Tensor) -> scipy_sparse.csc_matrix:

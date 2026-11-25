@@ -13,9 +13,9 @@ from ..base import (
     NonLinearPreconditioner,
     Preconditioner,
     PreconditionerContext,
-    PreconditionerNotReadyError,
     StaticSetupPreconditioner,
 )
+from .identity import Identity
 
 
 def _setup_sub(
@@ -115,7 +115,7 @@ class ScheduledPreconditioner(
             raise ValueError("limit_iters must be non-negative")
         nn.Module.__init__(self)
         self._primary = primary
-        self._fallback = fallback
+        self._fallback: Preconditioner = Identity() if fallback is None else fallback
         self._limit_iters = limit_iters
         self._start_iter = start_iter
 
@@ -126,9 +126,8 @@ class ScheduledPreconditioner(
     ) -> Self:
         """Set up both the primary and fallback preconditioners.
 
-        Resolves the default ``Identity`` fallback (if none was supplied)
-        before setting it up, since both branches must be ready before this
-        preconditioner's ``apply()`` can dispatch to either of them.
+        Both branches must be ready before ``apply()`` can dispatch to either
+        of them.
 
         Args:
             matrix (torch.Tensor): System matrix A, forwarded to both.
@@ -137,14 +136,21 @@ class ScheduledPreconditioner(
         Returns:
             Self: This preconditioner, now ready for ``apply()``.
         """
-        if self._fallback is None:
-            from .identity import Identity
-
-            self._fallback = Identity()
         _setup_sub(self._primary, matrix, context)
         _setup_sub(self._fallback, matrix, context)
-        self._mark_ready()
         return self
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether both wrapped preconditioners are ready.
+
+        Holds no state of its own, so readiness is exactly that of the two
+        branches ``apply()`` dispatches between.
+
+        Returns:
+            bool: ``True`` when primary and fallback are both ready.
+        """
+        return self._primary.is_ready and self._fallback.is_ready
 
     @property
     def primary(self) -> Preconditioner:
@@ -204,10 +210,6 @@ class ScheduledPreconditioner(
 
         if self._uses_primary(context.iteration):
             return self._primary.apply(residual, context)
-        if self._fallback is None:
-            raise PreconditionerNotReadyError(
-                f"{type(self).__name__}.setup() must be called before apply()."
-            )
         return self._fallback.apply(residual, context)
 
     def _uses_primary(self, iteration: int) -> bool:

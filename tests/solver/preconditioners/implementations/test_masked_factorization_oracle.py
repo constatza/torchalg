@@ -38,9 +38,9 @@ def _old_dense_ilu0(matrix: torch.Tensor) -> torch.Tensor:
     return factors
 
 
-def _old_dense_ic0(matrix: torch.Tensor, threshold: float) -> torch.Tensor:
+def _old_dense_ic0(matrix: torch.Tensor) -> torch.Tensor:
     n = matrix.shape[0]
-    sparsity_mask = ic0_sparsity_mask(matrix, threshold)
+    sparsity_mask = ic0_sparsity_mask(matrix)
     not_sparsity_mask = ~sparsity_mask
     factor = torch.where(sparsity_mask, torch.tril(matrix), torch.zeros_like(matrix))
     for k in range(n):
@@ -125,26 +125,10 @@ def test_dense_ilu0_never_fills_outside_the_pattern(
 
 def test_dense_ic0_matches_scalar_loop(sparse_spd_matrix: torch.Tensor) -> None:
     """Gathered right-looking IC(0) reproduces the trailing-block reference."""
-    new = dense_ic0(sparse_spd_matrix, 0.0)
-    old = _old_dense_ic0(sparse_spd_matrix, 0.0)
+    new = dense_ic0(sparse_spd_matrix)
+    old = _old_dense_ic0(sparse_spd_matrix)
 
     torch.testing.assert_close(new, old, rtol=FACTOR_RTOL, atol=FACTOR_RTOL)
-
-
-def test_dense_ic0_matches_scalar_loop_with_drop_threshold(sparse_spd_matrix: torch.Tensor) -> None:
-    """A drop tolerance shrinks the pattern identically in both versions."""
-    threshold = 0.3
-    try:
-        old = _old_dense_ic0(sparse_spd_matrix, threshold)
-    except ValueError as expected:
-        with pytest.raises(ValueError, match="breakdown") as raised:
-            dense_ic0(sparse_spd_matrix, threshold)
-        assert str(raised.value) == str(expected)
-        return
-
-    torch.testing.assert_close(
-        dense_ic0(sparse_spd_matrix, threshold), old, rtol=FACTOR_RTOL, atol=FACTOR_RTOL
-    )
 
 
 def test_dense_ic0_breakdown_names_the_first_bad_pivot_like_the_old_check(
@@ -152,10 +136,10 @@ def test_dense_ic0_breakdown_names_the_first_bad_pivot_like_the_old_check(
 ) -> None:
     """The deferred check raises the same error, with the same pivot index and value."""
     with pytest.raises(ValueError, match="breakdown") as old_error:
-        _old_dense_ic0(indefinite_matrix, 0.0)
+        _old_dense_ic0(indefinite_matrix)
 
     with pytest.raises(ValueError, match="breakdown") as new_error:
-        dense_ic0(indefinite_matrix, 0.0)
+        dense_ic0(indefinite_matrix)
 
     assert str(new_error.value) == str(old_error.value)
     assert "pivot 2" in str(new_error.value)

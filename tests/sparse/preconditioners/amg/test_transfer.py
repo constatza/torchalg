@@ -7,7 +7,7 @@ import torch
 
 from torchalg.sparse.preconditioners.amg.transfer import (
     SparseTransferOperator,
-    TransferOperatorCache,
+    TransferOperatorMemo,
 )
 
 _RANK = 4
@@ -48,23 +48,23 @@ def prolongation(poisson_1d_dense: torch.Tensor) -> torch.Tensor:
     return torch.eye(n, dtype=poisson_1d_dense.dtype)[:, :_RANK].to_sparse_csr()
 
 
-class TestTransferOperatorCache:
+class TestTransferOperatorMemo:
     """One operator per prolongation tensor within a stage."""
 
     def test_same_prolongation_returns_the_same_operator(self, prolongation: torch.Tensor) -> None:
-        cache = TransferOperatorCache()
+        cache = TransferOperatorMemo()
         assert cache(prolongation) is cache(prolongation)
 
     def test_distinct_prolongations_get_distinct_operators(
         self, prolongation: torch.Tensor
     ) -> None:
-        cache = TransferOperatorCache()
+        cache = TransferOperatorMemo()
         assert cache(prolongation) is not cache(prolongation.clone())
 
     def test_cached_operator_matches_direct_construction(self, prolongation: torch.Tensor) -> None:
         coarse = torch.arange(_RANK, dtype=prolongation.dtype) + 1.0
         fine = torch.arange(prolongation.shape[0], dtype=prolongation.dtype)
-        cached = TransferOperatorCache()(prolongation)
+        cached = TransferOperatorMemo()(prolongation)
         direct = SparseTransferOperator(prolongation)
         torch.testing.assert_close(cached.prolongate(coarse), direct.prolongate(coarse))
         torch.testing.assert_close(cached.restrict(fine), direct.restrict(fine))
@@ -76,6 +76,6 @@ class TestTransferOperatorCache:
         n = poisson_1d_dense.shape[0]
         with torch.inference_mode():
             inference_p = torch.eye(n, dtype=poisson_1d_dense.dtype)[:, :_RANK].to_sparse_csr()
-            operator = TransferOperatorCache()(inference_p)
+            operator = TransferOperatorMemo()(inference_p)
         fine = torch.arange(n, dtype=poisson_1d_dense.dtype)
         assert operator.restrict(fine).shape == (_RANK,)

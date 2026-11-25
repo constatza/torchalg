@@ -20,9 +20,9 @@ swapped for its sparse sibling:
 - ``make_bridge`` -> ``sparse_make_bridge`` (``._prolongation``).
 - ``symmetric_gauss_seidel`` (incl. its indexed ``rows=`` variant) ->
   ``PreparedSymmetricGaussSeidel`` (``._gauss_seidel``), prepared once per
-  level matrix through a stage-scoped ``GaussSeidelStage`` (``.smoothers``);
+  level matrix through a stage-scoped ``GaussSeidelMemo`` (``.smoothers``);
   the trial cycles' sub-hierarchy operators likewise come from a
-  stage-scoped ``TransferOperatorCache`` (``.transfer``).
+  stage-scoped ``TransferOperatorMemo`` (``.transfer``).
 - dense ``P.T @ A @ P`` Galerkin products -> ``form_sparse_sparse``
   (``torchalg.sparse.kernels.galerkin``).
 - ``DenseTransferOperator`` -> ``SparseTransferOperator`` (``.transfer``).
@@ -59,8 +59,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from torchalg.multigrid import AMGPreconditioner, MultigridHierarchy, MultigridLevel
-from torchalg.preconditioners.base import PreconditionerContext
+from torchalg.multigrid import AMGPreconditioner, MultigridHierarchy, assemble_hierarchy
+from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 from torchalg.sparse.kernels.galerkin import form_sparse_sparse
 from torchalg.utils.spectral import approximate_spectral_radius
 from torchalg.utils.tentative import fit_candidates_csr
@@ -70,8 +70,8 @@ from ._node_strength import sparse_node_strength
 from ._presets import PrebuiltCoarsening, gs_setup_cycle, prebuilt_cycle, seeded_draw
 from ._prolongation import sparse_make_bridge
 from .aggregation import sparse_smoothed_prolongation, sparse_standard_aggregation
-from .smoothers import GaussSeidelStage, resolve_jacobi_default
-from .transfer import SparseTransferOperator, TransferOperatorCache
+from .smoothers import GaussSeidelMemo, resolve_jacobi_default
+from .transfer import SparseTransferOperator, TransferOperatorMemo
 
 if TYPE_CHECKING:
     from typing import Self
@@ -120,8 +120,8 @@ class _Params:
     max_levels: int
     max_coarse: int
     draw: Callable[[int], torch.Tensor]
-    gauss_seidel: GaussSeidelStage
-    transfers: TransferOperatorCache
+    gauss_seidel: GaussSeidelMemo
+    transfers: TransferOperatorMemo
     setup_cycle: VCycle
 
     def spectral_radius(self, matrix: torch.Tensor) -> torch.Tensor:
@@ -178,17 +178,9 @@ class AdaptiveSAResult:
         Returns:
             MultigridHierarchy: Levels with sparse transfer operators.
         """
-        last = len(self.matrices) - 1
-        return MultigridHierarchy(
-            tuple(
-                MultigridLevel(
-                    matrix=matrix,
-                    transfer=None
-                    if index == last
-                    else SparseTransferOperator(self.prolongations[index]),
-                )
-                for index, matrix in enumerate(self.matrices)
-            )
+        return assemble_hierarchy(
+            self.matrices,
+            [SparseTransferOperator(prolongation) for prolongation in self.prolongations],
         )
 
 
@@ -254,20 +246,14 @@ def _hierarchy_of(levels: list[_Level], params: _Params) -> MultigridHierarchy:
 
     Args:
         levels (list[_Level]): Working levels, finest first.
-        params (_Params): Setup parameters; supply the stage's transfer-operator cache.
+        params (_Params): Setup parameters; supply the stage's transfer-operator memo.
 
     Returns:
         MultigridHierarchy: Hierarchy sharing the levels' tensors.
     """
-    last = len(levels) - 1
-    return MultigridHierarchy(
-        tuple(
-            MultigridLevel(
-                matrix=level.A,
-                transfer=None if index == last else params.transfers(_built(level.P)),
-            )
-            for index, level in enumerate(levels)
-        )
+    return assemble_hierarchy(
+        [level.A for level in levels],
+        [params.transfers(_built(level.P)) for level in levels[:-1]],
     )
 
 
@@ -472,7 +458,7 @@ def adaptive_sa_hierarchy(
     Raises:
         ValueError: If a computed candidate is identically zero.
     """
-    gauss_seidel = GaussSeidelStage()
+    gauss_seidel = GaussSeidelMemo()
     params = _Params(
         theta,
         omega,
@@ -481,7 +467,7 @@ def adaptive_sa_hierarchy(
         max_coarse,
         draw or seeded_draw(seed),
         gauss_seidel=gauss_seidel,
-        transfers=TransferOperatorCache(),
+        transfers=TransferOperatorMemo(),
         setup_cycle=gs_setup_cycle(gauss_seidel),
     )
     predefined: _Predefined | None = None
@@ -521,7 +507,7 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
     Sparse-CSR counterpart of the dense
     ``preconditioners.implementations.amg.adaptive.AdaptiveSAPreconditioner``
     - same preset shape (runs ``adaptive_sa_hierarchy`` in ``setup()``,
-    wraps the resulting fixed hierarchy, overrides ``_make_hierarchy``),
+    wraps the resulting fixed hierarchy, overrides ``setup`` to ``_commit`` it),
     same defaults, composed entirely from this package's own sparse-native
     kernels/preconditioners plus the shared, format-agnostic
     ``torchalg.multigrid`` engine.
@@ -595,8 +581,8 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         self._initial_candidates = initial_candidates
         self._seed = seed
         self._draw = draw
+        self._result: AdaptiveSAResult | None = None
         super().__init__(
-            matrix=torch.empty(0),
             coarsening=PrebuiltCoarsening("adaptive SA"),
             cycle=prebuilt_cycle(
                 resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
@@ -636,9 +622,10 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
         )
         if len(result.matrices) < 2:
             raise ValueError("adaptive setup produced a single level; lower max_coarse")
+        self._commit(self._hierarchy_of(result, matrix))
         self._result = result
         self._n_levels = len(result.matrices)
-        return super().setup(matrix, context)
+        return self
 
     @property
     def result(self) -> AdaptiveSAResult:
@@ -646,8 +633,12 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
 
         Returns:
             AdaptiveSAResult: Levels, prolongations, and near-null-space
-                candidates from the setup that ran at construction.
+                candidates from the last ``setup()``.
         """
+        if self._result is None:
+            raise PreconditionerNotReadyError(
+                f"{type(self).__name__}.setup() must be called before the result is available."
+            )
         return self._result
 
     def __str__(self) -> str:
@@ -657,23 +648,30 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
             str: e.g. ``"alpha-SA(n_levels=3, num_candidates=3,
                 coarse_dim=5)"``.
         """
+        if self._result is None:
+            return "alpha-SA(not set up)"
         return (
             f"alpha-SA(n_levels={len(self._result.matrices)}, "
             f"num_candidates={self._result.candidates.shape[1]}, "
             f"coarse_dim={int(self._result.matrices[-1].shape[0])})"
         )
 
-    def _make_hierarchy(self) -> MultigridHierarchy:
-        """Prebuilt levels moved to the current device/dtype of the system matrix.
+    @staticmethod
+    def _hierarchy_of(result: AdaptiveSAResult, matrix: torch.Tensor) -> MultigridHierarchy:
+        """Prebuilt levels of ``result`` moved to the device/dtype of ``matrix``.
+
+        Args:
+            result (AdaptiveSAResult): Realized setup hierarchy.
+            matrix (torch.Tensor): System matrix being bound.
 
         Returns:
             MultigridHierarchy: The sparse adaptive-SA hierarchy.
         """
         moved = AdaptiveSAResult(
-            matrices=tuple(m.to(self._matrix) for m in self._result.matrices),
-            prolongations=tuple(p.to(self._matrix) for p in self._result.prolongations),
-            candidates=self._result.candidates,
-            aggregates=self._result.aggregates,
-            strengths=self._result.strengths,
+            matrices=tuple(m.to(matrix) for m in result.matrices),
+            prolongations=tuple(p.to(matrix) for p in result.prolongations),
+            candidates=result.candidates,
+            aggregates=result.aggregates,
+            strengths=result.strengths,
         )
         return moved.hierarchy

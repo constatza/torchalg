@@ -217,10 +217,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
-from torchalg.preconditioners.base import PreconditionerContext
+from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 
 from ._algebraic_distance import (
-    NeighborhoodCache,
+    NeighborhoodMemo,
     NeighborhoodOf,
     algebraic_distance,
     depth_neighborhood,
@@ -353,7 +353,7 @@ class BAMGCoarsening:
                 random-vector source for CR.
             seed (int): Seed of the default draw source.
             neighborhood_of (NeighborhoodOf): Evaluates a level matrix's
-                neighborhoods; pass the setup run's ``NeighborhoodCache`` so
+                neighborhoods; pass the setup run's ``NeighborhoodMemo`` so
                 the finest level's are evaluated once per run, not per pass.
         """
         self._neighborhood_of = neighborhood_of
@@ -854,8 +854,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         """
 
         def new_bootstrap_setup() -> BootstrapSetup:
-            # Fresh per ``setup()``: the cache holds the run's matrices alive.
-            neighborhoods = NeighborhoodCache()
+            # Fresh per ``setup()``: the memo holds the run's matrices alive.
+            neighborhoods = NeighborhoodMemo()
             return BootstrapSetup(
                 coarsening_factory=lambda vectors, relaxation, draw: BAMGCoarsening(
                     vectors,
@@ -885,8 +885,8 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         self._run_draw = draw if draw is not None else seeded_draw(seed)
         self._seed_vectors = seed_vectors
         self._test_vector_draw = test_vector_draw
+        self._result: BootstrapAMGResult | None = None
         super().__init__(
-            matrix=torch.empty(0),
             coarsening=PrebuiltCoarsening("bootstrap AMG"),
             cycle=prebuilt_cycle(
                 resolve_jacobi_default(smoother, smoother_omega), n_pre=n_pre, n_post=n_post
@@ -921,9 +921,10 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         )
         if len(result.matrices) < 2:
             raise ValueError("bootstrap AMG setup produced a single level; lower max_coarse")
+        self._commit(self._hierarchy_of(result, matrix))
         self._result = result
         self._n_levels = len(result.matrices)
-        return super().setup(matrix, context)
+        return self
 
     @property
     def result(self) -> BootstrapAMGResult:
@@ -933,6 +934,10 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
             BootstrapAMGResult: Levels, prolongations, and relaxation-derived
                 test vectors from the setup that last ran.
         """
+        if self._result is None:
+            raise PreconditionerNotReadyError(
+                f"{type(self).__name__}.setup() must be called before the result is available."
+            )
         return self._result
 
     def __str__(self) -> str:
@@ -945,22 +950,29 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
         Returns:
             str: e.g. ``"BAMG(n_levels=3, k_r=8, coarse_dim=5)"``.
         """
+        if self._result is None:
+            return "BAMG(not set up)"
         return (
             f"BAMG(n_levels={len(self._result.matrices)}, "
             f"k_r={self._result.candidates.shape[1]}, "
             f"coarse_dim={int(self._result.matrices[-1].shape[0])})"
         )
 
-    def _make_hierarchy(self) -> MultigridHierarchy:
-        """Prebuilt levels moved to the current device/dtype of the system matrix.
+    @staticmethod
+    def _hierarchy_of(result: BootstrapAMGResult, matrix: torch.Tensor) -> MultigridHierarchy:
+        """Prebuilt levels of ``result`` moved to the device/dtype of ``matrix``.
+
+        Args:
+            result (BootstrapAMGResult): Realized setup hierarchy.
+            matrix (torch.Tensor): System matrix being bound.
 
         Returns:
             MultigridHierarchy: The Bootstrap AMG hierarchy.
         """
         moved = BootstrapAMGResult(
-            matrices=tuple(m.to(self._matrix) for m in self._result.matrices),
-            prolongations=tuple(p.to(self._matrix) for p in self._result.prolongations),
-            candidates=self._result.candidates,
-            transfer_operator_factory=self._result.transfer_operator_factory,
+            matrices=tuple(m.to(matrix) for m in result.matrices),
+            prolongations=tuple(p.to(matrix) for p in result.prolongations),
+            candidates=result.candidates,
+            transfer_operator_factory=result.transfer_operator_factory,
         )
         return moved.hierarchy

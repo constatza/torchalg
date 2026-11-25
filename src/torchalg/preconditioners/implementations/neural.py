@@ -72,7 +72,6 @@ class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
         self._predictor = predictor
         self._extra_input_names: tuple[str, ...] = extra_input_names
         self._extra_inputs: dict[str, torch.Tensor] = {}
-        self._mark_ready()
 
     def setup(self, context: PreconditionerContext | None = None) -> Self:
         """No-op: the predictor is already usable after construction.
@@ -83,7 +82,6 @@ class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
         Returns:
             Self: This preconditioner, already ready.
         """
-        self._mark_ready()
         return self
 
     @property

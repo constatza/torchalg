@@ -29,8 +29,8 @@ from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner,
     adaptive_sa_hierarchy,
 )
-from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelStage
-from torchalg.sparse.preconditioners.amg.transfer import TransferOperatorCache
+from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo
+from torchalg.sparse.preconditioners.amg.transfer import TransferOperatorMemo
 
 
 @pytest.fixture
@@ -209,7 +209,7 @@ class TestSolveMatvecs:
     ) -> None:
         cycles = 3
         monkeypatch.setattr(adaptive_module, "_SOLVE_TOLERANCE", -1.0)
-        gauss_seidel = GaussSeidelStage()
+        gauss_seidel = GaussSeidelMemo()
         params = adaptive_module._Params(
             0.0,
             4.0 / 3.0,
@@ -218,7 +218,7 @@ class TestSolveMatvecs:
             4,
             seeded_draw(0),
             gauss_seidel=gauss_seidel,
-            transfers=TransferOperatorCache(),
+            transfers=TransferOperatorMemo(),
             setup_cycle=gs_setup_cycle(gauss_seidel),
         )
         candidates = torch.ones(poisson_1d_large_csr.shape[0], 1, dtype=torch.float64)

@@ -106,7 +106,7 @@ class TestPODCoarseningStrategy:
         ``AMGPreconditioner`` changes required - this test proves that wiring
         actually works end-to-end, not just in isolation.
         """
-        precond = pod2g_preconditioner(poisson_1d.double(), poisson_snapshots.double(), rank=10)
+        precond = pod2g_preconditioner(poisson_snapshots.double(), rank=10)
 
         precond.to(dtype=torch.float32)
 
@@ -128,7 +128,7 @@ class TestPOD2GPreconditioner:
         __str__ is the generic AMG format embedding the POD coarsening's
         own string, not a POD-specific override.
         """
-        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(snapshots=poisson_snapshots, rank=10)
         assert str(precond) == "AMG(n_levels=2, POD-2G(rank=10))"
 
     def test_apply_returns_correct_shape(
@@ -138,7 +138,7 @@ class TestPOD2GPreconditioner:
         poisson_snapshots: torch.Tensor,
     ) -> None:
         """apply() output must match residual shape."""
-        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(snapshots=poisson_snapshots, rank=10)
         precond.setup(poisson_1d)
         z = precond.apply(poisson_rhs)
         assert z.shape == poisson_rhs.shape
@@ -150,7 +150,7 @@ class TestPOD2GPreconditioner:
         poisson_snapshots: torch.Tensor,
     ) -> None:
         """apply() output dtype must match the working dtype (no float64 hardcode)."""
-        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(snapshots=poisson_snapshots, rank=10)
         precond.setup(poisson_1d)
         assert precond.apply(poisson_rhs).dtype == poisson_1d.dtype
 
@@ -162,7 +162,6 @@ class TestPOD2GPreconditioner:
     ) -> None:
         """POD-2G must delegate solve-time smoothing to the injected strategy."""
         precond = pod2g_preconditioner(
-            poisson_1d,
             snapshots=poisson_snapshots,
             rank=10,
             smoother=raising_smoother,
@@ -174,7 +173,7 @@ class TestPOD2GPreconditioner:
         self, poisson_1d: torch.Tensor, poisson_snapshots: torch.Tensor
     ) -> None:
         """POD-2G is a linear preconditioner and must not request FCG."""
-        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=10)
+        precond = pod2g_preconditioner(snapshots=poisson_snapshots, rank=10)
         assert precond.requires_flexible_cg is False
 
     def test_rejects_single_level_hierarchy(
@@ -183,7 +182,6 @@ class TestPOD2GPreconditioner:
         """POD-2G must keep its two-grid contract explicit."""
         with pytest.raises(ValueError, match="n_levels"):
             pod2g_preconditioner(
-                poisson_1d,
                 snapshots=poisson_snapshots,
                 rank=10,
                 n_levels=1,
@@ -205,7 +203,7 @@ class TestPOD2GWithFCGSolver:
         """POD-2G-preconditioned FCG must converge on 1D Poisson."""
         from torchalg import flexible_cg
 
-        precond = pod2g_preconditioner(poisson_1d, snapshots=poisson_snapshots, rank=15)
+        precond = pod2g_preconditioner(snapshots=poisson_snapshots, rank=15)
         precond.setup(poisson_1d)
         x, info = flexible_cg(poisson_1d, poisson_rhs, preconditioner=precond, rtol=1e-8)
         assert info.converged, f"FCG+POD-2G did not converge: {info}"

@@ -17,6 +17,7 @@ import torch
 
 from torchalg import pcg
 from torchalg.multigrid.bootstrap_setup import BootstrapAMGResult, BootstrapSetup
+from torchalg.multigrid.hierarchy import MultigridCoarsestLevel, MultigridFineLevel
 from torchalg.preconditioners.implementations.amg._presets import GS_SETUP_CYCLE
 from torchalg.preconditioners.implementations.amg.bootstrap import (
     BAMGCoarsening,
@@ -502,12 +503,13 @@ def test_bootstrap_setup_run_hierarchy_matches_matrices(
     bootstrap_setup_small: BootstrapSetup,
     bootstrap_draw: Callable[[int], torch.Tensor],
 ) -> None:
-    """``result.hierarchy`` carries the same level matrices, finest first, coarsest with no transfer."""
+    """``result.hierarchy`` carries the same level matrices, finest first, one coarsest level last."""
     result = bootstrap_setup_small.run(poisson_16, bootstrap_draw)
 
     hierarchy = result.hierarchy
     assert len(hierarchy.levels) == len(result.matrices)
-    assert hierarchy.levels[-1].transfer is None
+    assert isinstance(hierarchy.coarsest, MultigridCoarsestLevel)
+    assert all(isinstance(level, MultigridFineLevel) for level in hierarchy.fine)
     for level, matrix in zip(hierarchy.levels, result.matrices, strict=True):
         assert torch.equal(level.matrix, matrix)
 

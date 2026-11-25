@@ -30,7 +30,11 @@ class _RecordingBindablePreconditioner(Preconditioner, BindableInputs):
         """Initialize empty call records."""
         self.bound_inputs: dict[str, torch.Tensor] = {}
         self.contexts: list[PreconditionerContext | None] = []
-        self._mark_ready()
+
+    @property
+    def is_ready(self) -> bool:
+        """Stateless test double: ready from construction."""
+        return True
 
     def setup(
         self,
@@ -38,7 +42,6 @@ class _RecordingBindablePreconditioner(Preconditioner, BindableInputs):
         context: PreconditionerContext | None = None,
     ) -> Self:
         """No-op: this test double has no matrix-dependent state."""
-        self._mark_ready()
         return self
 
     @property

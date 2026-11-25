@@ -3,7 +3,6 @@
 Tests the dense masked IC(0) factorization preconditioner to ensure:
 - Correctly factorizes SPD matrices (``L @ L.T ≈ A``).
 - Preserves the original sparsity pattern (no fill-in beyond it).
-- Handles the ``threshold`` drop-tolerance parameter.
 - Raises ``ValueError`` at construction on breakdown (non-SPD or
   near-singular input hitting a non-positive pivot), instead of silently
   propagating ``nan``/``inf`` through ``apply()``.
@@ -41,26 +40,17 @@ def test_ic0_preserves_sparsity_pattern(tridiagonal_spd_small_torch: torch.Tenso
     Theory:
         Zero-level incomplete Cholesky maintains the sparsity pattern:
         ``L[i, j] == 0`` wherever ``A[i, j] == 0`` (for the lower
-        triangle). With ``threshold=0``, this holds exactly. With the
-        default threshold, ``L`` can be sparser (small entries dropped).
+        triangle), so every non-zero stored value is pattern.
     """
     a = tridiagonal_spd_small_torch
     a_lower_mask = torch.tril(a).abs() >= 1e-14
 
-    precond_strict = IC0Preconditioner(threshold=0.0)
-    precond_strict.setup(a)
-    factor_strict = precond_strict._operator
-    factor_strict_mask = factor_strict != 0
+    precond = IC0Preconditioner()
+    precond.setup(a)
+    factor = precond._operator
 
-    assert torch.equal(factor_strict_mask, a_lower_mask)
-
-    precond_default = IC0Preconditioner()
-    precond_default.setup(a)
-    factor_default = precond_default._operator
-    nnz_factor_default = torch.count_nonzero(factor_default)
-    nnz_a_lower = torch.count_nonzero(torch.tril(a))
-
-    assert nnz_factor_default <= nnz_a_lower
+    assert torch.equal(factor != 0, a_lower_mask)
+    assert torch.count_nonzero(factor) <= torch.count_nonzero(torch.tril(a))
 
 
 def test_ic0_raises_on_non_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) -> None:
@@ -74,44 +64,6 @@ def test_ic0_raises_on_non_spd_matrix(non_spd_matrix_2x2_torch: torch.Tensor) ->
     """
     with pytest.raises(ValueError, match="breakdown"):
         IC0Preconditioner().setup(non_spd_matrix_2x2_torch)
-
-
-def test_ic0_raises_on_near_singular_matrix(near_singular_matrix_torch: torch.Tensor) -> None:
-    """Verify IC(0) raises ValueError on a matrix whose pivot an explicit threshold drops to zero.
-
-    Note:
-        The near-zero diagonal entry (``1e-15``) falls below an explicit
-        drop tolerance (the default is ``0.0`` - see ``_DEFAULT_THRESHOLD``)
-        and is excluded from the sparsity pattern entirely, leaving a zero
-        pivot - a non-positive pivot is a breakdown by the same definition
-        as a negative one (Saad, Sec. 10.3), so this must raise rather than
-        silently produce a singular, unusable factor.
-    """
-    with pytest.raises(ValueError, match="breakdown"):
-        IC0Preconditioner(threshold=1e-14).setup(near_singular_matrix_torch)
-
-
-def test_ic0_threshold_drops_small_entries(
-    tridiagonal_spd_small_perturbed_torch: torch.Tensor,
-) -> None:
-    """Verify the threshold parameter drops small entries.
-
-    Theory:
-        Threshold parameter controls sparsity: a smaller threshold means
-        more fill-in survives (better approximation); a larger threshold
-        drops more small entries (sparser, less accurate).
-    """
-    a = tridiagonal_spd_small_perturbed_torch
-
-    ic0_strict = IC0Preconditioner(threshold=1e-16)
-    ic0_strict.setup(a)
-    nnz_strict = torch.count_nonzero(ic0_strict._operator)
-
-    ic0_aggressive = IC0Preconditioner(threshold=1e-10)
-    ic0_aggressive.setup(a)
-    nnz_aggressive = torch.count_nonzero(ic0_aggressive._operator)
-
-    assert nnz_aggressive <= nnz_strict
 
 
 def test_ic0_improves_convergence(
@@ -174,18 +126,7 @@ def test_ic0_compares_favorably_with_jacobi(
     assert result_ic0.iterations <= result_jacobi.iterations
 
 
-class TestIC0PropertyAndStr:
-    def test_threshold_property_matches_constructor_arg(
-        self, tridiagonal_spd_small_torch: torch.Tensor
-    ) -> None:
-        """`threshold` property returns exactly what was passed to `__init__`."""
-        precond = IC0Preconditioner(threshold=1e-6)
-        precond.setup(tridiagonal_spd_small_torch)
-        assert precond.threshold == 1e-6
-
-    def test_str_includes_threshold(self, tridiagonal_spd_small_torch: torch.Tensor) -> None:
-        """`str()` reports the threshold, never crashes."""
-        precond = IC0Preconditioner(threshold=1e-6)
-        precond.setup(tridiagonal_spd_small_torch)
-        assert "IC0" in str(precond)
-        assert "1e-06" in str(precond)
+class TestIC0Str:
+    def test_str_is_the_class_summary(self) -> None:
+        """`str()` reports the (parameterless) configuration."""
+        assert str(IC0Preconditioner()) == "IC0()"

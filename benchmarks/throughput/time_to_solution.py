@@ -40,10 +40,9 @@ AMG_THETA = 0.02
 SKIP_BOOTSTRAP_ABOVE_N = 30000
 
 
-def _pod(matrix: torch.Tensor, case: MatrixCase) -> MatrixSetupPreconditioner:
+def _pod(case: MatrixCase) -> MatrixSetupPreconditioner:
     basis = compute_pod_basis(make_snapshots(case, torch.float64, CPU), POD_RANK)
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=PODCoarseningStrategy(basis),
         cycle=VCycle(
             resolve_jacobi_default(None, None),
@@ -56,16 +55,14 @@ def _pod(matrix: torch.Tensor, case: MatrixCase) -> MatrixSetupPreconditioner:
     )
 
 
-def _methods(
-    matrix: torch.Tensor, case: MatrixCase
-) -> dict[str, Callable[[], MatrixSetupPreconditioner]]:
+def _methods(case: MatrixCase) -> dict[str, Callable[[], MatrixSetupPreconditioner]]:
     methods: dict[str, Callable[[], MatrixSetupPreconditioner]] = {
         "jacobi": JacobiPreconditioner,
         "ic0": IC0Preconditioner,
         "ilu": ILUPreconditioner,
-        "amg": lambda: vcycle_amg(matrix, n_levels=AMG_LEVELS, theta=AMG_THETA),
+        "amg": lambda: vcycle_amg(n_levels=AMG_LEVELS, theta=AMG_THETA),
         "adaptive_sa": AdaptiveSAPreconditioner,
-        "pod2g": lambda: _pod(matrix, case),
+        "pod2g": lambda: _pod(case),
     }
     if case.n <= SKIP_BOOTSTRAP_ABOVE_N:
         methods["bootstrap"] = BootstrapAMGPreconditioner
@@ -76,7 +73,7 @@ def _run_case(case: MatrixCase) -> None:
     matrix = case.csr(torch.float64, CPU)
     rhs = case.rhs(torch.float64, CPU)
     rows: list[tuple[str, float, float, int]] = []
-    for name, build in _methods(matrix, case).items():
+    for name, build in _methods(case).items():
         start = time.perf_counter()
         preconditioner = build().setup(matrix)
         setup_s = time.perf_counter() - start

@@ -5,12 +5,13 @@ Sparse-CSR sibling of
 comparison - see ``docs/plan.md``'s "Correction: dense and sparse must be
 separate implementations, not an internal branch"). ``adaptive.py``'s
 sparse alpha-SA port follows the same preset shape as the dense one: run a
-setup algorithm at construction, then wrap the resulting fixed hierarchy in
-a ``torchalg.multigrid.AMGPreconditioner`` whose ``_make_hierarchy`` is
-overridden, so the engine never asks a ``CoarseningStrategy`` for a level.
+setup algorithm in ``setup()``, then wrap the resulting fixed hierarchy in
+a ``torchalg.multigrid.AMGPreconditioner`` subclass whose ``setup`` is
+overridden to ``_commit`` that hierarchy, so the engine never asks a
+``CoarseningStrategy`` for a level.
 That shape needs the same shared seeded randomness, setup-cycle wiring,
 solve-cycle wiring, and placeholder ``CoarseningStrategy`` - built here from
-this package's own sparse ``GaussSeidelStage``/``dense_pseudo_inverse_
+this package's own sparse ``GaussSeidelMemo``/``dense_pseudo_inverse_
 coarse_solver`` instead of the dense ``GaussSeidelSmoother``/
 ``pseudo_inverse_coarse_solver``.
 
@@ -28,16 +29,16 @@ from torchalg.multigrid import VCycle
 from torchalg.multigrid.protocols import MultigridSmoother
 
 from .coarse_solve import dense_pseudo_inverse_coarse_solver
-from .smoothers import GaussSeidelStage
+from .smoothers import GaussSeidelMemo
 from .transfer import SparseTransferOperator
 
 
-def gs_setup_cycle(stage: GaussSeidelStage) -> VCycle:
+def gs_setup_cycle(stage: GaussSeidelMemo) -> VCycle:
     """GS V(1,1) cycle used only inside sparse hierarchy setup, bound to one stage.
 
     PyAMG's adaptive candidate construction requires the algorithm-specific
     GS relaxation. The cycle's smoother is the setup stage's own
-    ``GaussSeidelStage``, so preparing the many sub-hierarchies a stage cycles
+    ``GaussSeidelMemo``, so preparing the many sub-hierarchies a stage cycles
     through builds each level matrix's level schedules once; a cycle built from
     a fresh stage per setup run therefore never shares prepared state across
     runs. Public solve-time cycles are built separately (``prebuilt_cycle``) so
@@ -46,7 +47,7 @@ def gs_setup_cycle(stage: GaussSeidelStage) -> VCycle:
     deliberate densification.
 
     Args:
-        stage (GaussSeidelStage): The stage's Gauss-Seidel preparation cache.
+        stage (GaussSeidelMemo): The stage's Gauss-Seidel memo.
 
     Returns:
         VCycle: GS V(1,1) with a densifying pseudo-inverse coarse solve.

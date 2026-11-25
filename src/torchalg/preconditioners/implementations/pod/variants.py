@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 
 def pod2g_preconditioner(
-    matrix: torch.Tensor,
     snapshots: torch.Tensor,
     rank: float,
     n_levels: int = 2,
@@ -66,13 +65,12 @@ def pod2g_preconditioner(
         This is a preset/factory function - it wires concrete domain
         objects and forwards them to ``AMGPreconditioner``, the same
         pattern as ``vcycle_amg``/``wcycle_amg``
-        (``preconditioners.implementations.amg.variants``). All persistent
-        tensor state (the finest-level matrix, and - once built - the
-        multigrid hierarchy) is owned and buffer-managed by
-        ``AMGPreconditioner``/``nn.Module`` machinery.
+        (``preconditioners.implementations.amg.variants``). The system
+        matrix is bound later by ``.setup(A)``; all persistent tensor state
+        (the multigrid hierarchy, whose finest level carries the matrix) is
+        owned by ``AMGPreconditioner``.
 
     Args:
-        matrix (torch.Tensor): System matrix A (n x n), SPD.
         snapshots (torch.Tensor): Solution snapshot ensemble, shape
             (n_samples, n_dofs).
         rank (int | float): Fixed mode count (int) or minimum cumulative
@@ -90,7 +88,8 @@ def pod2g_preconditioner(
             ``smoother_omega`` must remain ``None``.
 
     Returns:
-        AMGPreconditioner: Wired with POD coarsening and a V-cycle. Its
+        AMGPreconditioner: Wired with POD coarsening and a V-cycle; call
+        ``.setup(A)`` with the SPD system matrix to build it. Its
         ``__str__`` is ``AMGPreconditioner``'s generic
         ``"AMG(n_levels=..., <coarsening>)"`` format (e.g.
         ``"AMG(n_levels=2, POD-2G(rank=10))"``), not a POD-specific override.
@@ -101,7 +100,6 @@ def pod2g_preconditioner(
           solution of large-scale parametrized systems. arXiv:2207.02543.
     """
     return AMGPreconditioner(
-        matrix=matrix,
         coarsening=PODCoarseningStrategy(compute_pod_basis(snapshots, rank)),
         cycle=VCycle(
             resolve_jacobi_default(smoother, smoother_omega),

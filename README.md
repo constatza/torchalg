@@ -37,11 +37,11 @@ It ships:
 - `pcg` and `flexible_cg`: preconditioned and flexible CG solvers.
 - A real preconditioner library: `Identity`, `JacobiPreconditioner`,
   `ILUPreconditioner` (dense ILU(0)), `IC0Preconditioner` (dense IC(0)),
-  `ICholeskyPreconditioner`, `AMGPreconditioner` with `VCycleAMG`/`WCycleAMG`
+  `ICholeskyPreconditioner`, `AMGPreconditioner` with `vcycle_amg`/`wcycle_amg`
   presets (dense smoothed-aggregation multigrid), `AdaptiveSAPreconditioner`
   (data-driven smoothed aggregation, a PyAMG port), `BootstrapAMGPreconditioner`
   (Bootstrap AMG, test-vector-driven coarsening/interpolation),
-  `POD2GPreconditioner` (POD-basis two-grid), and `NeuralPreconditioner`
+  `pod2g_preconditioner` (POD-basis two-grid), and `NeuralPreconditioner`
   (adapts a caller-supplied predictor model as a non-linear preconditioner).
 - `TraceMode`/`IterationHistory` for opt-in per-iteration residual/solution
   traces.
@@ -172,13 +172,15 @@ x.sum().backward()
 
 Pass any preconditioner via the `preconditioner=` keyword.
 `JacobiPreconditioner`: cheap diagonal scaling, the baseline.
-`VCycleAMG`: smoothed-aggregation algebraic multigrid, V-cycle — stronger
-convergence on larger, structured SPD systems:
+`vcycle_amg`: smoothed-aggregation algebraic multigrid, V-cycle — stronger
+convergence on larger, structured SPD systems. Preconditioners are configured by
+their constructor and bound to a matrix by `.setup(A)`, which returns the
+preconditioner:
 
 ```python
 import torch
 from torchalg import pcg
-from torchalg.preconditioners.implementations.amg import VCycleAMG
+from torchalg.preconditioners.implementations.amg import vcycle_amg
 
 n = 60
 main = torch.full((n,), 4.0, dtype=torch.float64)
@@ -187,7 +189,7 @@ A = torch.diag(main) + torch.diag(off, 1) + torch.diag(off, -1)  # tridiagonal S
 b = torch.ones(n, dtype=torch.float64)
 
 x_none, info_none = pcg(A, b)
-x_amg, info_amg = pcg(A, b, preconditioner=VCycleAMG(A))
+x_amg, info_amg = pcg(A, b, preconditioner=vcycle_amg(n_levels=2).setup(A))
 print("none:", info_none.converged, info_none.iterations)
 print("amg :", info_amg.converged, info_amg.iterations)
 ```

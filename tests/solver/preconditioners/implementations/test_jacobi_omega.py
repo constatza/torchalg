@@ -165,10 +165,10 @@ class TestPresets:
         self, preset: Callable[..., AMGPreconditioner], poisson_matrix: torch.Tensor
     ) -> None:
         with pytest.raises(TypeError):
-            preset(poisson_matrix, omega=0.67)
-        explicit = preset(poisson_matrix, smoother_omega=0.67, prolongation_omega=0.67)
+            preset(omega=0.67)
+        explicit = preset(smoother_omega=0.67, prolongation_omega=0.67)
         explicit.setup(poisson_matrix)
-        default = preset(poisson_matrix)
+        default = preset()
         default.setup(poisson_matrix)
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
         assert not torch.allclose(explicit.apply(residual), default.apply(residual))
@@ -177,7 +177,7 @@ class TestPresets:
         self, poisson_matrix: torch.Tensor, estimator_calls: list[int]
     ) -> None:
         matrix = poisson_matrix.clone()
-        precond = vcycle_amg(matrix, n_levels=3)
+        precond = vcycle_amg(n_levels=3)
         precond.setup(matrix)
         after_setup = len(estimator_calls)
         residual = torch.ones(64, dtype=poisson_matrix.dtype)
@@ -194,11 +194,11 @@ class TestPresets:
             5, 64, generator=torch.Generator().manual_seed(4), dtype=torch_dtype
         )
         with pytest.raises(TypeError):
-            pod2g_preconditioner(poisson_matrix, snapshots, rank=3, omega=0.67)  # ty: ignore[unknown-argument]
+            pod2g_preconditioner(snapshots, rank=3, omega=0.67)  # ty: ignore[unknown-argument]
         residual = torch.ones(64, dtype=torch_dtype)
-        explicit = pod2g_preconditioner(poisson_matrix, snapshots, rank=3, smoother_omega=0.67)
+        explicit = pod2g_preconditioner(snapshots, rank=3, smoother_omega=0.67)
         explicit.setup(poisson_matrix)
-        default = pod2g_preconditioner(poisson_matrix, snapshots, rank=3)
+        default = pod2g_preconditioner(snapshots, rank=3)
         default.setup(poisson_matrix)
         assert not torch.allclose(explicit.apply(residual), default.apply(residual))
 

@@ -12,7 +12,17 @@ if TYPE_CHECKING:
 
 from torchalg.preconditioners.implementations import ILUPreconditioner as DenseILUPreconditioner
 from torchalg.preconditioners.implementations._masked_factorization import dense_ilu0
+from torchalg.sparse.kernels import triangular as triangular_module
+from torchalg.sparse.preconditioners import _ilu0_pattern
+from torchalg.sparse.preconditioners import ilu as ilu_module
+from torchalg.sparse.preconditioners._ilu0_pattern import ILU0Pattern, analyze_ilu0
 from torchalg.sparse.preconditioners.ilu import ILUPreconditioner, sparse_ilu0
+
+
+def _assert_same_factor(actual: torch.Tensor, expected: torch.Tensor) -> None:
+    assert torch.equal(actual.crow_indices().long(), expected.crow_indices().long())
+    assert torch.equal(actual.col_indices().long(), expected.col_indices().long())
+    assert torch.equal(actual.values(), expected.values())
 
 
 class TestSparseILU0:
@@ -76,6 +86,16 @@ class TestSparseILU0:
         expected = dense_ilu0(dense)
         actual = sparse_ilu0(sparse).to_dense()
         torch.testing.assert_close(actual, expected)
+
+    def test_unfound_gather_does_not_leak_an_infinite_value_as_nan(
+        self, infinite_corner_csr: torch.Tensor, torch_dtype: torch.dtype
+    ) -> None:
+        """The unfound ``(1, 2)``, ``(1, 4)``, ``(2, 4)`` positions index the infinite ``a00``."""
+        inf = float("inf")
+        third = torch.tensor(3.0, dtype=torch_dtype) / torch.tensor(9.0, dtype=torch_dtype)
+        expected = torch.tensor([inf, 4.0, 9.0, 16.0, 0.5, third.item(), 27.0], dtype=torch_dtype)
+
+        assert torch.equal(sparse_ilu0(infinite_corner_csr).values(), expected)
 
     def test_rejects_non_csr_layout(self, poisson_1d_dense: torch.Tensor) -> None:
         with pytest.raises(ValueError, match="sparse CSR"):
@@ -142,15 +162,171 @@ class TestILUPreconditionerSparseDenseParity:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Repeated application performs no factor splitting or scheduling."""
-        import torchalg.sparse.preconditioners.ilu as ilu_module
-
         residual = torch.ones(poisson_1d_csr.shape[0], dtype=poisson_1d_csr.dtype)
         precond = ILUPreconditioner().setup(poisson_1d_csr)
 
         def unexpected_schedule(*args: object, **kwargs: object) -> None:
             raise AssertionError("level_schedule must only run during setup")
 
-        monkeypatch.setattr(ilu_module, "level_schedule", unexpected_schedule)
+        monkeypatch.setattr(_ilu0_pattern, "level_schedule", unexpected_schedule)
+        monkeypatch.setattr(triangular_module, "level_schedule", unexpected_schedule)
 
         precond.apply(residual)
         precond.apply(residual)
+
+
+class TestILUPreconditionerPatternReuse:
+    """The instance keeps its pattern and re-analyzes only when the stored structure changes."""
+
+    @pytest.fixture
+    def analysis_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[torch.Tensor]:
+        """Matrices handed to ``analyze_ilu0`` through ``ilu``'s own namespace."""
+        calls: list[torch.Tensor] = []
+
+        def spy(matrix: torch.Tensor) -> ILU0Pattern:
+            calls.append(matrix)
+            return analyze_ilu0(matrix)
+
+        monkeypatch.setattr(ilu_module, "analyze_ilu0", spy)
+        return calls
+
+    def test_second_setup_with_same_structure_skips_analysis(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_rescaled_csr: torch.Tensor,
+        analysis_calls: list[torch.Tensor],
+    ) -> None:
+        precond = ILUPreconditioner().setup(poisson_2d_csr)
+        precond.setup(poisson_2d_rescaled_csr)
+
+        assert len(analysis_calls) == 1
+
+    def test_changed_structure_re_analyzes(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_extra_entry_csr: torch.Tensor,
+        analysis_calls: list[torch.Tensor],
+    ) -> None:
+        precond = ILUPreconditioner().setup(poisson_2d_csr)
+        precond.setup(poisson_2d_extra_entry_csr)
+
+        assert len(analysis_calls) == 2
+
+    def test_reused_pattern_apply_equals_fresh_preconditioner(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_rescaled_csr: torch.Tensor,
+        torch_dtype: torch.dtype,
+        test_seed: int,
+    ) -> None:
+        generator = torch.Generator().manual_seed(test_seed)
+        residual = torch.randn(poisson_2d_csr.shape[0], dtype=torch_dtype, generator=generator)
+        reused = ILUPreconditioner().setup(poisson_2d_csr).setup(poisson_2d_rescaled_csr)
+        fresh = ILUPreconditioner().setup(poisson_2d_rescaled_csr)
+
+        assert torch.equal(reused.apply(residual), fresh.apply(residual))
+
+    def test_in_place_index_mutation_re_analyzes_and_equals_a_fresh_factor(
+        self,
+        tridiagonal_csr: torch.Tensor,
+        redirect_last_row_entry: Callable[[torch.Tensor], None],
+        analysis_calls: list[torch.Tensor],
+    ) -> None:
+        precond = ILUPreconditioner().setup(tridiagonal_csr)
+        redirect_last_row_entry(tridiagonal_csr)
+        precond.setup(tridiagonal_csr)
+
+        fresh = ILUPreconditioner().setup(tridiagonal_csr)
+        assert len(analysis_calls) == 3
+        _assert_same_factor(precond._operator, fresh._operator)
+
+    def test_int32_matrix_setup_reuses_the_pattern(
+        self,
+        poisson_2d_int32_csr: torch.Tensor,
+        poisson_2d_rescaled_int32_csr: torch.Tensor,
+        analysis_calls: list[torch.Tensor],
+    ) -> None:
+        precond = ILUPreconditioner().setup(poisson_2d_int32_csr)
+        precond.setup(poisson_2d_rescaled_int32_csr)
+
+        assert len(analysis_calls) == 1
+        _assert_same_factor(
+            precond._operator, ILUPreconditioner().setup(poisson_2d_rescaled_int32_csr)._operator
+        )
+
+    def test_alternating_index_dtypes_re_analyze_each_time_and_stay_correct(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_int32_csr: torch.Tensor,
+        analysis_calls: list[torch.Tensor],
+    ) -> None:
+        precond = ILUPreconditioner().setup(poisson_2d_csr)
+        precond.setup(poisson_2d_int32_csr)
+        precond.setup(poisson_2d_csr)
+
+        assert len(analysis_calls) == 3
+        torch.testing.assert_close(
+            precond._operator.to_dense(),
+            ILUPreconditioner().setup(poisson_2d_csr)._operator.to_dense(),
+        )
+
+    def test_single_entry_matrix_setup(self, single_entry_csr: torch.Tensor) -> None:
+        applied = (
+            ILUPreconditioner()
+            .setup(single_entry_csr)
+            .apply(torch.ones(1, dtype=single_entry_csr.dtype))
+        )
+
+        torch.testing.assert_close(applied, torch.tensor([0.25], dtype=single_entry_csr.dtype))
+
+    def test_diagonal_only_matrix_setup_inverts_the_diagonal(
+        self, diagonal_csr: torch.Tensor
+    ) -> None:
+        residual = torch.ones(3, dtype=diagonal_csr.dtype)
+
+        applied = ILUPreconditioner().setup(diagonal_csr).apply(residual)
+
+        torch.testing.assert_close(applied, residual / diagonal_csr.values())
+
+    def test_non_csr_setup_preserves_previous_complete_state(
+        self, poisson_2d_csr: torch.Tensor, poisson_2d_dense: torch.Tensor
+    ) -> None:
+        residual = torch.ones(poisson_2d_csr.shape[0], dtype=poisson_2d_csr.dtype)
+        precond = ILUPreconditioner().setup(poisson_2d_csr)
+        expected = precond.apply(residual)
+        previous = (precond._operator, precond._solve_cache, precond._pattern)
+
+        with pytest.raises(ValueError, match="sparse CSR"):
+            precond.setup(poisson_2d_dense)
+
+        assert all(
+            now is before
+            for now, before in zip(
+                (precond._operator, precond._solve_cache, precond._pattern), previous, strict=True
+            )
+        )
+        assert torch.equal(precond.apply(residual), expected)
+
+    def test_failure_after_factorization_preserves_previous_complete_state(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_extra_entry_csr: torch.Tensor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """State is assigned only after the solve pair is built, so a late failure leaves none."""
+        precond = ILUPreconditioner().setup(poisson_2d_csr)
+        previous = (precond._operator, precond._solve_cache, precond._pattern)
+
+        def failing_pair(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("late failure")
+
+        monkeypatch.setattr(ilu_module, "build_sparse_lu_solve_cache", failing_pair)
+        with pytest.raises(RuntimeError, match="late failure"):
+            precond.setup(poisson_2d_extra_entry_csr)
+
+        assert all(
+            now is before
+            for now, before in zip(
+                (precond._operator, precond._solve_cache, precond._pattern), previous, strict=True
+            )
+        )

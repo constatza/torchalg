@@ -76,6 +76,11 @@ a higher one.
 layer. Concrete preconditioners may depend on them; the reverse is forbidden.
 Concrete implementations must not import solver state or solver strategies.
 
+`preconditioners.base` also defines `Identity`, the null-object preconditioner a
+solver constructed without one falls back to. It lives in the abstraction layer
+because solvers may depend only on that layer; `implementations.identity`
+re-exports the same class so the public import path is unchanged.
+
 The concrete-implementation package facade exists for `factories`, the
 composition root. Concrete siblings should use precise imports rather than the
 facade, because a facade import silently couples them to every re-exported
