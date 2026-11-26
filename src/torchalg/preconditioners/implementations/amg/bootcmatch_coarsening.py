@@ -95,6 +95,29 @@ class BootCMatchCoarsening:
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
         """Build one BootCMatch coarse level from dense ``A``.
 
+        Cost:
+            Dense ``(n, n)`` matrix, ``c`` the coarse dimension (about ``n / 2``,
+            one column per matched pair or singleton), ``R`` the matching rounds
+            (data dependent; the loop runs ``R`` rounded up to a multiple of 4),
+            ``V = 8`` bytes per ``float64``, once per level. Edge weights (eq. 10,
+            every ``(i, j)`` position, then masked to the stored edges):
+            ``W`` about ``10n^2``, ``Q`` about ``20Vn^2``, about 20 kernels of
+            constant depth. Matching: per round an ``n^2`` mask, ``where``, copy and
+            row ``argmax`` (``n^2`` comparisons, ``Q`` about ``5Vn^2``, depth
+            ``ceil(log2 n) + O(1)``, about 18 kernels), with one host read of the
+            stop condition every fourth round. Aggregates: ``O(n)`` vectorized work
+            and one host read of ``c``. Prolongator scatter into a dense ``n x c``
+            tensor, Galerkin ``(P^T A) P`` and the coarse smooth vector ``P^T w``.
+            In total ``W = 2cn^2 + 2c^2 n + 2nc + (10 + R)n^2 + O(n)``,
+            ``Q`` about ``V(20 + 5R)n^2 + 2Vn c``,
+            ``D = R(ceil(log2 n) + O(1)) + O(log n)``, ``L = 18R + 50`` approximately and
+            ``S = ceil(R / 4) + 1`` (the stop checks and the coarse dimension).
+            Roofline: the Galerkin GEMMs are compute-bound; the weight and matching
+            passes are memory-bound ``n^2`` sweeps.
+            Work-depth: every round is fully parallel over the ``n^2`` positions, so
+            the depth is set by ``R``, not by ``n`` (unlike the host-sequential
+            aggregation of ``AggregationCoarsening``).
+
         Args:
             A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
 

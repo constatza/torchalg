@@ -34,16 +34,23 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
           forward then backward ``torch.linalg.solve_triangular`` (replaces
           the reference's ``scipy.linalg.cho_solve`` - no scipy involved).
 
-    Complexity:
-        - Storage: ``O(n^2)`` — ``L`` is stored exactly as supplied, a dense
-          ``(n, n)`` buffer (no factorization, hence no sparsity to exploit
-          even if the caller's ``L`` happens to be sparse in practice).
-        - Setup: none — ``_compute_operator`` returns the supplied ``L``
-          unchanged.
-        - Application: ``O(n^2)`` — two dense ``solve_triangular`` calls
-          (triangular solves) against the full ``(n, n)`` factor, same as
-          ``IC0Preconditioner``'s application cost (see its complexity note),
-          since both share ``_triangular.cholesky_factor_solve``.
+    Storage: ``O(n^2)`` — ``L`` is stored exactly as supplied, a dense ``(n, n)``
+    buffer (no factorization, hence no sparsity to exploit even if the caller's
+    ``L`` happens to be sparse in practice).
+
+    Cost:
+        Setup: ``_compute_operator`` returns the supplied ``L`` unchanged, so
+        ``W = 0``, ``Q = 0``, ``D = 0``, ``L = 0`` and ``S = 0`` (the factor's own
+        cost is the caller's).
+        Apply, ``k`` columns, ``V = 8`` bytes per ``float64``: two dense
+        ``solve_triangular`` calls against the full factor, shared with
+        ``IC0Preconditioner`` through ``_triangular.cholesky_factor_solve``:
+        ``W = 2n^2 k``, ``Q = V(n^2 + 4nk)``, ``D = 2n`` (forward then backward
+        substitution), ``L = 2`` and ``S = 0``.
+        Roofline: apply ``W/Q`` is about 0.25 flop per byte for ``k = 1``
+        (memory-bound).
+        Work-depth: apply ``W/D = nk``; the substitution depth keeps the solve on the
+        CPU (``Placement.SEQUENTIAL_SWEEP``).
 
     Example:
         >>> import torch

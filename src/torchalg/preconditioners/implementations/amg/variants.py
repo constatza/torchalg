@@ -52,6 +52,35 @@ def vcycle_amg(
     correction per level (gamma = 1). Optimal for isotropic problems; use
     ``wcycle_amg`` when the convergence factor is poor.
 
+    Cost:
+        Dense levels ``n_0 = n > n_1 > ... > n_{N-1} = c`` (``N = n_levels``), one
+        right-hand side, ``nu = n_pre + n_post``, ``V = 8`` bytes per ``float64``,
+        weighted Jacobi with the default spectral damping (an explicit ``smoother``
+        replaces the sweep terms with its own cost).
+        Setup, ``AMGPreconditioner.setup``: one ``AggregationCoarsening.build_transfer``
+        per non-coarsest level (``W_agg,l = 4n_l^2 n_{l+1} + 2n_{l+1}^2 n_l + 5n_l^2 +
+        W_rho,l``, see that method), one Jacobi ``prepare`` per non-coarsest level
+        (``O(n_l)``: the ``rho`` estimate is memoized on the level matrix and shared
+        with the prolongator smoothing when both dampings are spectral), then the LU
+        factor of the coarsest matrix (``2c^3 / 3``).
+        ``W = sum_l W_agg,l + 2c^3 / 3 + O(sum_l n_l)``,
+        ``D = sum_l (3n_l + D_rho,l) + c`` (each level's host aggregation and Arnoldi
+        chain, then the elimination), ``L = sum_l (30 + L_rho,l) + 1`` approximately
+        and ``S = sum_l (3 + P_l) + 1`` (per level the aggregation reads and ``P_l``
+        Hessenberg copies; the singularity read of the LU).
+        Apply, one V-cycle: per non-coarsest level ``nu`` dense matvecs (``n_pre - 1``
+        sweeps from zero, the residual, ``n_post`` sweeps) and one restriction and one
+        prolongation with the dense ``n_l x n_{l+1}`` prolongator, then one LU solve:
+        ``W = sum_l [2 nu n_l^2 + 4n_l n_{l+1} + 3 nu n_l] + 2c^2``,
+        ``Q = V(sum_l [nu n_l^2 + 2n_l n_{l+1} + O(nu n_l)] + c^2)``,
+        ``D = sum_l (nu + 3)(ceil(log2 n_l) + 4) + 2c`` approximately (the levels are
+        visited one after the other, then the coarse substitutions),
+        ``L = sum_l (4 nu + 2) + 1`` and ``S = 0``.
+        Roofline: apply is memory-bound (``W/Q`` about 0.25 flop per byte), the finest
+        level's matvecs dominate.
+        Work-depth: every term but the ``2c``-step coarse solve is a parallel matvec or
+        vector update; with ``c`` in the hundreds the coarse solve sets the depth.
+
     Args:
         n_levels (int): Number of hierarchy levels; must be at least 2.
             3 is an unsourced-but-reasonable default for medium-sized
@@ -114,6 +143,24 @@ def wcycle_amg(
     convergence factors for anisotropic problems at roughly twice the coarse-grid
     cost. For isotropic SPD problems the iteration counts will be similar to or
     fewer than V-cycle.
+
+    Cost:
+        Notation and setup as in ``vcycle_amg`` (the coarsening and preparation are
+        identical, only the cycle differs).
+        Setup: ``W = sum_l W_agg,l + 2c^3 / 3 + O(sum_l n_l)``,
+        ``D = sum_l (3n_l + D_rho,l) + c``, ``L = sum_l (30 + L_rho,l) + 1``
+        approximately and ``S = sum_l (3 + P_l) + 1``.
+        Apply, one W-cycle (``gamma = 2``): fine level ``l`` is visited ``2^l`` times
+        and the coarsest ``2^{N-1}`` times; each visit pre-smooths, then twice forms the
+        residual, restricts, recurses and prolongates, then post-smooths:
+        ``W = sum_l 2^l [2(nu + 1) n_l^2 + 8n_l n_{l+1} + (3 nu + 2) n_l]
+        + 2^{N-1} 2c^2``,
+        ``Q = V(sum_l 2^l [(nu + 1) n_l^2 + 4n_l n_{l+1} + O(nu n_l)] + 2^{N-1} c^2)``,
+        ``D = sum_l 2^l (nu + 4)(ceil(log2 n_l) + 4) + 2^{N-1} 2c`` approximately (every
+        visit is sequential), ``L = sum_l 2^l (4 nu + 7) + 2^{N-1}`` and ``S = 0``.
+        Against the V-cycle the finest level costs one extra matvec and two extra
+        transfers per cycle; the coarse work doubles per level, so the coarsest solve's
+        ``2^{N-1}`` repetitions dominate the depth for deep hierarchies.
 
     Args:
         n_levels (int): Number of hierarchy levels; must be at least 2.

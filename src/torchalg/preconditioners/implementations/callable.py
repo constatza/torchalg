@@ -18,6 +18,11 @@ class CallablePreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner)
     Stateless wrapper: holds a Python callable, not a tensor buffer, so it
     is a plain class - no ``nn.Module`` needed.
 
+    Cost:
+        Setup: none (``W = 0``, ``D = 0``, ``L = 0``, ``S = 0``).
+        Apply: exactly the wrapped function's, ``W = W_f``, ``Q = Q_f``, ``D = D_f``,
+        ``L = L_f`` and ``S = S_f``; the wrapper adds one Python call and no kernel.
+
     Args:
         func (Callable[[torch.Tensor], torch.Tensor]): Function taking a
             residual and returning the preconditioned residual.

@@ -152,6 +152,32 @@ class AggregationCoarsening:
         .AggregationCoarsening`` for the sparse-CSR sibling: same algorithm,
         separate implementation, tested against the dense result.
 
+        Cost:
+            Dense ``(n, n)`` matrix, ``c`` the realized coarse dimension, ``s`` the
+            number of strong connections, ``V = 8`` bytes per ``float64``, once per
+            level. Strength ratios and threshold: ``W = 5n^2`` (absolute values,
+            the outer product of the diagonal and its square root, the division,
+            the comparison), ``Q`` about ``10Vn^2``, about 10 kernels. Aggregation:
+            one ``nonzero`` of the strength matrix copied to the host, then three
+            sequential Python passes over the ``n`` nodes and ``s`` neighbor
+            entries (``O(n + s)`` host steps, depth ``3n``, no flops). Tentative
+            prolongator: one host read of the aggregate count, then an ``n x c``
+            scatter. Damping: ``W_rho`` of ``jacobi_spectral_radius`` (see
+            ``JacobiSmoother``'s cost; ``P`` Arnoldi passes of ``2n^2 m + 4nm(m + 1)``
+            flops), memoized per matrix and so shared with a Jacobi smoother on the
+            same level, or none for an explicit ``omega``. Smoothed prolongator
+            ``P = P0 - omega D^-1 A P0``: one dense GEMM, ``2n^2 c + 3nc``. Galerkin
+            ``(P^T A) P``: ``2cn^2 + 2c^2 n``.
+            In total ``W = 4n^2 c + 2c^2 n + 5n^2 + W_rho + O(nc)``,
+            ``Q`` about ``V(12n^2 + 4nc)`` plus the Arnoldi bytes,
+            ``D = 3n + O(log n) + D_rho`` (the host aggregation passes dominate),
+            ``L = 25 + L_rho`` approximately and ``S = 3 + P`` (the ``nonzero`` and its
+            host copy, the aggregate count, one Hessenberg copy per Arnoldi pass).
+            Roofline: the two GEMMs are compute-bound (``W/Q`` about ``c / 4``
+            flops per byte); the rest is memory- or host-bound.
+            Work-depth: the ``3n``-step host aggregation and the Arnoldi recurrence
+            bound the depth; the GEMMs parallelize fully.
+
         Args:
             A (torch.Tensor): Dense fine-grid matrix ``A``, shape
                 ``(n, n)``. Named to match the ``CoarseningStrategy``
@@ -347,6 +373,23 @@ class TargetDimensionCoarsening:
         callers that already have this object can read the result directly
         instead of triggering a second full search.
 
+        Cost:
+            Dense ``(n, n)`` matrix, ``T`` the number of ``theta`` probes the
+            adaptive scan takes (coarse grid plus bisections, set by ``step`` and
+            the plateau boundaries found), ``s_t`` the strong connections at probe
+            ``t``. The strength ratios are computed once (``W = 4n^2``, about 9
+            kernels); each probe is one ``n^2`` comparison plus a host aggregation
+            (``O(n + s_t)`` host steps, depth ``3n``) and one count read, and the
+            winning ``theta`` gets one full ``AggregationCoarsening.build_transfer``
+            (``W_agg``, ``D_agg``, ``L_agg``, ``S_agg`` as documented there).
+            ``W = 4n^2 + T n^2 + W_agg``, ``Q`` about ``8Vn^2 + T(n^2 + 8s_t)``
+            bytes plus the build's, ``D = 3nT + D_agg`` (the probes run one after
+            the other on the host), ``L = 9 + 3T + L_agg`` and ``S = 3T + S_agg``
+            (each probe's ``nonzero``, its host copy and the count read). With
+            ``cache_candidates`` a repeated ``(A, theta, omega)`` skips the full
+            build. The search is host-bound: ``T`` sequential aggregations, not the
+            one Galerkin product, set its time for large ``T``.
+
         Args:
             A (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``. Named
                 to match the ``CoarseningStrategy`` protocol's parameter
@@ -480,6 +523,13 @@ class NeuralCoarseningStrategy:
                 to match the ``CoarseningStrategy`` protocol's parameter
                 name exactly (structural typing checks parameter names for
                 positional-or-keyword parameters).
+
+        Cost:
+            Until the forward pass is wired the call raises before any tensor
+            work: ``W = 0``, ``Q = 0``, ``D = 0``, ``L = 0`` and ``S = 0``. Once wired,
+            it is one prolongator forward pass (``W_net``, ``D_net``, ``L_net``) plus
+            the dense Galerkin product ``P^T A P``, ``2cn^2 + 2c^2 n`` flops for a
+            coarse dimension ``c``.
 
         Returns:
             tuple[torch.Tensor, NeuralTransferOperator]: ``(A_coarse,

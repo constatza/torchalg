@@ -9,6 +9,15 @@ instantiate concrete implementations such as `JacobiPreconditioner`. `Identity` 
 defined in `base.py` (the null object a solver defaults to) and re-exported by
 `implementations`, so the solver needs no concrete import.
 
+Every public dense preconditioner, smoother and coarsening (and the
+`vcycle_amg`/`wcycle_amg`/`pod2g_preconditioner` factories) documents its cost in
+a `Cost:` docstring section: work `W`, bytes moved `Q`, depth `D`, kernel
+launches `L` and, where nonzero, host synchronisations `S`, as formulas for the
+dense representation (an `n x n` matvec is `2n^2` flops, a triangular solve
+`n^2` flops at depth `n`), stated separately for `Setup` (the matrix-dependent
+one-off work) and `Apply` (one application, one sweep for a smoother).
+`tests/test_cost_docstrings.py` requires `W`, `D` and `L` in each phase.
+
 Implementation modules keep validation local to their own scheduling or
 factorization rules. `ScheduledPreconditioner` rejects negative `start_iter`
 and negative bounded windows, and `NeuralPreconditioner` binds extra tensors

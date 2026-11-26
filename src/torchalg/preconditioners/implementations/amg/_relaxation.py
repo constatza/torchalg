@@ -128,6 +128,24 @@ def _as_columns(vector: torch.Tensor) -> torch.Tensor:
 class PreparedSymmetricGaussSeidel:
     """Symmetric Gauss-Seidel bound to one matrix (``PreparedSmoother``).
 
+    Cost:
+        Apply, one symmetric iteration of ``smooth``, dense ``(n, n)`` matrix, ``k``
+        columns, ``V = 8`` bytes per ``float64``: per direction one dense product with
+        the stored strict triangle (``2n^2 k``, the zero half included), a subtraction
+        and one triangular solve (``n^2 k``), so ``W = 6n^2 k + 2nk``,
+        ``Q = V(3n^2 + 8nk)`` (each strict triangle is stored and read as a full
+        ``n x n`` matrix, each solve reads half of its system),
+        ``D = 2(n + ceil(log2 n) + 2)`` (each solve a substitution recurrence of ``n``
+        steps after the product's row reduction), ``L = 6`` (8 with frozen rows, the
+        ``where`` per direction) and ``S = 0``. The cost is independent of the
+        sparsity of ``A``.
+        ``smooth_from_zero`` with ``s`` iterations skips the first product:
+        ``W = 4n^2 k + nk + (s - 1)(6n^2 k + 2nk)``, ``L = 4 + 6(s - 1)``.
+        Roofline: ``W/Q`` is about 0.25 flop per byte for ``k = 1`` (memory-bound).
+        Work-depth: ``W/D`` is about ``3nk``; the ``2n``-step depth keeps the sweep on
+        the CPU (``Placement.SEQUENTIAL_SWEEP``). The setup is
+        ``prepare_symmetric_gauss_seidel``'s cost.
+
     Attributes:
         matrix (torch.Tensor): The dense matrix ``A`` (for cycle residuals).
         forward (_PreparedSweep): Ascending sweep ``(D + L) x_new = b - U x_old``.
@@ -198,6 +216,18 @@ def prepare_symmetric_gauss_seidel(
     matrix: torch.Tensor, *, rows: torch.Tensor | None = None
 ) -> PreparedSymmetricGaussSeidel:
     """Build the forward and backward triangular systems of ``matrix`` once.
+
+    Cost:
+        Dense ``(n, n)`` matrix, ``V = 8`` bytes per ``float64``. With every row
+        updatable: per direction a zero-diagonal test and one strict-triangle copy,
+        ``W = 0`` (no arithmetic beyond ``n`` comparisons), ``Q = 4Vn^2``,
+        ``D = 3`` (the two directions are independent), ``L = 6`` and ``S = 2`` (one
+        ``any`` read per direction decides whether rows are frozen). With frozen rows
+        (a zero diagonal, or ``rows`` given) each direction also builds its masked
+        triangle: ``W = 2n^2`` more per direction (row mask multiply, identity add),
+        ``Q`` about ``8Vn^2`` more per direction, ``D = 7`` and ``L = 20``; ``rows``
+        adds two kernels for the active mask. Each sweep is
+        ``PreparedSymmetricGaussSeidel``'s cost.
 
     Args:
         matrix (torch.Tensor): Dense matrix ``A``, shape ``(n, n)``.

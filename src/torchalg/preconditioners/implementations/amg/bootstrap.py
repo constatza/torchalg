@@ -417,6 +417,30 @@ class BAMGCoarsening:
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, DenseTransferOperator]:
         """Build one Bootstrap AMG coarse level from ``A``.
 
+        Cost:
+            Dense ``(n, n)`` matrix, ``k`` test vectors, ``c`` coarse points, ``m`` fine
+            rows at padded candidate width ``w``, ``d`` the algebraic-distance depth,
+            ``s`` compatible-relaxation stages, ``V = 8`` bytes per ``float64``, once per
+            level. The depth-``d`` and depth-``d + 2`` neighborhoods are ``d - 1`` and
+            ``d + 1`` dense boolean-as-float GEMMs of ``2n^3`` each (memoized per matrix
+            and setup run, so the finest level pays them once); the algebraic distance
+            ``W = O(n^2 k)``; the compatible relaxation as in
+            ``compatible_relaxation_coarsening`` (``W_CR``, ``D_CR = O(s nu n + s n)``);
+            the LSR correction one ``2n^2 k`` product; the interpolatory-set selection
+            ``W`` about ``(8 caliber - 1) m w k`` and the row fits ``O(m caliber^2 k)``
+            on the host (``batched_select_interpolatory_set``); the Galerkin product
+            ``2cn^2 + 2c^2 n``, the restriction ``P^T V`` (``2nck``) and the composite
+            prolongator product.
+            In total ``W = 2(2d)n^3 + W_CR + 2cn^2 + 2c^2 n + O(n^2 k) + O(mwk caliber)``
+            (the neighborhood GEMMs dominate when not memoized),
+            ``Q`` about ``V(2d + 10)n^2`` plus the CR bytes, ``D = D_CR + O(d log n)``
+            (the host-sequential independent sets dominate), ``L = L_CR + O(caliber)``
+            and ``S = S_CR + O(1)`` (the coarse and fine point ``nonzero`` reads, the
+            candidate packing, the working-tensor copies to the host and the fallback
+            test).
+            Work-depth: the GEMMs and the selection are parallel; the CR coarsening is a
+            host-sequential chain, so the step does not speed up with workers.
+
         Args:
             A (torch.Tensor): Fine-grid matrix, shape ``(n, n)``.
 
@@ -704,6 +728,27 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     which nodes are marked coarse rather than merely change speed;
     ``smoother`` affects only the solve-time cycle, exactly like
     ``AdaptiveSAPreconditioner``.
+
+    Cost:
+        Setup, ``BootstrapSetup.run`` (see its cost): ``n_bootstrap_cycles + 1``
+        hierarchy builds of ``BAMGCoarsening.build_transfer`` per level, ``eta``
+        dense Gauss-Seidel iterations of the ``k_r`` test vectors per level per build
+        (``W = eta (6n_l^2 + 2n_l) k_r``, ``D = eta (2n_l + O(log n_l))``) and
+        ``n_bootstrap_cycles`` improvement passes of GS V(1,1) cycles on the
+        sub-hierarchies; then the solve-time cycle's preparation (a Jacobi
+        ``prepare`` per level, ``W_rho,l`` under the spectral default, and the coarse
+        inverse, ``~ c^3`` SPD or ``~ 24c^3`` ``pinv``):
+        ``W = W_run + sum_l W_rho,l + 24c^3`` at most, ``D = D_run + sum_l D_rho,l + O(c)``,
+        ``L = L_run + sum_l L_rho,l + O(N)`` and ``S = S_run + sum_l P_l + 1``. The
+        host-sequential compatible relaxation makes it the largest term of the
+        method's total cost.
+        Apply, one dense V(``n_pre``, ``n_post``) cycle with weighted Jacobi,
+        ``nu = n_pre + n_post``, the pseudo-inverse coarse product:
+        ``W = sum_l [2 nu n_l^2 + 4n_l n_{l+1} + (3 nu - 1) n_l] + 2c^2``,
+        ``Q = V(sum_l [nu n_l^2 + 2n_l n_{l+1} + O(nu n_l)] + c^2 + 2c)``,
+        ``D = sum_l (nu + 3)(ceil(log2 n_l) + 4) + ceil(log2 c) + 1`` approximately,
+        ``L = sum_l (4 nu + 2) + 1`` and ``S = 0``. The hierarchy is deeper than
+        aggregation's (coarsening is slower), so launches, not depth, dominate.
 
     Args:
         matrix (torch.Tensor): SPD system matrix A (n x n).

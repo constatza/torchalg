@@ -70,6 +70,33 @@ def pod2g_preconditioner(
         (the multigrid hierarchy, whose finest level carries the matrix) is
         owned by ``AMGPreconditioner``.
 
+    Cost:
+        Dense ``(n, n)`` matrix, ``r`` the basis rank, the default two levels and
+        weighted Jacobi with spectral damping, one right-hand side,
+        ``nu = n_pre + n_post``, ``V = 8`` bytes per ``float64``. The call itself fits
+        the basis (``compute_pod_basis``, documented there) before any matrix exists.
+        Setup, ``AMGPreconditioner.setup``: the Galerkin product of
+        ``PODCoarseningStrategy.build_transfer`` (``2n^2 r + 2nr^2``), the Jacobi
+        ``prepare`` of the fine level, whose ``rho(D^-1 A)`` estimate ``W_rho`` (``P``
+        Arnoldi passes of ``2n^2 m + 4nm(m + 1)`` flops, ``m = min(n, 15)``) is not
+        shared with the coarsening here, and the LU factor of the ``r x r`` coarse
+        matrix: ``W = 2n^2 r + 2nr^2 + W_rho + 2r^3 / 3 + O(n)``,
+        ``Q`` about ``V(n^2 (3 + Pm) + 4nr + 2r^2)``, ``D = O(P m log n) + r`` (the
+        Arnoldi chain, then the elimination), ``L = O(P m) + 12`` on a GPU
+        (``O(P m^2)`` on the CPU) and ``S = P + 1`` (the Hessenberg copies, the LU
+        singularity read).
+        Apply, one two-grid V-cycle: ``nu`` dense fine matvecs, the dense restriction
+        and prolongation with the ``n x r`` basis and one ``r x r`` LU solve,
+        ``W = 2 nu n^2 + 4nr + (3 nu - 1) n + 2r^2``,
+        ``Q = V(nu n^2 + 2nr + O(nu n) + r^2)``,
+        ``D = (nu + 3)(ceil(log2 n) + 4) + 2r`` approximately, ``L = 4 nu + 3`` and
+        ``S = 0``.
+        Roofline: apply is memory-bound on the ``nu`` matrix reads; the transfers add
+        ``2nr`` flops each, a large share of the cycle at ``r`` in the tens (the
+        basis is dense, unlike an aggregation prolongator).
+        Work-depth: apply is parallel matvecs and products except the ``2r``-step coarse
+        substitution.
+
     Args:
         snapshots (torch.Tensor): Solution snapshot ensemble, shape
             (n_samples, n_dofs).

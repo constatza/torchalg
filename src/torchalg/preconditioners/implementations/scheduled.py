@@ -68,6 +68,15 @@ class ScheduledPreconditioner(
     so it always accepts a matrix and forwards it only to whichever
     sub-preconditioner actually needs it (see ``_setup_sub``).
 
+    Cost:
+        Setup: both branches are set up, ``W = W_setup(primary) + W_setup(fallback)``,
+        ``D = D_setup(primary) + D_setup(fallback)`` (run one after the other),
+        ``L = L_setup(primary) + L_setup(fallback)``, and likewise ``Q`` and ``S``.
+        Apply: exactly one branch, chosen on the host from ``context.iteration``
+        (no tensor read): ``W = W_apply(branch)``, ``D = D_apply(branch)``,
+        ``L = L_apply(branch)`` and the branch's ``Q`` and ``S``. With the default
+        ``Identity`` fallback, an inactive iteration costs nothing.
+
     Args:
         primary (Preconditioner): Main preconditioner to apply.
         fallback (Preconditioner | None): Fallback preconditioner (default:

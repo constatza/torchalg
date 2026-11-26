@@ -46,6 +46,20 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         - O(n) storage, O(n) application cost.
         - SPD if A is SPD.
 
+    Cost:
+        Setup, dense ``(n, n)`` matrix, ``V = 8`` bytes per ``float64``: ``W = 3n``
+        (absolute value, near-zero comparison, reciprocal), ``Q = 6Vn`` (the diagonal is
+        a strided view, read with stride ``n + 1``, so each of its ``n`` entries costs a
+        cache line rather than ``V`` bytes; the temporaries are ``n``-vectors),
+        ``D = 4`` (four dependent elementwise kernels), ``L = 5`` (``abs``, ``lt``,
+        ``ones_like``, ``where``, the reciprocal) and ``S = 0``. Nothing touches the
+        ``n^2`` off-diagonal entries.
+        Apply, ``k`` columns: ``W = nk``, ``Q = V(2nk + n)`` (read ``r`` and
+        ``inv_diag``, write ``z``), ``D = 1``, ``L = 1`` and ``S = 0``.
+        Roofline: apply ``W/Q`` is about 0.06 flop per byte (memory-bound).
+        Work-depth: ``W/D = nk``, fully parallel; the preconditioner adds no depth to
+        the PCG iteration.
+
     Example:
         >>> import torch
         >>> matrix = torch.diag(torch.tensor([2.0, 4.0, 1.0]))

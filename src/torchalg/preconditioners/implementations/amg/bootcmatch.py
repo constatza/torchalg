@@ -61,6 +61,33 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
     linear cycles, so plain PCG is valid (same reasoning as
     ``BootstrapAMGPreconditioner``).
 
+    Cost:
+        Dense ``(n, n)`` matrix, ``h`` the hierarchies built
+        (``1 <= h <= max_hierarchies``, data dependent), dense level dimensions
+        ``n_l`` and coarsest ``c`` per hierarchy, ``nu = n_pre + n_post``, weighted
+        Jacobi by default. One cycle of one hierarchy costs
+        ``W_cyc = sum_l [2 nu n_l^2 + 4n_l n_{l+1} + (3 nu - 1) n_l] + 2c^2``,
+        ``D_cyc = sum_l (nu + 3)(ceil(log2 n_l) + 4) + ceil(log2 c) + 1`` and
+        ``L_cyc = sum_l (4 nu + 2) + 1`` (the V-cycle of ``vcycle_amg``'s cost, with
+        the pseudo-inverse coarse solve). One hierarchy build costs ``W_build`` =
+        ``sum_l`` of ``BootCMatchCoarsening.build_transfer`` plus a Jacobi ``prepare``
+        per level (an unshared ``rho(D^-1 A_l)`` estimate ``W_rho,l``) plus the coarse
+        inverse (``~ c^3`` on the SPD path, ``~ 24c^3`` through ``pinv``).
+        Setup, ``BootCMatchSetup.run``: ``h`` builds and ``h`` power-iteration rounds;
+        round ``j`` runs ``k_max`` sweeps of ``j`` cycles, each with a matvec on ``A``,
+        and two ``A``-norms: ``W = h W_build + k_max h(h + 1) / 2 (W_cyc + 2n^2 + n)
+        + 4hn^2``, ``D = h D_build + k_max h(h + 1) / 2 (D_cyc + ceil(log2 n) + 2)``,
+        ``L = h L_build + k_max h(h + 1) / 2 (L_cyc + 3) + O(h)`` and
+        ``S = h S_build + h`` (one ``rho`` comparison read per round). The power
+        iteration, quadratic in ``h``, dominates once ``h`` exceeds 2.
+        Apply, the multiplicative composite: per hierarchy one matvec on ``A``, a
+        subtraction, one cycle and an addition: ``W = h(W_cyc + 2n^2 + 2n)``,
+        ``Q`` about ``h V(n^2 + Q_cyc / V)``, ``D = h(D_cyc + ceil(log2 n) + 3)``,
+        ``L = 1 + h(L_cyc + 3)`` and ``S = 0``.
+        Roofline: apply is memory-bound (dense matvecs).
+        Work-depth: the ``h`` cycles are sequential (each corrects the previous
+        residual), so ``D`` grows linearly with ``h``.
+
     Args:
         seed (int): Seed of the default random-vector source.
         draw (Callable[[int], torch.Tensor] | None): Explicit uniform

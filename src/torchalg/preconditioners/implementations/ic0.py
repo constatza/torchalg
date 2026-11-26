@@ -42,21 +42,37 @@ class IC0Preconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         Preconditioner ``M = L @ L.T``. Solve ``M z = r`` with two
         triangular solves: forward ``L y = r``, backward ``L.T z = y``.
 
-    Complexity (derived from this class's actual dense implementation, not
-    the sparse-textbook IC(0) algorithm):
-        - Storage: ``O(n^2)`` — ``_masked_factorization.dense_ic0`` returns a
-          full ``(n, n)`` buffer; entries outside the sparsity mask are
-          zeroed, not omitted, so this is a dense masked port (see the
-          module docstring), not a true sparse structure.
-        - Setup: ``O(sum_k nnz(L[:, k])^2)`` plus ``O(n^2)`` for the
-          pattern scan — ``dense_ic0`` is a right-looking Cholesky that, at
-          step ``k``, updates only the block spanned by the stored rows of
-          column ``k`` with one masked outer product; a dense pattern reaches
-          the standard dense-Cholesky ``O(n^3)``. The positive-pivot check is
-          a single host read after the loop.
-        - Application: ``O(n^2)`` — two dense ``solve_triangular`` calls
-          (triangular solves) against the full ``(n, n)`` factor, not a
-          sparse-structured solve bounded by ``nnz(L)``.
+    Storage: ``O(n^2)`` — ``_masked_factorization.dense_ic0`` returns a full
+    ``(n, n)`` buffer; entries outside the sparsity mask are zeroed, not omitted,
+    so this is a dense masked port (see the module docstring), not a true sparse
+    structure.
+
+    Cost:
+        Setup, dense ``(n, n)`` matrix, ``V = 8`` bytes per ``float64``, ``d_k`` the
+        number of pattern entries of column ``k`` below the diagonal:
+        ``dense_ic0`` is a right-looking Cholesky that at pivot ``k`` scales the
+        stored rows of column ``k`` and applies one masked outer product to the
+        ``d_k x d_k`` block they span. ``W = sum_k (2 d_k^2 + d_k + 1)`` (outer
+        product and subtraction over the whole block, of which the mask keeps the
+        lower half; the column scale; the square root), reaching the dense
+        Cholesky's ``2n^3 / 3`` for a dense pattern;
+        ``Q`` about ``10Vn^2 + 6V sum_k d_k^2`` (the ``n^2`` pattern scan, then a
+        gather, the outer product, the mask, the block gather and the block scatter
+        per pivot); ``D = 8n`` approximately (the pivots are a dependent chain of
+        about eight kernels each: square root, column gather, scale, scatter, outer
+        product, mask, block subtract, block scatter); ``L = 14n`` approximately (one
+        host-driven step per pivot, three for a pivot with no stored rows below);
+        ``S = 3`` (the row counts and the ``nonzero`` of the pattern split, and the
+        single positive-pivot read after the loop). Setup is launch-bound
+        (``L`` and ``D`` grow with ``n``, not with the pattern).
+        Apply, ``k`` columns: two dense ``solve_triangular`` calls against the full
+        factor, independent of the pattern: ``W = 2n^2 k``, ``Q = V(n^2 + 4nk)``
+        (each solve reads its triangle once), ``D = 2n`` (forward then backward
+        substitution, each a recurrence), ``L = 2`` and ``S = 0``.
+        Roofline: apply ``W/Q`` is about 0.25 flop per byte for ``k = 1``
+        (memory-bound), growing with ``k``.
+        Work-depth: apply ``W/D = nk``; the substitution depth keeps the solve on the
+        CPU (``Placement.SEQUENTIAL_SWEEP``).
 
     Breakdown:
         IC(0) is not guaranteed to exist for every SPD matrix (it can

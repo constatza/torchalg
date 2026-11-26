@@ -69,6 +69,22 @@ class SmootherBase(ABC):
 class PreparedJacobi:
     """Weighted Jacobi bound to one matrix: ``x <- x + diag_inv * (rhs - A x)``.
 
+    Cost:
+        Setup: none of its own (``W = 0``, ``D = 0``, ``L = 0``, ``S = 0``); it is
+        constructed with a ready ``diag_inv`` by ``JacobiSmoother.prepare``, which
+        carries the work.
+        Apply, one sweep of ``smooth``, dense ``(n, n)`` level matrix, ``k`` columns,
+        ``V = 8`` bytes per ``float64``: ``W = 2n^2 k + 3nk`` (the dense matvec, then
+        subtract, scale and add), ``Q = V(n^2 + 11nk)`` (the matrix read once, the
+        ``n x k`` operands of four kernels), ``D = ceil(log2 n) + 4`` (the matvec's row
+        reduction, then three dependent elementwise kernels), ``L = 4`` and ``S = 0``.
+        ``smooth_from_zero`` with ``s`` sweeps skips the first matvec:
+        ``W = nk + (s - 1)(2n^2 k + 3nk)``, ``L = 1 + 4(s - 1)``. ``residual`` is one
+        matvec and a subtraction: ``W = 2n^2 k + nk``, ``L = 2``.
+        Roofline: a sweep's ``W/Q`` is about 0.25 flop per byte for ``k = 1``
+        (memory-bound on the matrix read).
+        Work-depth: ``W/D = 2n^2 k / log2 n``, ample parallelism (``SPMV_BOUND``).
+
     Attributes:
         matrix (torch.Tensor): The level matrix ``A``, shape ``(n, n)``.
         diag_inv (torch.Tensor): ``omega / diag(A)``, zero where the diagonal is
@@ -136,6 +152,23 @@ class JacobiSmoother(SmootherBase):
     Applies ``steps`` stationary Jacobi iterations with damping omega, which must
     stay below ``2 / rho(D^{-1}A)`` for the iteration to converge.
 
+    Cost:
+        Setup, ``prepare`` on a dense ``(n, n)`` matrix, ``V = 8`` bytes per
+        ``float64``: with the default ``omega = None`` the damping is ``1 / rho``,
+        estimated by ``jacobi_spectral_radius``: ``D^-1 A`` (``W = n^2 + n``,
+        ``Q = 2Vn^2``), then ``P`` Arnoldi passes of ``m = min(n, 15)`` steps
+        (``P`` usually 1 to 2, see ``utils.spectral.approximate_spectral_radius``), so
+        ``W = n^2 + P(2n^2 m + 4nm(m + 1)) + O(n)``, ``Q`` about ``V n^2 (2 + Pm)``,
+        ``D = O(P m log n)`` (the Krylov steps are a dependent chain),
+        ``L = O(P m)`` on a GPU (block Gram-Schmidt) and ``O(P m^2)`` on the CPU
+        (modified), and ``S = P`` (one Hessenberg copy per pass). The estimate is
+        memoized per matrix object, so a level whose aggregation coarsening already
+        smoothed its prolongator with the same estimate pays none of it here.
+        An explicit ``omega`` leaves the damped diagonal inverse: ``W = 2n``
+        (comparison, division), ``Q = 5Vn``, ``D = 3``, ``L = 5`` and ``S = 0``.
+        Apply, one sweep: ``PreparedJacobi``'s, ``W = 2n^2 k + 3nk``,
+        ``D = ceil(log2 n) + 4``, ``L = 4`` and ``S = 0``.
+
     Args:
         omega (float | torch.Tensor | None): Damping factor. ``None``
             (default) is the relaxation rule ``1 / rho(D^{-1}A)`` (PyAMG's),
@@ -192,6 +225,14 @@ class GaussSeidelSmoother(SmootherBase):
     {'sweep': 'symmetric'})``); with equal pre- and post-smoothing counts the
     resulting cycle is symmetric, so plain PCG is valid. Rows with a zero
     diagonal are left unchanged.
+
+    Cost:
+        Setup, ``prepare`` on a dense ``(n, n)`` matrix: ``prepare_symmetric_gauss_seidel``,
+        with no zero diagonal ``W = 0`` (two strict-triangle copies),
+        ``Q = 4Vn^2``, ``D = 3``, ``L = 6`` and ``S = 2`` (one frozen-row test per
+        direction); see that function for frozen rows.
+        Apply, one symmetric iteration, ``k`` columns: ``PreparedSymmetricGaussSeidel``'s,
+        ``W = 6n^2 k + 2nk``, ``D = 2(n + ceil(log2 n) + 2)``, ``L = 6`` and ``S = 0``.
 
     Attributes:
         placement (Placement): ``SEQUENTIAL_SWEEP``; each sweep is a chain of dependent

@@ -160,10 +160,17 @@ def _independent_set_of(
     and documents why it unions rather than intersects.
 
     Cost:
-        W: ``O(n^2)`` for the one dense scan plus ``O(n + edges)`` for the
-        greedy loop. Executed: the loop reads native Python integers and
-        booleans instead of one scalar-tensor access and one length-``n``
-        row AND per pick.
+        ``n`` nodes, ``e`` the edges of the adjacency, dense ``(n, n)`` adjacency:
+        ``W = n^2`` for the one dense ``nonzero`` scan (comparisons, no flops),
+        plus ``O(n log n)`` for the priority sort and ``O(n + e)`` host steps for
+        the greedy loop; ``Q`` about ``n^2`` bytes for the boolean scan plus
+        ``O(n + e)`` index bytes; ``D = n`` (each pick depends on every earlier one,
+        a strict priority order); ``L`` about 8 (sort, the host copies, the scan,
+        ``searchsorted``, the result) and ``S = 3`` on an accelerator (the sorted
+        order, the candidate mask and the adjacency come to the host once each;
+        none on the CPU). Executed: the loop reads native Python integers and
+        booleans instead of one scalar-tensor access and one length-``n`` row AND
+        per pick.
 
     Args:
         candidates (torch.Tensor): Boolean mask, shape ``(n,)``, the
@@ -238,6 +245,24 @@ def compatible_relaxation_coarsening(
     is a defensive cap this port adds on top of it: without one, a candidate
     set ``Z`` that plateaus (stays empty) before ``rho_f`` reaches ``delta``
     would spin forever re-running ``cr_rate`` on an unchanged ``C``.
+
+    Cost:
+        Dense ``(n, n)`` matrix, ``s`` stages (data dependent, at most
+        ``max_iterations``), ``nu`` sweeps per ``cr_rate`` call, symmetric
+        Gauss-Seidel as the relaxation (``W_sw = 6n^2 + 2n``, ``D_sw = 2n + O(log n)``,
+        ``L_sw = 6``, see ``PreparedSymmetricGaussSeidel``). The relaxation is
+        prepared once (``Q = 4Vn^2``, ``S = 2``); each of the ``s + 1`` ``cr_rate``
+        calls runs ``nu`` sweeps with a coarse-point projection after each, two norms
+        and two host reads; each stage adds the candidate test and one
+        ``_independent_set_of`` (``n^2`` scan, depth ``n``).
+        ``W = (s + 1) nu (W_sw + n) + s n^2 + O(sn)``,
+        ``Q`` about ``(s + 1) nu V(3n^2 + O(n)) + s n^2`` bytes,
+        ``D = (s + 1) nu (D_sw + 1) + s n``, ``L = (s + 1)(nu (L_sw + 1) + 6) + 8s + 6``
+        and ``S = 2(s + 1) + 3s + 2`` (two reads per ``cr_rate``, three per
+        independent set on an accelerator, two for the preparation).
+        Work-depth: every sweep is a ``2n``-step substitution and every stage a
+        ``n``-step host loop, so the coarsening is a sequential chain; ``W/D`` is
+        about ``3n``.
 
     Args:
         matrix (torch.Tensor): System matrix ``A``, shape ``(n, n)``.

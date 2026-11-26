@@ -58,6 +58,13 @@ class LinearOperatorPreconditioner(StaticSetupPreconditioner):
     Stateless wrapper: holds only the callable, not a tensor buffer, so it
     is a plain class - no ``nn.Module`` needed.
 
+    Cost:
+        Setup: none (``W = 0``, ``D = 0``, ``L = 0``, ``S = 0``).
+        Apply: the wrapped operator's, ``W = W_op``, ``Q = Q_op``, ``D = D_op``,
+        ``L = L_op`` and ``S = S_op``, plus a shape check on the host. An output whose
+        shape differs from the residual's is reshaped: a free view when it is
+        contiguous, otherwise one copy (``Q = 2Vnk`` more, ``L = L_op + 1``).
+
     Args:
         operator (Callable[[torch.Tensor], torch.Tensor]): Callable applying
             ``M^{-1}`` to a residual vector.

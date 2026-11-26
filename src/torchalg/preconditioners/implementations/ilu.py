@@ -47,20 +47,30 @@ class ILUPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         - ``z = (LU)^{-1}r`` via forward/backward triangular solves.
         - Not guaranteed SPD even if ``A`` is SPD.
 
-    Complexity (corrected from a prior ``O(nnz)`` claim, which described the
-    sparse-textbook ILU(0) algorithm, not this dense implementation):
-        - Storage: ``O(n^2)`` — the combined ``L``/``U`` factor is a dense
-          ``(n, n)`` buffer, not a sparse structure sized by ``nnz(A)``.
-        - Setup: ``O(sum_k nnz(L[:, k]) * nnz(U[k, :]))`` plus ``O(n^2)`` for
-          the pattern scan — ``_masked_factorization.dense_ilu0`` is a
-          right-looking elimination with one masked rank-1 update per pivot,
-          over the stored rows and columns only, with no host
-          synchronization per entry; a dense pattern reaches the classical
-          dense-LU ``O(n^3)``.
-        - Application: ``O(n^2)`` — ``apply()`` runs two dense
-          ``torch.linalg.solve_triangular`` calls directly on the packed
-          ``(n, n)`` factor (each reads only its own triangle), not a
-          sparse-structured solve bounded by ``nnz``.
+    Storage: ``O(n^2)`` — the combined ``L``/``U`` factor is a dense ``(n, n)``
+    buffer, not a sparse structure sized by ``nnz(A)``.
+
+    Cost:
+        Setup, dense ``(n, n)`` matrix, ``V = 8`` bytes per ``float64``, ``r_k`` and
+        ``c_k`` the stored entries of column ``k`` below and of row ``k`` right of the
+        diagonal: ``_masked_factorization.dense_ilu0`` is a right-looking elimination
+        with one masked rank-1 update of the ``r_k x c_k`` block per pivot.
+        ``W = sum_k (r_k + 2 r_k c_k)`` (column scale, outer product, subtraction),
+        reaching the dense LU's ``2n^3 / 3`` for a dense pattern;
+        ``Q`` about ``8Vn^2 + 6V sum_k r_k c_k`` (the ``n^2`` clone and pattern scans,
+        then the gathers, outer product, mask and scatter per pivot);
+        ``D = 8n`` approximately (the ``n - 1`` pivots are a dependent chain of about
+        eight kernels each); ``L = 12n`` approximately (one host-driven step per pivot);
+        ``S = 4`` (the row counts and the ``nonzero`` of each of the two pattern
+        splits; there is no pivot check). Setup is launch-bound.
+        Apply, ``k`` columns: two dense ``solve_triangular`` calls on the packed
+        factor (each reads only its own triangle, the first with a unit diagonal),
+        independent of the pattern: ``W = 2n^2 k``, ``Q = V(n^2 + 4nk)``,
+        ``D = 2n`` (forward then backward substitution), ``L = 2`` and ``S = 0``.
+        Roofline: apply ``W/Q`` is about 0.25 flop per byte for ``k = 1``
+        (memory-bound).
+        Work-depth: apply ``W/D = nk``; the substitution depth keeps the solve on the
+        CPU (``Placement.SEQUENTIAL_SWEEP``).
 
     Example:
         >>> import torch

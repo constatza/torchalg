@@ -421,6 +421,44 @@ def adaptive_sa_hierarchy(
     ``omega=4/3`` nominal prolongator damping (divided by ``rho(D^-1 A)``),
     ``candidate_iters=5``, ``max_levels=max_coarse=10``, ``num_candidates=1``.
 
+    Cost:
+        Once per matrix, dense levels ``n_0 = n > ... > n_{N-1} = c`` (``N`` levels;
+        ``c`` grows with the candidate count, coarse nodes times candidates so far),
+        ``q`` = ``num_candidates``, ``s`` = ``candidate_iters``, ``V = 8`` bytes per
+        ``float64``. Building blocks, per level ``l``: a dense symmetric Gauss-Seidel
+        iteration ``W = 6n_l^2 + 2n_l``, ``D = 2n_l + O(log n_l)``, ``L = 6`` (see
+        ``PreparedSymmetricGaussSeidel``); a smoothed-aggregation level
+        ``W_SA,l = 4n_l^2 n_{l+1} + 2n_l n_{l+1}^2 + 3n_l^2 + W_rho,l`` (node strength,
+        host aggregation of depth ``3n_l``, ``fit_candidates``, the prolongator GEMM
+        ``D^-1 A T``, the Galerkin product, and an Arnoldi estimate ``W_rho,l`` of
+        ``rho(D^-1 A_l)``, ``P`` passes of ``2n_l^2 m + 4n_l m(m + 1)`` flops, never
+        memoized here); a GS-smoothed V(1,1) trial cycle
+        ``W_cyc = sum_l (12n_l^2 + 4n_l n_{l+1} + 5n_l) + 2c^2``,
+        ``D_cyc = sum_l 4n_l + O(N log n)``, ``L_cyc = 14N`` approximately.
+        The initial stage relaxes ``s`` iterations per level going down and again
+        coming up, with one SA level per step. Each of the ``q - 1`` general stages
+        rebuilds the SA hierarchy on the fixed aggregation, prepares it (one GS
+        preparation per level, ``S = 2`` each, and the coarse inverse, ``~ c^3`` on the
+        SPD path or ``~ 24c^3`` through ``pinv``), runs ``s`` trial cycles on the whole
+        hierarchy and ``s`` on each of the ``N - 2`` nested sub-hierarchies (each refit
+        costs two more Arnoldi estimates), then relaxes up with an indexed GS per
+        level. A final SA rebuild closes the setup.
+        In total ``W = 12s sum_l n_l^2 + (q + 1) sum_l W_SA,l
+        + (q - 1)[s N W_cyc + 24c^3 + 2N W_rho]`` approximately (quadratic in ``N``
+        through the nested sub-hierarchy solves), ``Q`` about ``V`` times the
+        dense matrix reads of those blocks (``n_l^2`` per GS triangle product and
+        solve, per Galerkin GEMM, per Arnoldi matvec),
+        ``D = 4s sum_l n_l + (q - 1) s N D_cyc + (q + 1) sum_l (3n_l + D_rho,l)
+        + (q - 1) O(c)`` approximately (the substitution recurrences, the host
+        aggregations and the coarse factorizations are all sequential),
+        ``L = (q - 1) s N L_cyc + O((q + 1) sum_l L_rho,l)`` and
+        ``S = O(q s N)`` (one residual-norm read per trial cycle, the GS
+        frozen-row tests, the aggregation, ``fit_candidates`` and Arnoldi reads, one
+        ``nonzero`` per indexed GS). The ``n_l^2``-sized dense GS triangles make every
+        trial cycle cost ``O(n^2)`` whatever the sparsity of ``A``.
+        Work-depth: depth, not flops, limits the setup: every GS iteration is a
+        ``2n_l``-step recurrence.
+
     Args:
         matrix (torch.Tensor): SPD system matrix, shape ``(n, n)``.
         initial_candidates (torch.Tensor | None): Known candidates ``(n, k)``;
@@ -488,6 +526,25 @@ class AdaptiveSAPreconditioner(AMGPreconditioner):
     Setup costs about ``num_candidates`` hierarchy builds, so it pays off when
     one matrix is reused across many solves (call ``setup()`` once, then
     ``apply()`` many times).
+
+    Cost:
+        Setup: ``adaptive_sa_hierarchy`` (see its cost: ``W``, ``D``, ``L`` and ``S``
+        there) plus the preparation of the solve-time cycle, one Jacobi ``prepare``
+        per non-coarsest level (an Arnoldi estimate ``W_rho,l`` each under the default
+        spectral damping) and the coarse inverse (``~ c^3`` SPD, ``~ 24c^3`` ``pinv``):
+        ``W = W_adaptive + sum_l W_rho,l + 24c^3`` at most,
+        ``D = D_adaptive + sum_l D_rho,l + O(c)``,
+        ``L = L_adaptive + sum_l L_rho,l + O(N)`` and
+        ``S = S_adaptive + sum_l P_l + 1``. It dominates the method's total cost.
+        Apply, one dense V(``n_pre``, ``n_post``) cycle with weighted Jacobi,
+        ``nu = n_pre + n_post``, the pseudo-inverse coarse product:
+        ``W = sum_l [2 nu n_l^2 + 4n_l n_{l+1} + (3 nu - 1) n_l] + 2c^2``,
+        ``Q = V(sum_l [nu n_l^2 + 2n_l n_{l+1} + O(nu n_l)] + c^2 + 2c)``,
+        ``D = sum_l (nu + 3)(ceil(log2 n_l) + 4) + ceil(log2 c) + 1`` approximately,
+        ``L = sum_l (4 nu + 2) + 1`` and ``S = 0``.
+        Roofline: apply is memory-bound (dense matvecs, about 0.25 flop per byte).
+        Work-depth: apply has no recurrence (Jacobi, transfers, one coarse product),
+        so ``W/D`` is large.
 
     Args:
         matrix (torch.Tensor): SPD system matrix A (n x n).

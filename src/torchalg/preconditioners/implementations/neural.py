@@ -45,6 +45,15 @@ class NeuralPreconditioner(NonLinearPreconditioner, StaticSetupPreconditioner):
     tensor buffers, do not need ``nn.Module``, which is inherited only to
     propagate ``.to(device/dtype)`` to owned tensor buffers).
 
+    Cost:
+        Setup: none (``W = 0``, ``D = 0``, ``L = 0``, ``S = 0``); ``bind_inputs``
+        stores references and moves no data.
+        Apply: one predictor forward pass, ``W = W_net``, ``Q = Q_net``,
+        ``D = D_net`` (the network's layer chain), ``L = L_net`` and ``S = S_net``,
+        all set by the injected model and its extra inputs; the wrapper adds one
+        Python call. A network's layers are dense products, hence
+        ``Placement.DENSE_BOUND``.
+
     Args:
         predictor (ExtraInputPredictorPort): Loaded predictor. Not released
             by this class.
