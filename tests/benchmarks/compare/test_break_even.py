@@ -22,6 +22,8 @@ from benchmarks.compare import break_even_counts, break_even_k, load_measurement
         # A solve no faster than Jacobi's never repays a larger setup.
         (0.25, 0.1, 0.0, 0.1, math.inf),
         (0.25, 0.2, 0.0, 0.1, math.inf),
+        # Slower solve but a setup saving larger than the loss: ahead at k = 1.
+        (0.0, 0.12, 0.5, 0.1, 1),
     ],
 )
 def test_break_even_k(

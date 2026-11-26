@@ -55,7 +55,8 @@ def break_even_k(
     """
     extra_setup = setup_s - jacobi_setup_s
     saving = jacobi_solve_s - solve_s
-    if extra_setup <= 0 and saving >= 0:
+    # k = 1 qualifies exactly when the setup excess is covered by one solve's saving.
+    if extra_setup <= saving:
         return 1
     if saving <= 0:
         return math.inf
