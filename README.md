@@ -70,12 +70,30 @@ No runtime dependency on `neuralls`.
 
 ## Installation
 
-`torchalg` is not yet published to PyPI — add it straight from GitHub with
-[uv](https://docs.astral.sh/uv/):
+With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add git+https://github.com/constatza/torchalg
+uv add torchalg
 ```
+
+Until the first PyPI release, releases are on TestPyPI only. Resolve torchalg (and only
+torchalg) from there by declaring TestPyPI as an explicit index in your `pyproject.toml`:
+
+```toml
+[project]
+dependencies = ["torchalg>=0.2,<0.3"]
+
+[tool.uv.sources]
+torchalg = { index = "testpypi" }
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+explicit = true
+```
+
+The development head installs straight from GitHub:
+`uv add git+https://github.com/constatza/torchalg`.
 
 Requires Python `>=3.14,<3.15` and torch `>=2.8.0,<3.0`. torchalg is pure
 PyTorch and declares only that plain `torch` requirement — it never pins a

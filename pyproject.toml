@@ -1,10 +1,25 @@
 [project]
 name = "torchalg"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pure PyTorch reimplementation of neuralls' iterative solvers and preconditioners"
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "constatza" }]
 requires-python = ">=3.14,<3.15"
 dependencies = ["torch>=2.8.0,<3.0"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Repository = "https://github.com/constatza/torchalg"
+Issues = "https://github.com/constatza/torchalg/issues"
 
 [dependency-groups]
 dev = [
@@ -78,11 +93,6 @@ markers = [
 
 [tool.uv]
 package = true
-
-[tool.uv.workspace]
-members = [
-    "benchmarks/tmp/rocm71",
-]
 
 [build-system]
 requires = ["uv_build>=0.10", "uv_build<0.15"]
