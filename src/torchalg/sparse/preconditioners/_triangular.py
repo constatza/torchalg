@@ -5,9 +5,9 @@ triangular sparse CSR factor ``L`` and solve ``(L @ L.T) z = r`` for ``z`` -
 the only difference between them is how ``L`` is obtained (externally
 supplied vs. computed via ``sparse_ic0``). Mirrors the dense sibling's
 ``preconditioners.implementations._triangular.cholesky_factor_solve`` - same
-shared-helper precedent. Factor transposition and schedule construction
-happen during preconditioner setup; repeated application performs only the
-two numerical triangular solves.
+shared-helper precedent. Factor transposition and the preparation of both
+substitutions (``prepare_triangular_solve``) happen during preconditioner setup;
+repeated application performs only the two numerical triangular solves.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class PreparedTriangularPair(nn.Module):
 def build_sparse_cholesky_solve_cache(
     factor: torch.Tensor, pattern: IC0Pattern | None = None
 ) -> PreparedTriangularPair:
-    """Materialize ``factor.T`` and both schedules for repeated application.
+    """Materialize ``factor.T`` and prepare both substitutions for repeated application.
 
     Args:
         factor: Sparse CSR lower triangular Cholesky-style factor.

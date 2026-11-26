@@ -16,6 +16,16 @@ algorithm based on the matrix representation they already own.
 - Device-specific implementations are chosen by per-operation registries keyed
   by device type (`kernels.triangular.TRIANGULAR_SOLVER_BY_DEVICE`,
   `LEVEL_SCHEDULER_BY_DEVICE`), never by device checks at call sites.
+- Every public sparse preconditioner, smoother and coarsening (and the
+  `vcycle_amg`/`wcycle_amg` factories) documents its cost in a `Cost:` docstring
+  section: work `W`, bytes moved `Q`, depth `D`, kernel launches `L` and, where
+  nonzero, host synchronisations `S`, as formulas in `nnz`, the dependency levels
+  of the triangular solves and the hierarchy sizes, stated separately for `Setup`
+  (the matrix-dependent one-off work) and `Apply` (one application, one sweep for a
+  smoother). `tests/test_cost_docstrings.py` requires `W`, `D` and `L` in each
+  phase. A setup that prepares a triangular solve pays four host reads per
+  direction (one zero-pivot test and three count reads of the masked triangle
+  extraction), so IC(0) setup reads the host 9 times and ILU(0) 8 times.
 
 Re-run the opt-in experiments in `benchmarks/sparse_dense/` when a device,
 PyTorch version, or matrix family changes materially.

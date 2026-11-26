@@ -161,6 +161,29 @@ class BootCMatchSetup:
     ) -> tuple[PreparedHierarchy, ...]:
         """Run the BootCMatch bootstrap outer loop.
 
+        Cost:
+            ``r`` hierarchies (``r <= max_hierarchies``, data dependent: the loop stops
+            once the composite's rate meets ``rho_desired``), ``z = nnz(A)``
+            (``n^2`` dense), ``m`` the largest row count. Per hierarchy: one
+            ``_build_hierarchy`` (``N_j - 1`` ``BootCMatchCoarsening.build_transfer``
+            calls, ``bt``) and one ``cycle.prepare`` (``prep``). Round ``j``
+            (``j = 1 .. r``) runs ``k_max`` power-iteration sweeps through all ``j``
+            hierarchies built so far, each one product ``A x`` and one
+            ``cycle.apply`` (``W_cyc``, ``D_cyc``, ``L_cyc``, the cycle's Apply
+            Cost), so ``C = k_max r(r + 1) / 2`` cycles in all, plus two A-norms per
+            round (``2z + 2n`` each).
+            ``W = sum_j (W_bt,j + W_prep,j) + C (2z + n + W_cyc) + r (4z + 4n)``,
+            ``Q`` the SpMV and cycle bytes of those steps,
+            ``D = sum_j (D_bt,j + D_prep,j) + C (D_cyc + ceil(log2 m) + 2)
+            + O(r log n)`` (each sweep starts from the previous one's iterate),
+            ``L = sum_j (L_bt,j + L_prep,j) + C (L_cyc + 2) + 12 r`` and
+            ``S = sum_j (S_bt,j + S_prep,j) + r`` (one read of the measured rate per
+            round, for the stopping test).
+            Work-depth: the ``C`` cycles are a single dependent chain, so the
+            power iteration is as latency-bound as ``C`` preconditioner applies;
+            the coarsening itself (matching and Galerkin products) dominates ``W`` only
+            for small ``r``.
+
         Args:
             matrix (torch.Tensor): SPD system matrix, shape ``(n, n)``
                 (dense or sparse CSR).

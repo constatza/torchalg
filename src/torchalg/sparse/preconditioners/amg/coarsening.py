@@ -119,10 +119,17 @@ class AggregationCoarsening:
             (each stored entry of ``A`` meets one entry of ``P0``) plus an
             ``O(z)`` row scaling; Galerkin ``W = 2 sum nnz(P_k:) + 2 sum
             nnz((AP)_i:)`` (``form_sparse_sparse``).
-            ``D`` is the sum of the stage depths and is dominated by the
-            host-sequential aggregation and the Arnoldi recurrence, so setup
-            does not speed up with workers; ``S`` is ``O(P)`` plus the
-            aggregation transfers.
+            Totals: ``W = 2z + P (2zm + 4nm(m + 1)) + W_gal + O(z)``;
+            ``D = 3n + z_S + P m (ceil(log2 n) + 1) * O(1) + O(log z)``, dominated by
+            the host-sequential aggregation and the Arnoldi recurrence (the other
+            stages are maps, scans, sorts and sparse products of logarithmic depth),
+            so setup does not speed up with workers; ``L = O(P m)`` Arnoldi kernels
+            (``O(P m^2)`` with the CPU's modified Gram-Schmidt) plus about 60 for
+            the other stages; ``S = P + 8``: the Arnoldi passes on a memo miss, three
+            count reads in the strength filter, the two ``tolist`` copies of the
+            aggregation and three reads sizing the tentative prolongation (a GPU's
+            sparse products and coalesces add their own sizing reads). A fixed
+            ``omega`` or a memo hit drops the ``P`` terms.
             Roofline: every stage has ``W/Q`` below 1 flop per byte (the
             index work has none), so setup is memory- and host-bound.
             Work-depth: strength, ``AP0`` and the Galerkin product are
@@ -295,6 +302,21 @@ class TargetDimensionCoarsening:
         The winning `theta` and its realized coarse dimension are cached as
         ``self._theta``/``self._realized_coarse_dim`` afterward, mirroring
         the dense sibling's convention.
+
+        Cost:
+            ``T`` dimension probes (the samples of ``adaptive_theta_scan``: a
+            log-spaced coarse pass plus bisection of its jumps, at most 5000) and one
+            full ``AggregationCoarsening.build_transfer`` at the winning ``theta``
+            (``bt``, that method's Cost; a cache hit with ``cache_candidates`` skips
+            it). A probe is one strength filter and one host aggregation, ``z = nnz(A)``,
+            ``z_S`` its strong entries: ``W = O(z)``, ``D = 3n + z_S + O(log z)``,
+            ``L = 25`` and ``S = 6`` (three strength count reads, two ``tolist``
+            copies and the realized-dimension read). Totals:
+            ``W = T O(z) + W_bt``, ``D = T (3n + z_S) + D_bt`` (the probes run one
+            after another, though they are independent), ``L = 25 T + L_bt`` and
+            ``S = 6 T + S_bt``. The probes dominate when ``T`` is large: ``T`` host
+            aggregations cost about ``T`` times the setup of a plain
+            ``AggregationCoarsening`` level without its Galerkin product.
 
         Args:
             A (torch.Tensor): Fine-grid matrix ``A``, shape ``(n, n)``,

@@ -362,9 +362,17 @@ class BAMGCoarsening:
             (``batched_select_interpolatory_set``); the
             Galerkin product ``W = 2 sum nnz(P_k:) + 2 sum nnz((AP)_i:)``
             (``form_sparse_sparse``) and the restriction ``P^T V``, ``W = 2 nnz(P) k``.
-            ``S = s + O(1)`` (one convergence read per CR stage plus the candidate
-            width and the fallback tests). ``I`` is the neighborhood, the independent
-            set and the candidate packing.
+            Totals: ``W = O(zk) + s (nu W_sweep + O(n)) + 2zk + W_sel + W_gal
+            + 2 nnz(P) k``, ``D = s (nu D_sweep + n) + O(caliber log z)``,
+            ``L = s (nu L_sweep + O(1)) + O(caliber + d)`` (the GS sweep has
+            ``L_sweep = 6``; the selection, fits and products are a constant number of
+            batched kernels per interpolatory-set step) and ``S = s + O(1)``: one
+            convergence read per CR stage, and in the prolongation the ``nonzero``
+            splits into C and F points, the candidate-block width, the trust test of
+            each of the two row fits and one ``nonzero`` sizing the empty-selection
+            fallback rows (whose strongest candidates are one batched ``searchsorted``
+            lookup), never one read per fallback row. ``I`` is the neighborhood, the
+            independent set and the candidate packing.
             Roofline: every stage has ``W/Q`` below 1 flop per byte (the index work
             has none), so the step is memory- and host-bound.
             Work-depth: the selection, fits and SpGEMMs are parallel (large ``W/D``);
@@ -713,27 +721,31 @@ class BootstrapAMGPreconditioner(AMGPreconditioner):
     class's own historical (pre-MGE) default behavior exactly.
 
     Cost:
-        Setup, once per matrix: ``n_bootstrap_cycles + 1`` hierarchy builds, each
-        ``L`` calls of ``BAMGCoarsening.build_transfer`` (``L`` levels), plus
-        ``n_bootstrap_cycles`` improvement passes; the discarded builds are the
-        algorithm's design (the improvement passes refine test vectors, not the
-        kept hierarchy). Each build also relaxes ``k_r`` test vectors by ``eta``
-        symmetric Gauss-Seidel iterations per level, ``W = eta (4 z_l + 2 n_l) k_r``,
-        and each improvement pass runs ``eta`` GS-smoothed V(1,1) cycles on the
-        ``L - 1`` sub-hierarchies, ``W = eta k_r sum over sub-hierarchies of
-        (9 z_l + 4 nnz(P_l) + O(n_l)) + 2c^2`` per cycle (``c`` the coarsest
-        order). Smoothers and transposes are prepared once per level matrix and
-        shared across the run. The compatible-relaxation independent set makes
-        the host-sequential depth ``D = O(n)`` per CR stage, so the setup does
-        not speed up with workers and is the largest term of the method's total
-        cost. ``S`` is dominated by the per-stage convergence reads
-        (``O(builds x L x s)``).
-        Apply, one V(``a``, ``b``) cycle with weighted-Jacobi smoothing and ``L``
-        levels, per non-coarsest level ``l``:
-        ``W_l = 2(a + b) z_l + 4 nnz(P_l) + 3(a + b) n_l``, ``L_l = 4(a + b) + 2``,
-        ``S = 0``, plus the coarsest cached-inverse product ``W = 2c^2``,
-        ``D = ceil(log2 c) + 1``; ``D`` is about ``sum_l [(a + b)(ceil(log2 m_l) + 4) +
-        2 (ceil(log2 m_P) + 1)]``, shallow because Jacobi and the transfers have no
+        Setup, once per matrix, ``N`` levels with ``n_l`` rows and ``z_l`` stored
+        entries, ``H = n_bootstrap_cycles + 1`` hierarchy builds:
+        ``BootstrapSetup.run``'s Cost with the sparse ``BAMGCoarsening.build_transfer``
+        (``bt``) per level and build, plus ``n_bootstrap_cycles`` improvement passes;
+        the discarded builds are the algorithm's design (the improvement passes refine
+        test vectors, not the kept hierarchy). Each build also relaxes ``k_r`` test
+        vectors by ``eta`` symmetric Gauss-Seidel iterations per level,
+        ``eta (4 z_l + 2 n_l) k_r``, and each improvement pass runs ``eta``
+        GS-smoothed V(1,1) cycles on the ``N - 1`` sub-hierarchies, ``k_r`` sum over
+        sub-hierarchies of ``(9 z_l + 4 nnz(P_l) + O(n_l)) + 2c^2`` per cycle (``c``
+        the coarsest order). Totals: ``W = H sum_l [W_bt,l + eta (4z_l + 2n_l) k_r]
+        + (H - 1) eta W_improve``, ``D = H sum_l [D_bt,l + eta (lv_f,l + lv_b,l)]
+        + (H - 1) eta D_improve`` with ``D_bt,l = O(n_l)`` per CR stage from the
+        host-sequential independent set, ``L = H sum_l (L_bt,l + 6 eta) + (H - 1) eta
+        L_improve`` and ``S = H sum_l S_bt,l + O(H N)``, dominated by the per-stage
+        convergence reads (``O(H N s)``). Smoothers and transposes are prepared once
+        per level matrix and shared across the run. The setup does not speed up with
+        workers and is the largest term of the method's total cost.
+        Apply, one V(``a``, ``b``) cycle with weighted-Jacobi smoothing, per
+        non-coarsest level ``l``: ``2(a + b) z_l + 4 nnz(P_l) + 3(a + b) n_l`` flops
+        and ``4(a + b) + 2`` launches, plus the coarsest cached-inverse product
+        ``2c^2``: ``W = sum_l [2(a + b) z_l + 4 nnz(P_l) + 3(a + b) n_l] k + 2c^2 k``,
+        ``L = sum_l [4(a + b) + 2] + 1``, ``S = 0``, and
+        ``D = sum_l [(a + b)(ceil(log2 m_l) + 4) + 2 (ceil(log2 m_P) + 1)]
+        + ceil(log2 c) + 1``, shallow because Jacobi and the transfers have no
         recurrence. The hierarchy is deeper than aggregation's (coarsening is
         slower), so the launch count, not the depth, dominates its apply.
         Roofline: apply ``W/Q`` is about 0.15 flop per byte (memory-bound).

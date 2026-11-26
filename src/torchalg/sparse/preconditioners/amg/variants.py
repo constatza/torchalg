@@ -49,6 +49,28 @@ def vcycle_amg(
     solve; only the coarsest-level direct solve densifies
     (``dense_lu_coarse_solver``).
 
+    Cost:
+        ``N = n_levels``, non-coarsest levels ``l`` with ``n_l`` rows, ``z_l`` stored
+        entries and ``p_l`` prolongator entries, coarsest dimension ``c``,
+        ``a = n_pre``, ``b = n_post``, ``k`` right-hand-side columns, default
+        weighted-Jacobi smoother with spectral damping (an explicit ``smoother``
+        replaces the sweep terms with its own Cost).
+        Setup (``AMGPreconditioner.setup``): ``N - 1`` sparse
+        ``AggregationCoarsening.build_transfer`` calls (``bt``, its Cost: strength,
+        host aggregation, one Arnoldi estimate, ``A P0`` and the Galerkin product), one
+        ``JacobiSmoother.prepare`` per level (``z_l + n_l`` flops, the Arnoldi
+        estimate already memoized on the level matrix when both dampings are
+        spectral), then the densified coarsest LU: ``W = sum_l (W_bt,l + z_l + n_l)
+        + 2c^3 / 3``, ``D = sum_l D_bt,l + c`` (the host aggregation and the Arnoldi
+        chain of each level, then the elimination), ``L = sum_l (L_bt,l + 19) + 3``
+        and ``S = sum_l S_bt,l + 1`` (the LU singularity read).
+        Apply, one V-cycle (``VCycle``'s Cost):
+        ``W = sum_l [2(a + b) z_l + 3(a + b) n_l + 4 p_l] k + 2c^2 k``,
+        ``D = sum_l (a + b + 3)(ceil(log2 m_l) + 4) + 2c`` (``m_l`` the largest row
+        count; the dense LU substitutions set the depth when ``c`` is in the
+        hundreds), ``L = sum_l [4(a + b) + 2] + 1`` and ``S = 0``.
+        Roofline: about 0.15 flop per byte (memory-bound SpMVs).
+
     Args:
         theta (float): Strength-of-connection threshold theta in (0, 1).
         omega (float | None): Damping of the Jacobi step that smooths the
@@ -95,6 +117,17 @@ def wcycle_amg(
     ``torchalg.preconditioners.implementations.amg.variants.wcycle_amg`` -
     same parameters and wiring as ``vcycle_amg`` above, with ``WCycle``
     (two coarse-grid corrections per level, gamma = 2) instead of ``VCycle``.
+
+    Cost:
+        Notation as in ``vcycle_amg``.
+        Setup, identical to ``vcycle_amg``'s: ``W = sum_l (W_bt,l + z_l + n_l) + 2c^3 / 3``, ``D = sum_l D_bt,l + c``,
+        ``L = sum_l (L_bt,l + 19) + 3``, ``S = sum_l S_bt,l + 1``.
+        Apply, one W-cycle (``WCycle``'s Cost; level ``l`` visited ``2^l`` times, the
+        coarsest ``2^(N-1)`` times):
+        ``W = sum_l 2^l [(2(a + b) + 2) z_l + (3(a + b) + 2) n_l + 8 p_l] k
+        + 2^(N-1) 2c^2 k``,
+        ``D = sum_l 2^l (a + b + 5)(ceil(log2 m_l) + 4) + 2^(N-1) 2c``,
+        ``L = sum_l 2^l [4(a + b) + 7] + 2^(N-1)`` and ``S = 0``.
 
     Args:
         theta (float): Strength-of-connection threshold theta in (0, 1).

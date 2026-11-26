@@ -46,21 +46,34 @@ class ICholeskyPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
 
     Mathematical Properties:
         - ``M = L @ L.T``.
-        - ``z = M^{-1}r = (L @ L.T)^{-1}r``, solved via two level-scheduled
-          sparse triangular solves (forward against ``L``, backward against
-          ``L.T``) - the dense sibling's single ``torch.cholesky_solve``
+        - ``z = M^{-1}r = (L @ L.T)^{-1}r``, solved via two sparse triangular
+          solves (forward against ``L``, backward against ``L.T``) prepared by
+          ``kernels.triangular.prepare_triangular_solve`` (the vendor solve on
+          CPU and CUDA) - the dense sibling's single ``torch.cholesky_solve``
           call has no sparse-CSR overload, which is exactly the capability
           gap ``kernels.triangular`` exists to close.
 
-    Complexity:
-        - Storage: ``O(nnz(L))`` - ``L`` is stored exactly as supplied, a
-          true sparse CSR structure (no factorization, hence no additional
-          fill-in beyond whatever the caller's ``L`` already has).
-        - Setup: ``O(nnz(L))`` to materialize ``L.T`` and build both level
-          schedules; ``_compute_operator`` returns the supplied ``L`` unchanged.
-        - Application: two ``O(nnz(L))`` level-scheduled triangular solves,
-          same as ``IC0Preconditioner``'s application cost (both share
-          ``_triangular.PreparedTriangularPair``).
+    Storage: ``O(nnz(L))`` - ``L`` is stored exactly as supplied, a true sparse
+    CSR structure (no factorization, hence no fill-in beyond the caller's ``L``).
+
+    Cost:
+        Setup, ``z_L = nnz(L)``, ``w`` the index width, ``V = 8`` bytes per
+        ``float64``: no factorization (``_compute_operator`` returns ``L``). The
+        transpose is a COO round trip, a sort of the stored entries
+        (``W = 0``, ``I = O(z_L log z_L)``, ``Q = O(z_L(V + w))``, ``D = O(log z_L)``),
+        and each of the two ``prepare_triangular_solve`` calls extracts its triangle
+        and tests its pivots (``Q = O(z_L(V + w))``, ``D = O(log z_L)``): about
+        ``L = 60`` in all and ``S = 8`` (per direction one zero-pivot read and three
+        count reads of the triangle extraction).
+        Apply, ``k`` columns: two sparse triangular solves, ``W = 4 z_L k``,
+        ``Q = 2 [z_L(V + w) + (n + 1)w + 2Vnk]``, ``D = lv_f + lv_b`` (each solve a
+        recurrence over the dependency levels of ``L`` and ``L.T``), ``L = 2``
+        through the vendor solve (CPU and CUDA; ``L = O(lv)`` per solve when
+        level-scheduled) and ``S = 0`` - the same apply as ``IC0Preconditioner``,
+        since both share ``_triangular.PreparedTriangularPair``.
+        Roofline: apply ``W/Q`` is about 0.17 flop per byte (memory-bound).
+        Work-depth: apply ``W/D = 2 z_L k / lv(L)``, low: depth limits parallel
+        speed-up (``Placement.SEQUENTIAL_SWEEP``).
 
     Example:
         >>> import torch

@@ -140,24 +140,29 @@ class PreparedSymmetricGaussSeidel:
             strict-triangle products.
 
     Cost:
-        One symmetric iteration (forward plus backward sweep), ``k`` columns,
+        Apply, one symmetric iteration (forward plus backward sweep), ``k`` columns,
         ``z = nnz``, ``V = 8`` bytes per ``float64``, ``w`` the index width,
         ``lv_f`` and ``lv_b`` the dependency levels of ``D + L`` and ``D + U``.
-        Products from the solves: ``W = (2(z + n) + 4n)k`` per iteration (two
-        triangular solves plus three ``O(n)`` vector updates), plus ``(z - n)k``
-        once per ``smooth`` call for ``U x``; ``smooth_from_zero`` applies no
-        strict product. ``Q = (z + n)(V + w)`` per iteration plus ``O(Vnk)``
-        vector passes, ``D = lv_f + lv_b`` (each solve is a recurrence over its
-        levels), ``L`` a small constant and ``S = 0``.
-        Explicit products (setup stages, zero pivots) or ``rows=``: two
-        strict-triangle products per iteration, ``W = (4z + 2n)k``,
-        ``Q = 2z(V + w)`` per iteration, one product fewer for
-        ``smooth_from_zero``; a masked call also masks the values of its two
-        triangles once (``O(z)``, no sort).
+        Products from the solves: ``W = (2(z + n) + 5n)k`` per iteration (two
+        triangular solves plus three ``O(n)`` vector kernels: one subtraction and
+        two ``addcmul``), plus ``(z - n)k`` once per ``smooth`` call for ``U x``;
+        ``smooth_from_zero`` applies no strict product. ``Q = (z + n)(V + w)`` per
+        iteration plus ``O(Vnk)`` vector passes, ``D = lv_f + lv_b + 3`` (each solve
+        is a recurrence over its levels), ``L = 5`` per iteration plus one per
+        ``smooth`` call, and ``S = 0``.
+        Explicit products (setup stages, zero pivots): two strict-triangle products
+        per iteration, ``W = (4z + 2n)k``, ``Q = 2z(V + w)`` per iteration,
+        ``D = lv_f + lv_b + 2 ceil(log2 m) + O(1)`` (``m`` the largest row count),
+        ``L = 6`` per iteration, one product fewer for ``smooth_from_zero``.
+        A masked call (``rows=``) masks the values of its two triangles once
+        (``W = 0``, ``Q = O(z(V + w))``, ``L = 18``, no sort) and then sweeps at
+        ``L = 8`` per iteration.
         Roofline: ``W/Q`` is about 0.16 flop per byte (memory-bound).
-        Work-depth: ``W/D = (2z + 6n)k / (lv_f + lv_b)``, about ``10^3`` at
-        ``nnz/n`` near 37, far below SpMV and Jacobi: the depth, not the
-        flops, limits parallel speed-up.
+        Work-depth: ``W/D = (2z + 7n)k / (lv_f + lv_b)``, about ``10^3`` at
+        ``nnz/n`` near 37, far below SpMV and Jacobi: the depth, not the flops,
+        limits parallel speed-up. The library solves keep ``L`` independent of the
+        depth; on a device without a registered library solve each solve is
+        level-scheduled (``PreparedTriangularSolve``, ``L = O(lv)``).
     """
 
     matrix: torch.Tensor
@@ -324,9 +329,20 @@ def prepare_csr_gauss_seidel(
 ) -> PreparedSymmetricGaussSeidel:
     """Split ``matrix`` into its strict triangles and prepare both vendor substitutions.
 
-    Cost: ``W = O(nnz)`` for the split and the library's triangular analysis, ``Q`` one
-    pass over the stored entries, no level schedule (``L = 1``), ``S`` a few reads (the
-    pivot test in ``prepare_triangular_solve``, and here for ``FROM_SOLVES``).
+    Cost:
+        Once per matrix, ``z = nnz``, ``w`` the index width, ``V = 8`` bytes per
+        ``float64``: four triangle extractions (strict ``L`` and ``U`` here, ``D + L``
+        and ``D + U`` in ``prepare_triangular_solve``), each a comparison, a bincount, a
+        cumulative sum and three masked selects over the stored entries, plus three
+        masked diagonal scatters. ``W = 3z + O(n)`` (the split itself only moves
+        entries; the library solve has no separate analysis to pay here),
+        ``Q = O(z(V + w))``, ``D = O(log z)`` (a constant chain of maps, scans and
+        compactions), about ``L = 100`` and ``S = 15`` with ``FROM_SOLVES``: three count
+        reads per masked triangle extraction, one zero-pivot read per
+        ``prepare_triangular_solve`` and one here (``S = 14`` for ``EXPLICIT``, which
+        skips that read). A device without a registered library solve builds a level
+        schedule per direction instead (``level_schedule``'s Cost, an ``O(n + nnz)``
+        host recurrence).
 
     Args:
         matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.

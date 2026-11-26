@@ -75,37 +75,32 @@ class AMGPreconditioner(MatrixSetupPreconditioner, nn.Module):
         linear (bool): Whether the preconditioner is linear (False for
             neural AMG). Controls ``requires_flexible_cg``.
 
-    Complexity: this engine is format-agnostic (see ``torchalg.multigrid``'s
-    package docstring) - the complexity below holds **only when a dense**
-    ``CoarseningStrategy`` **is injected** (the dense ``torchalg
-    .preconditioners.implementations.amg`` presets). It is **not** the
-    textbook ``O(n)`` per V-cycle that multigrid theory gives for a *sparse*
-    hierarchy with a bounded coarsening ratio, because every level is then a
-    dense ``torch.Tensor``, never a sparse structure, regardless of the fine
-    matrix's true sparsity, so the actual cost is dominated by dense linear
-    algebra:
-        - ``VCycle._vcycle`` (``cycle.py``) computes ``rhs - matrix @ x`` once
-          per pre-smooth and once per post-smooth at every level — a dense
-          ``(level_size, level_size)`` matvec, ``O(level_size^2)``. Summed
-          across levels this is a geometric-ish series dominated by the
-          finest level, i.e. ``O(n^2)`` overall per V-cycle (``WCycle``
-          doubles the coarse-grid-correction work per level, same finest-level
-          dominance).
-        - The coarsest-level solve (``torch.linalg.solve`` or
-          ``pseudo_inverse_solve``) is a dense direct solve,
-          ``O(coarsest_size^3)`` — small in absolute terms when the hierarchy
-          bottoms out at a small coarse dimension, but still cubic, not the
-          near-free coarsest solve a sparse/iterative coarse solver would give.
-    A neural-transfer or neural-coarsening variant adds whatever its network's
-    forward-pass cost is on top of this — see the coarsening/transfer class's
-    own complexity note.
-
-    When a sparse ``CoarseningStrategy`` is injected instead (e.g.
-    ``torchalg.sparse.preconditioners.amg``'s ``AggregationCoarsening``),
-    every non-coarsest level's matrix stays sparse CSR, so each pre-/post-
-    smooth matvec is ``O(nnz)`` per level rather than ``O(level_size^2)`` -
-    only the coarsest-level direct solve still densifies (see
-    ``torchalg.sparse.preconditioners.amg.coarse_solve.dense_coarse_solve``).
+    Cost:
+        Format-agnostic: the formulas hold for any injected coarsening and cycle,
+        with ``z_l`` the stored entries of level ``l`` - ``n_l^2`` when a dense
+        ``CoarseningStrategy`` keeps every level a dense ``torch.Tensor`` (the dense
+        ``torchalg.preconditioners.implementations.amg`` presets, so a level matvec
+        is ``2 n_l^2 k`` regardless of the fine matrix's sparsity, not the textbook
+        ``O(n)`` per cycle), and ``nnz(A_l)`` when a sparse one keeps the
+        non-coarsest levels sparse CSR (only the coarsest solve densifies; see
+        ``torchalg.sparse.preconditioners.amg.coarse_solve``). ``N = n_levels``.
+        Setup: ``N - 1`` ``coarsening.build_transfer`` calls in sequence (each coarse
+        matrix is the next call's input) and one ``cycle.prepare``:
+        ``W = sum_{l < N-1} W_bt,l + W_prep``, ``D = sum_l D_bt,l + D_prep``,
+        ``L = sum_l L_bt,l + L_prep`` and ``S = sum_l S_bt,l + S_prep``, with the
+        ``bt`` terms the coarsening's ``build_transfer`` Cost and the ``prep`` terms
+        the cycle's Setup Cost (smoother preparation per level plus the coarse
+        factorization, ``2c^3 / 3`` flops for the default LU). Presets that run their
+        own setup algorithm (adaptive, bootstrap, BootCMatch) document theirs.
+        Apply: one ``cycle.apply`` and nothing else (``W = W_cycle``,
+        ``D = D_cycle``, ``L = L_cycle``, ``S = 0``); for a ``VCycle`` with weighted
+        Jacobi, in ``VCycle``'s notation, ``W = sum_l [2(a + b) z_l + 3(a + b) n_l + 4 p_l] k + 2c^2 k`` and
+        ``L = sum_l [4(a + b) + 2] + 1`` (``VCycle``'s Cost). A neural coarsening or
+        transfer adds its network's forward pass to the setup and, for a neural
+        transfer, to every restriction and prolongation.
+        Roofline: the apply is memory-bound on sparse and dense levels alike at
+        ``k = 1``; the dense coarsest factorization (``W/Q = c / 24``) is the one
+        compute-bound kernel of a setup.
 
     Attributes:
         placement (Placement): Taken from ``cycle``, i.e. from its smoother: Jacobi

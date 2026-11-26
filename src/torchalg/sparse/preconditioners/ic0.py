@@ -199,8 +199,9 @@ class IC0Preconditioner(MatrixSetupPreconditioner, nn.Module):
 
     Mathematical background:
         Preconditioner ``M = L @ L.T``. Solve ``M z = r`` via forward
-        ``L y = r`` then backward ``L.T z = y``, both level-scheduled sparse
-        triangular solves.
+        ``L y = r`` then backward ``L.T z = y``, both sparse triangular solves
+        prepared by ``kernels.triangular.prepare_triangular_solve`` (the
+        vendor solve on CPU and CUDA).
 
     Complexity:
         - Storage: ``O(nnz(L))`` - a true sparse CSR structure, not a dense
@@ -212,8 +213,8 @@ class IC0Preconditioner(MatrixSetupPreconditioner, nn.Module):
           per-degree-position batching description. The first ``setup`` on a
           pattern also pays ``analyze_ic0`` (the same order of work); later
           ones reuse it.
-        - Application: two ``O(nnz(L))`` level-scheduled triangular solves;
-          the transpose and both schedules are prepared once during setup.
+        - Application: two ``O(nnz(L))`` triangular solves; the transpose and
+          both prepared solves are built once during setup.
 
     Cost:
         Setup, once per matrix values (the pattern analysis, ``O(n + nnz)`` host index
@@ -222,11 +223,15 @@ class IC0Preconditioner(MatrixSetupPreconditioner, nn.Module):
         over the lower pattern, with ``c_ij`` the number of common earlier columns of
         rows ``i`` and ``j`` and ``d_i`` the row degree, and ``Q = 2V nnz(L)``. The
         executed loop is one batch per (level, degree position): depth
-        ``D = sum over levels of the maximum row degree``, ``L`` proportional to that
-        step count (a constant dozen kernels per step), and ``S = 1`` (the breakdown
-        test after the last level). The padded gathers and the found-mask make the
-        executed ``W`` a small multiple of the algorithmic count. Setup is
-        latency-bound (``L`` and ``D`` dominate), not flop-bound.
+        ``D = sum over levels of the maximum row degree``, ``L = 12 D + 5 lv`` (at most
+        twelve kernels per step, six for a step without common earlier columns, five
+        per level, ``lv`` the dependency levels of the
+        factorization schedule) plus about 50 for the transpose gather and the two
+        prepared solves, and ``S = 9``: the breakdown test after the last level, and
+        per solve direction one zero-pivot read and three count reads of the triangle
+        extraction in ``prepare_triangular_solve``. The padded gathers and the
+        found-mask make the executed ``W`` a small multiple of the algorithmic count.
+        Setup is latency-bound (``L`` and ``D`` dominate), not flop-bound.
         Apply, ``k`` right-hand-side columns, ``w`` the index width: two sparse
         triangular solves, ``W = 4 nnz(L) k``,
         ``Q = 2 [nnz(L)(V + w) + (n + 1)w + 2Vnk]``, ``D = lv_f + lv_b``

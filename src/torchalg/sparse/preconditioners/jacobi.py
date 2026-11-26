@@ -42,11 +42,14 @@ class JacobiPreconditioner(LinearPreconditioner[torch.Tensor], nn.Module):
         - SPD if A is SPD.
 
     Cost:
-        Setup, ``z = nnz``: ``W = n + z`` (the reciprocal, plus the zeros the
-        masked scatter adds), ``I = O(z)`` for the row-index expansion, ``Q``
-        a constant number of passes over the ``z``-sized index and value
-        arrays (the algorithmic minimum is one pass), ``L`` a constant and
-        ``S = 0``.
+        Setup, ``z = nnz``, ``m`` the largest row count: ``W = n + z`` (the
+        reciprocal, plus the zeros the masked scatter adds), ``I = O(z)`` for
+        the row-index expansion, ``Q`` a constant number of passes over the
+        ``z``-sized index and value arrays (the algorithmic minimum is one
+        pass), ``D = m + O(1)`` (the scatter's same-row additions are the only
+        chain; every other kernel is a map), ``L = 15`` (row expansion, masked
+        scatter, guard and reciprocal) and ``S = 0`` (``sparse_diagonal``
+        reads no count back).
         Apply, ``k`` columns: ``W = nk``, ``Q = 3Vnk`` (read ``r``, write
         ``z``, plus the ``n``-vector ``inv_diag``), ``D = 1``, ``L = 1``,
         ``S = 0``, with ``V = 8`` bytes per ``float64``.

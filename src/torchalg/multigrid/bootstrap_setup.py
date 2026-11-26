@@ -496,6 +496,36 @@ class BootstrapSetup:
     ) -> BootstrapAMGResult:
         """Run the Bootstrap AMG setup algorithm.
 
+        Cost:
+            ``H = n_bootstrap_cycles + 1`` hierarchy builds (fewer if a build yields a
+            single level), ``N`` levels each with ``n_l`` rows and ``z_l`` stored
+            entries (``n_l^2`` for dense levels), ``k`` test vectors (``k_r`` plus any
+            seeds, plus ``k_e`` MGE columns after the first build), ``V = 8`` bytes
+            per ``float64``. Per build and non-coarsest level: one
+            ``relaxation.prepare`` (memoized per matrix when ``relaxation`` is a
+            ``GaussSeidelMemo``, so the finest level prepares once per run),
+            ``eta`` Gauss-Seidel iterations on ``k`` columns with explicit products
+            (``(4z_l + 2n_l)k`` each), and one ``build_transfer`` (the
+            ``BAMGCoarsening.build_transfer`` Cost, ``bt``). Per improvement pass
+            (``H - 1`` of them): one ``setup_cycle.prepare`` of the whole hierarchy
+            and, for every non-coarsest level ``i``, ``eta`` iterations of one product
+            ``A_i x`` plus one setup cycle on the sub-hierarchy from ``i`` down
+            (``W_V,i``, ``VCycle``'s Apply Cost); plus ``W_MGE`` when ``k_e > 0``.
+            ``W = H sum_l [W_prep,l + eta (4z_l + 2n_l)k + W_bt,l]
+            + (H - 1)[W_cprep + sum_i eta (2z_i k + n_i k + W_V,i)] + (H - 1) W_MGE``,
+            ``Q`` the SpMV and triangle bytes of those sweeps and cycles,
+            ``D = H sum_l [eta (lv_f,l + lv_b,l + O(log m_l)) + D_bt,l]
+            + (H - 1) sum_i eta (D_V,i + ceil(log2 m_i) + 2)`` (every step depends on
+            the previous one; ``lv`` the triangular depths, ``m_l`` the largest row
+            count), ``L = H sum_l (L_prep,l + 6 eta + L_bt,l)
+            + (H - 1)[L_cprep + sum_i eta (L_V,i + 2)]`` and
+            ``S = H sum_l (S_prep,l + S_bt,l) + (H - 1) S_cprep``; the loop's own
+            level and size tests read shapes only (no device read).
+            Work-depth: every factor is sequential, so ``D`` grows like ``W`` divided
+            by the per-sweep parallel width: the setup is latency-bound and costs
+            many applies; ``BAMGCoarsening.build_transfer`` and the relaxation sweeps
+            dominate ``W``.
+
         Args:
             matrix (torch.Tensor): SPD system matrix, shape ``(n, n)``
                 (dense or sparse CSR).

@@ -47,6 +47,31 @@ class BootCMatchPreconditioner(MatrixSetupPreconditioner, nn.Module):
     Runs ``BootCMatchSetup.run`` in ``setup()`` to build a composite of
     independent multigrid hierarchies.
 
+    Cost:
+        ``r`` composite hierarchies, ``z = nnz(A)``, ``m`` the largest row count, ``k``
+        right-hand-side columns; per hierarchy ``j`` its levels ``l`` with ``z_l``,
+        ``n_l`` and prolongator entries ``p_l``, coarsest dimension ``c_j``.
+        Setup is ``BootCMatchSetup.run`` (its Cost: ``r`` hierarchy builds and
+        preparations, ``k_max r(r + 1) / 2`` power-iteration cycles, ``S`` one rate
+        read per round plus the coarsening reads), with the sparse
+        ``BootCMatchCoarsening.build_transfer`` per level and the solve-time cycle's
+        preparation (Jacobi: one diagonal and one Arnoldi estimate per level):
+        ``W = sum_j (W_bt,j + W_prep,j) + C (2z + n + W_cyc)``,
+        ``D = sum_j (D_bt,j + D_prep,j) + C (D_cyc + ceil(log2 m) + 2)``,
+        ``L = sum_j (L_bt,j + L_prep,j) + C (L_cyc + 2) + 12 r`` and
+        ``S = sum_j (S_bt,j + S_prep,j) + r``, with ``C = k_max r(r + 1) / 2`` and
+        ``bt`` summed over the levels of hierarchy ``j``.
+        Apply: one multiplicative sweep over the ``r`` hierarchies, each a product
+        ``A x``, a subtraction, one cycle and a correction (the first product is on
+        the zero iterate). With the default Jacobi V(1,1),
+        ``W_cyc,j = sum_l (4z_l + 6n_l + 4p_l)k + 2c_j^2 k``, so
+        ``W = r(2z + 2n)k + sum_j W_cyc,j``,
+        ``D = sum_j [D_cyc,j + ceil(log2 m) + 3]`` (the hierarchies are applied in
+        sequence), ``L = 1 + sum_j (3 + L_cyc,j)`` with ``L_cyc,j = 10 N_j - 9``
+        (``N_j`` levels) and ``S = 0``.
+        Roofline and work-depth: as ``AMGPreconditioner`` per hierarchy
+        (memory-bound SpMVs); the composite multiplies the depth by ``r``.
+
     Args:
         seed (int): Seed of the default random-vector source.
         draw (Callable[[int], torch.Tensor] | None): Explicit uniform

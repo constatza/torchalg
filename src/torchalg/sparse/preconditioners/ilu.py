@@ -155,8 +155,12 @@ class ILUPreconditioner(MatrixSetupPreconditioner, nn.Module):
         (the multiply-adds of the row recurrence plus the divisions), ``Q`` a small
         multiple of ``V z``. The executed loop is one batch per (level, degree
         position), the upper side padded to the batch's widest lower count: depth
-        ``D = sum over levels of the maximum row degree``, ``L`` proportional to that
-        step count and ``S = 0``. Setup is latency-bound, not flop-bound.
+        ``D = sum over levels of the maximum row degree``, ``L = 11 D`` (eleven
+        kernels per step) plus about 50 for the two triangle gathers and the two
+        prepared solves, and ``S = 8``: per solve direction one zero-pivot read and
+        three count reads of the triangle extraction in ``prepare_triangular_solve``;
+        the recurrence itself reads nothing back. Setup is latency-bound, not
+        flop-bound.
         Apply, ``k`` columns, ``w`` the index width: two sparse triangular solves
         against ``L`` (unit diagonal stored explicitly) and ``U``,
         ``W = 2 (z + n) k``, ``Q = (z + n)(V + w) + 2(n + 1)w + 4Vnk``,

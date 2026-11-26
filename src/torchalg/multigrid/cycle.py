@@ -47,6 +47,40 @@ class VCycle:
     Descends the hierarchy pre-smoothing, computes a coarse-grid correction,
     then ascends post-smoothing. One recursive call per level.
 
+    Cost:
+        Notation: ``N`` levels, ``l = 0 .. N - 2`` the non-coarsest ones with
+        ``n_l`` rows, ``z_l`` stored entries (``z_l = n_l^2`` for a dense level) and
+        ``p_l`` stored entries of the prolongator (``n_l n_{l+1}`` dense), ``m_l``
+        the largest row count, ``c`` the coarsest dimension, ``a = n_pre``,
+        ``b = n_post``, ``k`` right-hand-side columns, ``V = 8`` bytes per
+        ``float64``. The ``sm`` terms are the smoother's own Cost.
+        Setup (``prepare``, once per hierarchy): one ``smoother.prepare`` per
+        non-coarsest level and one ``coarse_solver_factory`` call,
+        ``W = sum_l W_sm_prep,l + W_c_prep`` (``2c^3 / 3`` for the default LU),
+        ``D = max(max_l D_sm_prep,l, D_c_prep)`` (the levels are independent,
+        though they are prepared one after another; ``D_c_prep = c`` for LU),
+        ``L = sum_l L_sm_prep,l + 1`` and ``S = sum_l S_sm_prep,l + 1`` (the LU
+        singularity read). A Jacobi smoother adds an Arnoldi estimate per level
+        unless the coarsening already paid it on the same matrix.
+        Apply (one cycle from the zero guess): per level ``a`` sweeps from zero, one
+        residual, one restriction, one prolongation, one correction and ``b``
+        sweeps, then one coarse solve:
+        ``W = sum_l [W_sm,l(a, b) + W_res,l + 4 p_l k + n_l k] + 2c^2 k``. With
+        weighted Jacobi (``PreparedJacobi``) the first sweep from zero is one
+        scaling, so ``W = sum_l [2(a + b) z_l + 3(a + b) n_l + 4 p_l] k + 2c^2 k``,
+        ``Q`` the SpMV bytes ``(a + b) z_l(V + w)`` and transfer bytes
+        ``2 p_l(V + w)`` per level plus ``O((a + b) V n_l k)`` vector passes,
+        ``D = sum_l (a + b + 3)(ceil(log2 m_l) + 4) + D_c`` (the cycle is one
+        dependent chain through every level; ``D_c = 2c`` for the LU solve,
+        ``ceil(log2 c) + 1`` for the pseudo-inverse), ``L = sum_l [4(a + b) + 2] + 1``
+        and ``S = 0``. Gauss-Seidel sweeps replace ``ceil(log2 m_l)`` per sweep by
+        the triangular depth ``lv_f,l + lv_b,l``.
+        Roofline: about 0.15 flop per byte on sparse levels (memory-bound); a dense
+        level is a GEMV, also memory-bound at ``k = 1``.
+        Work-depth: ``W`` is dominated by the finest level (operator complexity
+        ``sum_l z_l / z_0`` near 1 to 2); ``D`` grows with ``N`` and the coarse
+        solve, so a cycle has far less parallel slack than a single SpMV.
+
     Args:
         smoother (MultigridSmoother): Smoother applied before and after the
             coarse-grid correction.
@@ -151,6 +185,28 @@ class WCycle:
     the second coarse solve. This doubles the coarse-grid work relative to
     V-cycle and yields a more robust convergence factor, especially for
     anisotropic or indefinite-leaning problems.
+
+    Cost:
+        Notation as in ``VCycle``. Level ``l`` is visited ``2^l`` times and the
+        coarsest level ``2^(N-1)`` times per cycle.
+        Setup (``prepare``) is the same as ``VCycle``'s: one ``smoother.prepare``
+        per non-coarsest level and one coarse factorization,
+        ``W = sum_l W_sm_prep,l + W_c_prep``,
+        ``D = max(max_l D_sm_prep,l, D_c_prep)``, ``L = sum_l L_sm_prep,l + 1``,
+        ``S = sum_l S_sm_prep,l + 1``.
+        Apply (one cycle from the zero guess): each visit runs ``a`` sweeps from
+        zero, two (residual, restriction, recursion, prolongation, correction)
+        rounds and ``b`` sweeps. With weighted Jacobi a visit costs
+        ``W_l = [(2(a + b) + 2) z_l + (3(a + b) + 2) n_l + 8 p_l] k`` and
+        ``L_l = 4(a + b) + 7``, so
+        ``W = sum_l 2^l W_l + 2^(N-1) 2c^2 k``,
+        ``D = sum_l 2^l (a + b + 5)(ceil(log2 m_l) + 4) + 2^(N-1) D_c`` (the two
+        corrections are sequential: the second restricts the residual after the
+        first), ``L = sum_l 2^l L_l + 2^(N-1)`` and ``S = 0``.
+        Work-depth: with a coarsening ratio ``n_{l+1} / n_l`` below ``1/2`` the work
+        stays dominated by the finest level, but the depth and the launch count
+        double per level, so on a launch-bound device a W-cycle costs about
+        ``2^(N-1)`` V-cycles of latency.
 
     Args:
         smoother (MultigridSmoother): Smoother applied before and after the

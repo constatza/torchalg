@@ -36,6 +36,22 @@ update (treated as a zero step for that component)."""
 class PreparedJacobi:
     """Weighted Jacobi bound to one sparse CSR matrix.
 
+    Cost:
+        Setup: construction only binds two tensors, ``W = 0``, ``D = 0``, ``L = 0``,
+        ``S = 0``; the matrix-dependent work is ``JacobiSmoother.prepare``'s.
+        Apply, one sweep ``x + D^-1 omega (rhs - A x)``, ``k`` columns, ``z = nnz``,
+        ``m`` the largest row count, ``w`` the index width, ``V = 8`` bytes per
+        ``float64``: ``W = (2z + 3n)k`` (SpMV, subtract, scale, add),
+        ``Q = z(V + w) + (n + 1)w + 11Vnk`` (the SpMV reads ``A`` and ``x`` and writes
+        ``A x``; the three vector kernels read two operands and write one),
+        ``D = ceil(log2 m) + 4``, ``L = 4`` and ``S = 0``. ``smooth_from_zero``'s first
+        sweep is one scaling (``W = nk``, ``L = 1``); ``residual`` is the SpMV and the
+        subtraction (``W = (2z + n)k``, ``L = 2``).
+        Roofline: ``W/Q`` is about 0.15 flop per byte with 4-byte indices
+        (memory-bound).
+        Work-depth: ``W/D`` is about ``2zk / log2 m``, fully parallel across rows,
+        which is why Jacobi-smoothed cycles are ``SPMV_BOUND`` and may run on a GPU.
+
     Attributes:
         matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``, with int32
             indices where it fits (``utils.csr_index``), since every sweep and
@@ -111,6 +127,19 @@ class JacobiSmoother:
             (default) is the relaxation rule ``1 / rho(D^{-1}A)``, estimated
             in ``prepare`` (never during sweeps); a float or 0-d tensor fixes it.
 
+    Cost:
+        Setup (``prepare``, once per matrix), ``z = nnz``, ``m`` the largest row
+        count: the diagonal, ``omega`` and ``omega / diag`` cost ``W = z + n``,
+        ``Q = O(z(V + w))``, ``D = m + O(1)``, ``L = 19`` and ``S = 0`` for a fixed
+        ``omega``. The default ``omega = 1 / rho(D^-1 A)`` adds one Arnoldi estimate
+        on a memo miss (``jacobi_spectral_radius``'s Cost: ``P`` passes of
+        ``m_A = 15`` steps, ``W = z + n + P(2z m_A + 4n m_A(m_A + 1))``,
+        ``D = P m_A (ceil(log2 n) + 1) * O(1)``, ``L = O(P m_A)`` on a GPU and
+        ``O(P m_A^2)`` on the CPU, ``S = P``); an aggregation-coarsened level has
+        already paid it for the same matrix, so its smoother adds nothing.
+        Apply, one sweep of the returned ``PreparedJacobi``, ``k`` columns:
+        ``W = (2z + 3n)k``, ``D = ceil(log2 m) + 4``, ``L = 4``, ``S = 0``.
+
     Attributes:
         placement (Placement): ``SPMV_BOUND``; a sweep is one SpMV plus vector updates.
     """
@@ -154,6 +183,19 @@ class GaussSeidelSmoother:
     triangular solves once. Its sweeps take their strict-triangle products from
     the solves (``SweepProducts.FROM_SOLVES``), within rounding of the explicit
     products.
+
+    Cost:
+        Setup (``prepare``, once per matrix) is ``prepare_csr_gauss_seidel`` with
+        ``FROM_SOLVES``, ``z = nnz``: ``W = 3z + O(n)`` (three diagonal scatters; the
+        split only moves entries), ``Q = O(z(V + w))``, ``D = O(log z)``, about
+        ``L = 100`` and ``S = 15`` (the count reads of the masked triangle extraction and
+        the pivot tests).
+        Apply, one symmetric iteration (forward plus backward sweep), ``k`` columns,
+        ``lv_f`` and ``lv_b`` the dependency levels of ``D + L`` and ``D + U``:
+        ``W = (2z + 7n)k`` (two vendor triangular solves and three vector kernels),
+        plus ``(z - n)k`` once per ``smooth`` call for ``U x``, ``D = lv_f + lv_b + 3``,
+        ``L = 5`` (plus one per call for ``U x``) and ``S = 0``; see
+        ``PreparedSymmetricGaussSeidel`` for the bytes and the explicit-product sweep.
 
     Attributes:
         placement (Placement): ``SEQUENTIAL_SWEEP``; each sweep is a chain of dependent

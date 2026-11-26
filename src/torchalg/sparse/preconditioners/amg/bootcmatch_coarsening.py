@@ -97,6 +97,26 @@ class BootCMatchCoarsening:
     def build_transfer(self, A: torch.Tensor) -> tuple[torch.Tensor, SparseTransferOperator]:
         """Build one BootCMatch coarse level from sparse CSR ``A``.
 
+        Cost:
+            ``z = nnz(A)``, ``m`` the largest row count, ``R`` the matching rounds
+            (data dependent; each round matches every locally dominant edge, so
+            ``R`` is far below ``n`` on mesh-like graphs). Edge weights: a
+            constant number of passes over the stored entries, ``W = O(z)``
+            (about ``15z``), ``L = 35``, ``S = 3`` (the masked selects of the kept
+            edges). Matching: per round ``W = O(z)`` (two scatter-reductions and
+            the masking), ``D = ceil(log2 m) + O(1)``, ``L = 20``, and one
+            ``active.any()`` read every ``_SYNC_CHECK_STRIDE = 4`` rounds.
+            Aggregation and ``P``: ``W = O(n)``, ``S = 1`` (the coarse count read).
+            Galerkin ``P^T A P`` (``form_sparse_sparse``, ``W_gal``; ``P`` has one
+            entry per fine row, so ``A P`` costs ``2z``) and the restriction
+            ``P^T w`` (``W = 2n``). Totals: ``W = O(z) + R O(z) + W_gal``,
+            ``D = R (ceil(log2 m) + O(1)) + O(log z)`` (the rounds are sequential;
+            everything else is maps, scans and sparse products),
+            ``L = 20R + 80`` (about) and ``S = ceil(R / 4) + 4`` (a GPU's sparse
+            products and coalesces add their own sizing reads).
+            Work-depth: each round is fully parallel over the stored entries; only
+            the round count and the host reads bound the depth.
+
         Args:
             A (torch.Tensor): Sparse CSR fine-grid matrix, shape ``(n, n)``.
 
