@@ -231,6 +231,7 @@ from ._least_squares import (
     batched_ls_interpolation_rows,
     batched_select_interpolatory_set,
     ls_interpolation_row,
+    padded_candidate_sets,
 )
 from ._mge import multigrid_eigensolver
 from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
@@ -592,57 +593,15 @@ class BAMGCoarsening:
         neighborhood = self._neighborhood_of(A, self._depth + 2)
         n_fine = fine_points.numel()
 
-        # Build each fine row's coarse-neighbor candidate set as one padded
-        # `(n_fine, max_cand)` tensor instead of a Python list-of-lists: the
-        # growth loop that consumes this (`batched_select_interpolatory_set`)
-        # runs a fixed `range(caliber)` number of steps - `caliber` is a
-        # small hyperparameter (default 4), not a function of how many
-        # candidates a row has - so every row can be padded to the same
-        # `max_cand` width and advanced in lockstep without ever padding to
-        # a "worst-case trajectory" (there is no data-dependent trajectory
-        # length left to pad to). `torch.nonzero` already returns `(row,
-        # col)` pairs in row-major order, so `bincount`/`cumsum` recover
-        # each row's run of candidates with one sync total, the same
-        # grouping trick `_aggregation.py::standard_aggregation` uses.
+        # Each fine row's coarse-neighbor candidates as one padded `(n_fine, width)` block
+        # (`padded_candidate_sets`): the growth loop runs a fixed `range(caliber)` steps, so
+        # every row advances in lockstep. `torch.nonzero` returns the pairs row-major, as
+        # the packing expects.
         coarse_neighborhood = neighborhood[fine_points] & coarse_mask
-        pairs = torch.nonzero(coarse_neighborhood, as_tuple=False)
-        local_row, cand_col = pairs[:, 0], pairs[:, 1]
-        counts = torch.bincount(local_row, minlength=n_fine)
-        max_cand = int(counts.max().item()) if counts.numel() > 0 else 0
-        row_start = torch.cumsum(counts, 0) - counts
-        position_in_row = torch.arange(cand_col.numel(), device=device) - row_start[local_row]
-        width = max(max_cand, 1)
-        padded_candidates = torch.zeros(n_fine, width, dtype=torch.long, device=device)
-        candidate_mask = torch.zeros(n_fine, width, dtype=torch.bool, device=device)
-        padded_candidates[local_row, position_in_row] = cand_col
-        candidate_mask[local_row, position_in_row] = True
-
-        # Rows with zero coarse-neighbor candidates fall back to the full
-        # `coarse_points` set (matching the old code's
-        # `candidates = coarse_points_cpu if not candidate_columns else ...`),
-        # applied with one vectorized boolean-indexed assignment rather than
-        # a per-row branch.
-        needs_fallback = counts == 0
-        if n_coarse > 0 and bool(needs_fallback.any()):
-            if n_coarse > padded_candidates.shape[1]:
-                pad_width = n_coarse - padded_candidates.shape[1]
-                padded_candidates = torch.cat(
-                    [
-                        padded_candidates,
-                        torch.zeros(n_fine, pad_width, dtype=torch.long, device=device),
-                    ],
-                    dim=1,
-                )
-                candidate_mask = torch.cat(
-                    [
-                        candidate_mask,
-                        torch.zeros(n_fine, pad_width, dtype=torch.bool, device=device),
-                    ],
-                    dim=1,
-                )
-            padded_candidates[needs_fallback, :n_coarse] = coarse_points.unsqueeze(0)
-            candidate_mask[needs_fallback, :n_coarse] = True
-            candidate_mask[needs_fallback, n_coarse:] = False
+        local_row, cand_col = torch.nonzero(coarse_neighborhood, as_tuple=True)
+        padded_candidates, candidate_mask = padded_candidate_sets(
+            local_row, cand_col, n_fine, coarse_points
+        )
 
         # Running the batched growth loop CPU-resident removes the
         # `.item()`-sync cost that originally motivated host residency here

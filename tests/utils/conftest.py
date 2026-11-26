@@ -127,3 +127,25 @@ def degenerate_selection_problem(test_seed: int, float_dtype: torch.dtype) -> Se
         1, _SELECTION_MAX_CANDIDATES + 1, (_SELECTION_ROWS,), generator=generator
     )
     return _assemble_problem(vectors.to(float_dtype), 30, counts, generator)
+
+
+@pytest.fixture
+def candidate_pairs() -> tuple[torch.Tensor, torch.Tensor]:
+    """Row-major ``(row, candidate)`` pairs of five rows; rows 1 and 4 have none.
+
+    Returns:
+        ``(local_row, candidate)`` long tensors, ``local_row`` ascending.
+    """
+    local_row = torch.tensor([0, 0, 2, 2, 2, 3], dtype=torch.long)
+    candidate = torch.tensor([7, 9, 1, 7, 9, 3], dtype=torch.long)
+    return local_row, candidate
+
+
+@pytest.fixture(params=[2, 6], ids=["coarse_narrower", "coarse_wider"])
+def candidate_coarse_points(request: pytest.FixtureRequest) -> torch.Tensor:
+    """Coarse points narrower or wider than the widest real candidate row (three).
+
+    Returns:
+        Long tensor of coarse indices.
+    """
+    return torch.tensor([1, 3, 7, 9, 11, 13], dtype=torch.long)[: request.param]

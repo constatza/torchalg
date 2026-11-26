@@ -362,6 +362,60 @@ def _select_block(
     return chosen, chosen_mask
 
 
+def padded_candidate_sets(
+    local_row: torch.Tensor,
+    candidate: torch.Tensor,
+    n_rows: int,
+    coarse_points: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pack each row's candidates into the left-aligned block ``batched_select_interpolatory_set`` takes.
+
+    A row with no candidate pair falls back to every coarse point ([AD11] eq. 4.5 gives such
+    a row no LS-ring candidate, so the whole coarse set stands in). The fallback is a masked
+    select over the block rather than a branch on whether any row needs it, so the only value
+    read back to the host is the block width, which sizes the output.
+
+    Cost:
+        ``p`` candidate pairs, ``m`` rows, block width ``w`` (the largest candidate count,
+        or the coarse-point count when a row falls back). ``W = O(p + m w)``, ``Q = O(p + m
+        w)`` 8-byte indices, ``D = O(log m)`` (the count prefix sum), ``L = O(1)``, ``S = 1``
+        (the width), ``I = O(p + m w)``: the whole step is index work.
+        Roofline: no flops; memory-bound.
+        Work-depth: every pair and slot is independent apart from the prefix sum.
+
+    Args:
+        local_row (torch.Tensor): Long tensor, shape ``(p,)``, each pair's row in
+            ``[0, n_rows)``, ascending (row-major pairs).
+        candidate (torch.Tensor): Long tensor, shape ``(p,)``, each pair's candidate index.
+        n_rows (int): Number of rows ``m``.
+        coarse_points (torch.Tensor): Long tensor of every coarse index, the fallback set.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: ``(padded_candidates, candidate_mask)``, both
+        shape ``(m, w)``; padding slots hold ``0`` and are ``False`` in the mask.
+    """
+    device = candidate.device
+    n_coarse = coarse_points.numel()
+    counts = torch.zeros(n_rows, dtype=torch.long, device=device).index_add_(
+        0, local_row, torch.ones_like(local_row)
+    )
+    needs_fallback = counts == 0
+    extent = torch.where(needs_fallback, n_coarse, counts)
+    width = max(int(extent.max().item()), 1) if n_rows > 0 else 1
+    row_start = torch.cumsum(counts, 0) - counts
+    position = torch.arange(candidate.numel(), device=device) - row_start[local_row]
+    padded = torch.zeros(n_rows, width, dtype=torch.long, device=device)
+    mask = torch.zeros(n_rows, width, dtype=torch.bool, device=device)
+    padded[local_row, position] = candidate
+    mask[local_row, position] = True
+
+    fallback_width = min(n_coarse, width)
+    fallback_candidates = torch.zeros(width, dtype=torch.long, device=device)
+    fallback_candidates[:fallback_width] = coarse_points[:fallback_width]
+    fallback_slot = needs_fallback.unsqueeze(1) & (torch.arange(width, device=device) < n_coarse)
+    return torch.where(fallback_slot, fallback_candidates, padded), mask | fallback_slot
+
+
 def batched_select_interpolatory_set(
     padded_candidates: torch.Tensor,
     candidate_mask: torch.Tensor,

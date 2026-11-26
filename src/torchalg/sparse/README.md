@@ -225,6 +225,10 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   hierarchy and are dropped with their matrix. `sparse_depth_neighborhood`
   itself runs CSR products (not COO) and sorts once at the end, because the
   CSR product leaves columns unsorted and keeps the diagonal.
+- `BAMGCoarsening` resolves every empty-interpolatory-set row at once
+  (`_strongest_candidates_sparse`, a searchsorted over the distance matrix's row-major
+  keys), so the fallback costs one `nonzero` read and one extra row fit, never a host
+  read per row.
 - `form_sparse_sparse` stays on COO: a CSR `P.T @ (A @ P)` is `0.3 ms` faster
   per call at `n = 10 000` but returns unsorted columns, and restoring sorted
   rows costs what the COO path already spends.

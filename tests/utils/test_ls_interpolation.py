@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import torch
 
+from tests.support.dispatch_counter import DispatchCounter
 from torchalg.utils.ls_interpolation import (
     batched_ls_interpolation_rows,
     batched_select_interpolatory_set,
     ls_interpolation_row,
+    padded_candidate_sets,
     select_interpolatory_set,
 )
 
@@ -175,3 +177,42 @@ def test_early_stopping_parity_across_rows(ls_test_vectors, ls_weights):
         assert int(chosen_mask[row_idx].sum()) == ref_count, f"row {row_idx}"
         ref_interp_set, _ = references[row_idx]
         torch.testing.assert_close(chosen[row_idx, :ref_count], ref_interp_set)
+
+
+def _reference_candidate_sets(
+    local_row: torch.Tensor, candidate: torch.Tensor, n_rows: int, coarse_points: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-row Python packing: each row's own candidates, or every coarse point when it has none."""
+    candidate_sets = [candidate[local_row == row] for row in range(n_rows)]
+    if coarse_points.numel() > 0:
+        candidate_sets = [c if c.numel() > 0 else coarse_points for c in candidate_sets]
+    width = max([c.numel() for c in candidate_sets] + [1])
+    return _pad_candidates(candidate_sets, width)
+
+
+def test_padded_candidate_sets_matches_per_row_packing(candidate_pairs, candidate_coarse_points):
+    local_row, candidate = candidate_pairs
+    padded, mask = padded_candidate_sets(local_row, candidate, 5, candidate_coarse_points)
+    expected_padded, expected_mask = _reference_candidate_sets(
+        local_row, candidate, 5, candidate_coarse_points
+    )
+    torch.testing.assert_close(mask, expected_mask)
+    torch.testing.assert_close(padded[mask], expected_padded[expected_mask])
+
+
+def test_padded_candidate_sets_without_coarse_points_leaves_empty_rows_empty(candidate_pairs):
+    local_row, candidate = candidate_pairs
+    no_coarse = torch.empty(0, dtype=torch.long)
+    padded, mask = padded_candidate_sets(local_row, candidate, 5, no_coarse)
+    expected_padded, expected_mask = _reference_candidate_sets(local_row, candidate, 5, no_coarse)
+    torch.testing.assert_close(mask, expected_mask)
+    torch.testing.assert_close(padded[mask], expected_padded[expected_mask])
+
+
+def test_padded_candidate_sets_reads_the_host_once(candidate_pairs, candidate_coarse_points):
+    """The padded width is the only value read back; the fallback is a masked select."""
+    local_row, candidate = candidate_pairs
+    counter = DispatchCounter()
+    with torch.inference_mode(), counter:  # inference mode keeps `item` undecomposed
+        padded_candidate_sets(local_row, candidate, 5, candidate_coarse_points)
+    assert counter.syncs == 1

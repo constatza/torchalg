@@ -56,10 +56,10 @@ a different algorithm:
   neighbor lists for free (same precedent as SA-AMG's own sparse
   ``build_transfer``).
 - **The empty-interpolatory-set fallback**'s strength lookup
-  (``distance_cpu[i]``, a dense row) becomes a per-row sparse lookup
-  (``_strongest_candidate_sparse``, searchsorted over that row's own stored
-  ``(col, value)`` pairs, 0.0 where absent - exactly matching what the
-  dense row's zero-fill outside the neighborhood pattern already means).
+  (``distance_cpu[i]``, a dense row) becomes one batched sparse lookup over every
+  fallback row (``_strongest_candidates_sparse``, searchsorted over the stored
+  row-major keys, 0.0 where absent - exactly matching what the dense row's
+  zero-fill outside the neighborhood pattern already means).
 - **``P`` is built directly as sparse CSR** via
   ``sparse_interpolation_prolongation`` from accumulated ``(row, col,
   value)`` triples (coarse-point identity rows plus each fine row's
@@ -125,6 +125,7 @@ from torchalg.sparse.preconditioners.amg.transfer import (
 from torchalg.utils.ls_interpolation import (
     batched_ls_interpolation_rows,
     batched_select_interpolatory_set,
+    padded_candidate_sets,
 )
 from torchalg.utils.test_vector_weights import test_vector_weights
 from torchalg.utils.weak_cache import weak_memo
@@ -163,6 +164,23 @@ def _seeded_draw(seed: int) -> Callable[[int], torch.Tensor]:
     """
     generator = torch.Generator().manual_seed(seed)
     return lambda n: torch.rand(n, generator=generator, dtype=torch.float64)
+
+
+def _entry_rows(matrix: torch.Tensor) -> torch.Tensor:
+    """Row index of every stored entry of a CSR matrix, without a host read.
+
+    Args:
+        matrix (torch.Tensor): Sparse CSR matrix.
+
+    Returns:
+        torch.Tensor: Long tensor, one row index per stored entry.
+    """
+    crow = matrix.crow_indices()
+    return torch.repeat_interleave(
+        torch.arange(matrix.shape[0], device=matrix.device),
+        crow[1:] - crow[:-1],
+        output_size=matrix.col_indices().numel(),
+    )
 
 
 def _symmetrize_sparse_bool(matrix: torch.Tensor) -> torch.Tensor:
@@ -459,32 +477,41 @@ class BAMGCoarsening:
         return candidates[torch.argmax(strengths[candidates])].reshape(1)
 
     @staticmethod
-    def _strongest_candidate_sparse(
-        candidates: torch.Tensor, row_cols: torch.Tensor, row_vals: torch.Tensor
+    def _strongest_candidates_sparse(
+        candidates: torch.Tensor,
+        candidate_mask: torch.Tensor,
+        targets: torch.Tensor,
+        distance: torch.Tensor,
     ) -> torch.Tensor:
-        """Fallback interpolatory set, given one sparse row's own stored ``(col, value)`` pairs.
+        """Fallback interpolatory point per row: its candidate with the largest stored ``r_ij``.
 
-        Looks up each candidate's ``r_ij`` within this row's stored
-        entries, 0.0 where absent - matching exactly what the dense row's
-        zero-fill outside its neighborhood pattern already means.
+        Each ``(target, candidate)`` pair is looked up in ``distance``'s storage at once by
+        its row-major key ``target * n + candidate``, which ascends over a CSR matrix with
+        sorted columns; an unstored pair reads ``0.0``, the dense row's zero-fill. Equal
+        strengths resolve to the lowest slot (``argmax`` returns the first maximum), so a
+        row with no stored entry takes its first candidate.
 
         Args:
-            candidates (torch.Tensor): Long tensor of candidate ``C``-indices.
-            row_cols (torch.Tensor): This row's stored column indices
-                (ascending, as CSR guarantees), shape ``(deg,)``.
-            row_vals (torch.Tensor): This row's stored values, same shape as
-                ``row_cols``.
+            candidates (torch.Tensor): Long tensor, shape ``(m, w)``, each row's candidates
+                left-aligned.
+            candidate_mask (torch.Tensor): Bool tensor, shape ``(m, w)``, a non-empty
+                prefix per row.
+            targets (torch.Tensor): Long tensor, shape ``(m,)``, each row's fine index.
+            distance (torch.Tensor): Sparse CSR algebraic-distance matrix, shape ``(n, n)``.
 
         Returns:
-            torch.Tensor: Long tensor of shape ``(1,)``.
+            torch.Tensor: Long tensor, shape ``(m,)``, each row's chosen candidate.
         """
-        if row_cols.numel() == 0:
-            return candidates[0].reshape(1)
-        positions = torch.searchsorted(row_cols, candidates)
-        clamped = positions.clamp(max=row_cols.numel() - 1)
-        found = (positions < row_cols.numel()) & (row_cols[clamped] == candidates)
-        strengths = torch.where(found, row_vals[clamped], torch.zeros_like(row_vals[clamped]))
-        return candidates[torch.argmax(strengths)].reshape(1)
+        n = distance.shape[1]
+        stored_keys = _entry_rows(distance) * n + distance.col_indices()
+        query = targets.unsqueeze(1) * n + candidates
+        strengths = torch.zeros(candidates.shape, dtype=distance.dtype, device=distance.device)
+        if stored_keys.numel() > 0:
+            position = torch.searchsorted(stored_keys, query).clamp(max=stored_keys.numel() - 1)
+            found = stored_keys[position] == query
+            strengths = torch.where(found, distance.values()[position], strengths)
+        strengths = torch.where(candidate_mask, strengths, float("-inf"))
+        return candidates.gather(1, strengths.argmax(dim=1, keepdim=True)).squeeze(1)
 
     def _prolongation(
         self,
@@ -605,13 +632,9 @@ class BAMGCoarsening:
             ``sparse_interpolation_prolongation``.
         """
         n_fine = fine_points.numel()
-        n_coarse = coarse_points.numel()
 
-        crow = neighborhood.crow_indices()
-        col = neighborhood.col_indices()
-        row_nnz = crow[1:] - crow[:-1]
-        all_row = torch.repeat_interleave(torch.arange(n, device=device), row_nnz)
-        all_col = col
+        all_row = _entry_rows(neighborhood)
+        all_col = neighborhood.col_indices()
 
         keep = (~coarse_mask)[all_row] & coarse_mask[all_col]
         cand_row = all_row[keep]
@@ -621,42 +644,9 @@ class BAMGCoarsening:
         fine_index[fine_points] = torch.arange(n_fine, device=device)
         local_row = fine_index[cand_row]
 
-        counts = torch.bincount(local_row, minlength=n_fine)
-        max_cand = int(counts.max().item()) if counts.numel() > 0 else 0
-        row_start = torch.cumsum(counts, 0) - counts
-        position_in_row = torch.arange(cand_row.numel(), device=device) - row_start[local_row]
-        width = max(max_cand, 1)
-        padded_candidates = torch.zeros(n_fine, width, dtype=torch.long, device=device)
-        candidate_mask = torch.zeros(n_fine, width, dtype=torch.bool, device=device)
-        padded_candidates[local_row, position_in_row] = cand_col
-        candidate_mask[local_row, position_in_row] = True
-
-        # Fallback: fine rows with zero coarse-neighbor candidates in the
-        # LS-ring neighborhood get the full coarse-point set as candidates
-        # instead (matches the old per-row `candidates = ... if ... else
-        # coarse_points_cpu` fallback).
-        needs_fallback = counts == 0
-        if n_coarse > 0 and bool(needs_fallback.any()):
-            if n_coarse > padded_candidates.shape[1]:
-                pad_width = n_coarse - padded_candidates.shape[1]
-                padded_candidates = torch.cat(
-                    [
-                        padded_candidates,
-                        torch.zeros(n_fine, pad_width, dtype=torch.long, device=device),
-                    ],
-                    dim=1,
-                )
-                candidate_mask = torch.cat(
-                    [
-                        candidate_mask,
-                        torch.zeros(n_fine, pad_width, dtype=torch.bool, device=device),
-                    ],
-                    dim=1,
-                )
-            padded_candidates[needs_fallback, :n_coarse] = coarse_points.unsqueeze(0)
-            candidate_mask[needs_fallback, :n_coarse] = True
-            if padded_candidates.shape[1] > n_coarse:
-                candidate_mask[needs_fallback, n_coarse:] = False
+        padded_candidates, candidate_mask = padded_candidate_sets(
+            local_row, cand_col, n_fine, coarse_points
+        )
 
         targets = fine_points
         chosen, chosen_mask = batched_select_interpolatory_set(
@@ -673,28 +663,16 @@ class BAMGCoarsening:
         had_candidates = candidate_mask.any(dim=-1)
         empty_selection = (chosen_mask.sum(dim=-1) == 0) & had_candidates
 
-        # Empty-interpolatory-set fallback (candidates existed but the
-        # greedy batched selection accepted none): restricted to the rare
-        # rows that actually need it rather than every fine row, since each
-        # such row needs its own ragged, differently-sized slice of
-        # `distance`'s CSR storage - not worth a second full batched
-        # ragged-to-padded pass for what is, in practice, a handful of
-        # rows. `_strongest_candidate_sparse`'s existing per-row
-        # searchsorted logic is reused as-is.
-        if bool(empty_selection.any()):
-            distance_crow = distance.crow_indices()
-            distance_col = distance.col_indices()
-            distance_values = distance.values()
-            for local_idx in torch.nonzero(empty_selection).flatten().tolist():
-                i = int(fine_points[local_idx].item())
-                candidates = padded_candidates[local_idx][candidate_mask[local_idx]]
-                d_start, d_end = int(distance_crow[i]), int(distance_crow[i + 1])
-                interp_set = self._strongest_candidate_sparse(
-                    candidates, distance_col[d_start:d_end], distance_values[d_start:d_end]
-                )
-                chosen[local_idx, 0] = interp_set[0]
-                chosen_mask[local_idx, 0] = True
-                chosen_mask[local_idx, 1:] = False
+        # Empty-interpolatory-set fallback (candidates existed but the greedy batched
+        # selection accepted none): the strongest candidate of each such row, found for
+        # all of them at once. `nonzero` is the one read; it sizes the fallback rows.
+        affected = torch.nonzero(empty_selection).flatten()
+        if affected.numel() > 0:
+            chosen[affected, 0] = self._strongest_candidates_sparse(
+                padded_candidates[affected], candidate_mask[affected], targets[affected], distance
+            )
+            chosen_mask[affected, 0] = True
+            chosen_mask[affected, 1:] = False
             rows = batched_ls_interpolation_rows(fit_vectors, targets, chosen, chosen_mask, weights)
 
         flat_row = fine_points.unsqueeze(1).expand(-1, chosen.shape[1])[chosen_mask]

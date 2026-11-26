@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING
 import pytest
 import torch
 
+from tests.support.dispatch_counter import DispatchCounter
 from torchalg import pcg
 from torchalg.preconditioners.implementations.amg.bootstrap import (
     BAMGCoarsening as DenseBAMGCoarsening,
 )
+from torchalg.sparse.kernels.algebraic_distance import sparse_algebraic_distance
 from torchalg.sparse.preconditioners.amg.bootstrap import BAMGCoarsening
 from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo
 
@@ -411,3 +413,107 @@ class TestBootstrapNeighborhoodReuse:
 
         finest_builds = [d for m, d in calls if m is poisson_1d_large_csr]
         assert finest_builds == [3]
+
+
+_ZEROED_ROW_STRIDE = 5
+"""Every fifth test-vector row is zero; a zero target row accepts no candidate, so those
+fine rows take the empty-interpolatory-set fallback."""
+
+
+@pytest.fixture
+def zeroed_row_test_vectors(bamg_default_test_vectors: torch.Tensor) -> torch.Tensor:
+    vectors = bamg_default_test_vectors.clone()
+    vectors[::_ZEROED_ROW_STRIDE] = 0.0
+    return vectors
+
+
+@pytest.fixture
+def strongest_candidate_problem(
+    torch_dtype: torch.dtype, test_seed: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """A distance matrix with an empty row and ties, and prefix-masked candidate rows.
+
+    Returns:
+        ``(distance_dense, padded_candidates, candidate_mask, targets)``.
+    """
+    generator = torch.Generator().manual_seed(test_seed)
+    distance = torch.rand(8, 8, generator=generator, dtype=torch_dtype)
+    distance[distance < 0.4] = 0.0
+    distance[2] = 0.0  # no stored entry: the first candidate wins
+    distance[5, 1] = distance[5, 6] = 2.0  # tie: the earlier slot wins
+    padded = torch.tensor([[1, 3, 6, 0], [0, 4, 0, 0], [7, 2, 5, 0], [6, 1, 0, 0]])
+    mask = torch.tensor(
+        [[True, True, True, False], [True, True, False, False], [True, True, True, False]]
+        + [[True, True, False, False]]
+    )
+    targets = torch.tensor([0, 3, 2, 5])
+    return distance, padded, mask, targets
+
+
+class TestEmptySelectionFallback:
+    """Rows whose greedy selection accepts no candidate take the strongest one ([AD11] eq. 4.3)."""
+
+    def test_batched_strongest_candidates_match_dense_rows(
+        self,
+        strongest_candidate_problem: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> None:
+        distance, padded, mask, targets = strongest_candidate_problem
+        expected = torch.cat(
+            [
+                DenseBAMGCoarsening._strongest_candidate(padded[row][mask[row]], distance[target])
+                for row, target in enumerate(targets.tolist())
+            ]
+        )
+        actual = BAMGCoarsening._strongest_candidates_sparse(
+            padded, mask, targets, distance.to_sparse_csr()
+        )
+        torch.testing.assert_close(actual, expected)
+
+    def test_prolongation_matches_dense(
+        self,
+        dense_relaxation: DenseRelaxation,
+        sparse_relaxation: GaussSeidelMemo,
+        poisson_1d_large_dense: torch.Tensor,
+        zeroed_row_test_vectors: torch.Tensor,
+        seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    ) -> None:
+        dense = DenseBAMGCoarsening(
+            zeroed_row_test_vectors.clone(),
+            dense_relaxation,
+            use_lsr=False,
+            draw=seeded_draw_factory(0),
+        )
+        sparse = BAMGCoarsening(
+            zeroed_row_test_vectors.clone(),
+            sparse_relaxation,
+            use_lsr=False,
+            draw=seeded_draw_factory(0),
+        )
+        dense.build_transfer(poisson_1d_large_dense)
+        sparse.build_transfer(poisson_1d_large_dense.to_sparse_csr())
+        torch.testing.assert_close(sparse.last_prolongation.to_dense(), dense.last_prolongation)
+
+    def test_fallback_reads_the_host_independently_of_its_row_count(
+        self,
+        sparse_relaxation: GaussSeidelMemo,
+        poisson_1d_large_csr: torch.Tensor,
+        zeroed_row_test_vectors: torch.Tensor,
+        seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    ) -> None:
+        """The counted reads are the candidate-block width and the trust test of each of the
+        two row fits (the fallback rows' ``nonzero`` is one more, uncounted): never one per
+        fallback row."""
+        coarsening = BAMGCoarsening(
+            zeroed_row_test_vectors,
+            sparse_relaxation,
+            use_lsr=False,
+            draw=seeded_draw_factory(0),
+        )
+        distance = sparse_algebraic_distance(zeroed_row_test_vectors, poisson_1d_large_csr)
+        coarse_mask = coarsening._coarse_mask(poisson_1d_large_csr, distance)
+        counter = DispatchCounter()
+        with torch.inference_mode(), counter:  # inference mode keeps `item` undecomposed
+            coarsening._prolongation(
+                poisson_1d_large_csr, zeroed_row_test_vectors, coarse_mask, distance
+            )
+        assert counter.syncs == 3

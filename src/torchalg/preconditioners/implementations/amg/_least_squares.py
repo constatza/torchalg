@@ -62,6 +62,7 @@ from torchalg.utils.ls_interpolation import (
     batched_ls_interpolation_rows,
     batched_select_interpolatory_set,
     ls_interpolation_row,
+    padded_candidate_sets,
     select_interpolatory_set,
 )
 
@@ -70,6 +71,7 @@ __all__ = [
     "batched_select_interpolatory_set",
     "ls_interpolation_row",
     "lsr_correction",
+    "padded_candidate_sets",
     "select_interpolatory_set",
 ]
 

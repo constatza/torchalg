@@ -390,6 +390,9 @@ growth loop on each group at its own padded width (`_width_chunks`), so the rows
 the full coarse set as fallback candidates do not widen every row; the selection is
 bit-identical to the single full-width run, with 44% to 48% fewer padded slots on
 lap2d n = 10 000 and box3d n = 2 744.
+Both trees pack the candidate block with `utils.ls_interpolation.padded_candidate_sets`,
+which applies the all-coarse-points fallback as a masked select, so the block width is
+its one host read.
 `compatible_relaxation_coarsening`
 takes an optional keyword-only `guidance_graph` overriding its default
 plain-matrix-graph independent-set guide; `BAMGCoarsening` passes the
