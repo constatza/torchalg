@@ -374,9 +374,11 @@ F-points with the largest absolute value of **that same vector's own**
 residual, not one combined across vectors - see `BAMGCoarsening._fit_vectors`.
 `test_vector_weights`'s `T = I` reduction is only paper-valid before any MGE
 enrichment - `BAMGCoarsening` now tracks the composite prolongation
-incrementally across levels (`_composite`) and passes it to
-both `test_vector_weights` and `algebraic_distance`, which use `T_l = P_l^H P_l` only as
-`<T v, v> = ||P_l v||^2` (the Gram matrix is never formed). `T_l = P_l^H P_l`
+incrementally across levels (`_composite`) and computes `test_vector_weights` from it
+once per level, handing the same weights to `algebraic_distance` and the LS fit;
+`T_l = P_l^H P_l` enters only as `<T v, v> = ||P_l v||^2` (the Gram matrix is never
+formed). `lsr_correction` takes `(A V)[rows]`, not `A[rows] V`: its one caller
+corrects every row, where the row gather copies the whole dense matrix. `T_l = P_l^H P_l`
 itself is confirmed directly against [STATUS14]; whether `omega_kappa` is
 actually meant to use this `T_l` is **not** confirmed (rests only on an
 unverifiable [BAMG11] attribution) - see `bootstrap.py`'s

@@ -378,14 +378,10 @@ class BAMGCoarsening:
             tuple[torch.Tensor, SparseTransferOperator]: ``(A_coarse, transfer)``.
         """
         test_vectors = self._vectors[A.shape[0]]
-        composite = self._composite
-        distance = sparse_algebraic_distance(
-            test_vectors, A, depth=self._depth, composite=composite
-        )
+        weights = test_vector_weights(test_vectors, A, composite=self._composite)
+        distance = sparse_algebraic_distance(test_vectors, A, depth=self._depth, weights=weights)
         coarse_mask = self._coarse_mask(A, distance)
-        prolongation = self._prolongation(
-            A, test_vectors, coarse_mask, distance, composite=composite
-        )
+        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance, weights)
         coarse_matrix = form_sparse_sparse(prolongation, A)
         self._last_prolongation = prolongation
 
@@ -519,7 +515,7 @@ class BAMGCoarsening:
         test_vectors: torch.Tensor,
         coarse_mask: torch.Tensor,
         distance: torch.Tensor,
-        composite: torch.Tensor | None = None,
+        weights: torch.Tensor,
     ) -> torch.Tensor:
         """LS/LSR-fitted sparse CSR prolongation ``P`` (identity on ``C``, fitted rows on ``F``).
 
@@ -536,9 +532,9 @@ class BAMGCoarsening:
             distance (torch.Tensor): Sparse CSR algebraic-distance matrix
                 ``r``, shape ``(n, n)``, used by the empty-interpolatory-set
                 fallback.
-            composite (torch.Tensor | None): Sparse CSR composite
-                interpolation ``C`` (``T = C^T C``) for the LS/LSR fit
-                weights; ``None`` for the ``T = I`` reduction.
+            weights (torch.Tensor): Per-test-vector LS/LSR fit weights
+                ``omega_kappa``, shape ``(k,)``, from ``test_vector_weights`` with the
+                sparse CSR composite interpolation ``C`` (``T = C^T C``).
 
         Returns:
             torch.Tensor: Sparse CSR prolongation matrix, shape
@@ -553,7 +549,6 @@ class BAMGCoarsening:
         coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
         coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
 
-        weights = test_vector_weights(test_vectors, A, composite=composite)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = self._neighborhood_of(A, self._depth + 2)
 

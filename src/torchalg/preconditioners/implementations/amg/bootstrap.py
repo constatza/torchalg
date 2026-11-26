@@ -60,10 +60,10 @@ knob, not to silently hardcode one setting.
   prolongation ``P_l = P_0 P_1 ... P_{l-1}`` incrementally as
   ``build_transfer`` runs level by level (``_composite``, ``None`` -
   meaning ``T = I`` - only at the true finest level of each bootstrap
-  cycle's coarsening pass), and threads it into both call sites via an
-  optional ``composite`` parameter, where ``T_l = P_l^H P_l`` enters only as
-  ``<T v, v> = ||P_l v||^2`` (the Gram matrix is never formed; default ``None``,
-  preserving every existing ``k_e=0`` caller's exact behavior). ``T_l =
+  cycle's coarsening pass), computes ``test_vector_weights`` with it once per
+  level and hands the same weights to both call sites, where ``T_l = P_l^H P_l``
+  enters only as ``<T v, v> = ||P_l v||^2`` (the Gram matrix is never formed;
+  ``composite=None`` preserves every existing ``k_e=0`` caller's exact behavior). ``T_l =
   P_l^H P_l`` and the composite-prolongation chaining formula are confirmed
   directly against [STATUS14] Sec. 4 (arXiv:1406.1819) - that part is
   solid. **What is NOT confirmed:** that ``omega_kappa`` (the LS/LSR fit
@@ -424,18 +424,16 @@ class BAMGCoarsening:
             tuple[torch.Tensor, DenseTransferOperator]: ``(A_coarse, transfer)``.
         """
         test_vectors = self._vectors[A.shape[0]]
-        composite = self._composite
+        weights = test_vector_weights(test_vectors, A, composite=self._composite)
         distance = algebraic_distance(
             test_vectors,
             A,
             depth=self._depth,
-            composite=composite,
+            weights=weights,
             neighborhood_of=self._neighborhood_of,
         )
         coarse_mask = self._coarse_mask(A, distance)
-        prolongation = self._prolongation(
-            A, test_vectors, coarse_mask, distance, composite=composite
-        )
+        prolongation = self._prolongation(A, test_vectors, coarse_mask, distance, weights)
         coarse_matrix = prolongation.T @ A @ prolongation
         self._last_prolongation = prolongation
         self._vectors[coarse_matrix.shape[0]] = prolongation.T @ test_vectors
@@ -561,7 +559,7 @@ class BAMGCoarsening:
         test_vectors: torch.Tensor,
         coarse_mask: torch.Tensor,
         distance: torch.Tensor,
-        composite: torch.Tensor | None = None,
+        weights: torch.Tensor,
     ) -> torch.Tensor:
         """LS/LSR-fitted prolongation matrix ``P`` (identity on ``C``, fitted rows on ``F``).
 
@@ -571,11 +569,10 @@ class BAMGCoarsening:
             coarse_mask (torch.Tensor): Boolean coarse mask, shape ``(n,)``.
             distance (torch.Tensor): Algebraic-distance matrix ``r``, shape
                 ``(n, n)``, used by the empty-interpolatory-set fallback.
-            composite (torch.Tensor | None): Composite interpolation ``C``
-                (``T = C^T C``) for the LS/LSR fit weights (``omega_kappa``'s
-                ``T``-weighted generalization - see ``_mge.py``'s module
-                docstring for its unresolved TODO status); ``None`` for the
-                ``T = I`` reduction.
+            weights (torch.Tensor): Per-test-vector LS/LSR fit weights
+                ``omega_kappa``, shape ``(k,)``, from ``test_vector_weights`` with the
+                composite interpolation ``C`` (``T = C^T C``; see ``_mge.py``'s module
+                docstring for that generalization's unresolved TODO status).
 
         Returns:
             torch.Tensor: Prolongation matrix, shape ``(n, n_c)``.
@@ -588,7 +585,6 @@ class BAMGCoarsening:
         coarse_index = torch.full((n,), -1, dtype=torch.long, device=device)
         coarse_index[coarse_points] = torch.arange(n_coarse, device=device)
 
-        weights = test_vector_weights(test_vectors, A, composite=composite)
         fit_vectors = self._fit_vectors(A, test_vectors, fine_points)
         neighborhood = self._neighborhood_of(A, self._depth + 2)
         n_fine = fine_points.numel()

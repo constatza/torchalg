@@ -136,6 +136,7 @@ def test_prolongation_batches_neighbor_lookup_not_one_nonzero_per_fine_row(
     """
     from torchalg.preconditioners.implementations.amg._algebraic_distance import (
         algebraic_distance,
+        test_vector_weights,
     )
 
     test_vectors = bamg_coarsening.test_vectors_for(poisson_16)
@@ -152,8 +153,9 @@ def test_prolongation_batches_neighbor_lookup_not_one_nonzero_per_fine_row(
         call_count += 1
         return original_nonzero(*args, **kwargs)  # ty: ignore[no-matching-overload]
 
+    weights = test_vector_weights(test_vectors, poisson_16)
     monkeypatch.setattr(torch, "nonzero", counting_nonzero)
-    bamg_coarsening._prolongation(poisson_16, test_vectors, coarse_mask, distance)
+    bamg_coarsening._prolongation(poisson_16, test_vectors, coarse_mask, distance, weights)
 
     assert call_count < fine_count, (
         f"expected torch.nonzero() calls bounded independent of fine-point count, got "
@@ -754,3 +756,26 @@ class TestBootstrapAMGResultAndStr:
         assert "BAMG" in text
         assert f"n_levels={len(bootstrap_amg_preconditioner_64.result.matrices)}" in text
         assert f"k_r={bootstrap_amg_preconditioner_64.result.candidates.shape[1]}" in text
+
+
+def test_bamg_coarsening_computes_test_vector_weights_once_per_level(
+    poisson_16: torch.Tensor,
+    bamg_coarsening: BAMGCoarsening,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The algebraic distance and the LS fit share one weight vector per level."""
+    import torchalg.preconditioners.implementations.amg._algebraic_distance as distance_module
+    import torchalg.preconditioners.implementations.amg.bootstrap as bootstrap_module
+
+    real = bootstrap_module.test_vector_weights
+    calls: list[torch.Tensor] = []
+
+    def counting(*args: torch.Tensor, **kwargs: torch.Tensor | None) -> torch.Tensor:
+        calls.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bootstrap_module, "test_vector_weights", counting)
+    monkeypatch.setattr(distance_module, "test_vector_weights", counting)
+    bamg_coarsening.build_transfer(poisson_16)
+
+    assert len(calls) == 1

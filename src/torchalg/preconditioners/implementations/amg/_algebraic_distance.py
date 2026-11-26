@@ -122,7 +122,7 @@ def algebraic_distance(
     test_vectors: torch.Tensor,
     matrix: torch.Tensor,
     depth: int = 1,
-    composite: torch.Tensor | None = None,
+    weights: torch.Tensor | None = None,
     neighborhood_of: NeighborhoodOf = depth_neighborhood,
 ) -> torch.Tensor:
     """Pairwise caliber-one algebraic distance ``r_ij`` ([AD11] eq. 4.3).
@@ -153,9 +153,10 @@ def algebraic_distance(
         matrix (torch.Tensor): Dense fine-grid matrix ``A``, shape ``(n, n)``.
         depth (int): Search depth ``d`` defining the neighborhood ``V_i``
             (default ``1``).
-        composite (torch.Tensor | None): Composite interpolation ``C`` passed
-            through to ``test_vector_weights``; ``None`` for the ``T = I``
-            reduction (see that function's docstring).
+        weights (torch.Tensor | None): Per-test-vector weights ``omega_kappa``
+            (``test_vector_weights``), shape ``(k,)``; ``None`` computes the ``T = I``
+            reduction here. A caller that also fits interpolation to the same vectors
+            passes the weights it computed once for both.
         neighborhood_of (NeighborhoodOf): Evaluates ``(matrix, depth)``'s
             neighborhood; pass a ``NeighborhoodMemo`` to share it across calls.
 
@@ -165,7 +166,8 @@ def algebraic_distance(
         symmetric in general.
     """
     neighborhood = neighborhood_of(matrix, depth)
-    weights = test_vector_weights(test_vectors, matrix, composite=composite)
+    if weights is None:
+        weights = test_vector_weights(test_vectors, matrix)
     corrected = _residual_corrected_vectors(test_vectors, matrix)
 
     cross = (corrected * weights) @ test_vectors.T

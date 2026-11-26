@@ -26,6 +26,7 @@ from torchalg.preconditioners.implementations.amg.bootstrap import (
 from torchalg.sparse.kernels.algebraic_distance import sparse_algebraic_distance
 from torchalg.sparse.preconditioners.amg.bootstrap import BAMGCoarsening
 from torchalg.sparse.preconditioners.amg.smoothers import GaussSeidelMemo
+from torchalg.utils.test_vector_weights import test_vector_weights as compute_test_vector_weights
 
 if TYPE_CHECKING:
     from tests.sparse.conftest import DenseRelaxation
@@ -511,9 +512,37 @@ class TestEmptySelectionFallback:
         )
         distance = sparse_algebraic_distance(zeroed_row_test_vectors, poisson_1d_large_csr)
         coarse_mask = coarsening._coarse_mask(poisson_1d_large_csr, distance)
+        weights = compute_test_vector_weights(zeroed_row_test_vectors, poisson_1d_large_csr)
         counter = DispatchCounter()
         with torch.inference_mode(), counter:  # inference mode keeps `item` undecomposed
             coarsening._prolongation(
-                poisson_1d_large_csr, zeroed_row_test_vectors, coarse_mask, distance
+                poisson_1d_large_csr, zeroed_row_test_vectors, coarse_mask, distance, weights
             )
         assert counter.syncs == 3
+
+
+def test_build_transfer_computes_test_vector_weights_once_per_level(
+    sparse_relaxation: GaussSeidelMemo,
+    poisson_1d_large_csr: torch.Tensor,
+    bamg_default_test_vectors: torch.Tensor,
+    seeded_draw_factory: Callable[[int], Callable[[int], torch.Tensor]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The algebraic distance and the LS fit share one weight vector per level."""
+    import torchalg.sparse.kernels.algebraic_distance as distance_module
+    import torchalg.sparse.preconditioners.amg.bootstrap as bootstrap_module
+
+    real = bootstrap_module.test_vector_weights
+    calls: list[torch.Tensor] = []
+
+    def counting(*args: torch.Tensor, **kwargs: torch.Tensor | None) -> torch.Tensor:
+        calls.append(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bootstrap_module, "test_vector_weights", counting)
+    monkeypatch.setattr(distance_module, "test_vector_weights", counting)
+    BAMGCoarsening(
+        bamg_default_test_vectors, sparse_relaxation, draw=seeded_draw_factory(0)
+    ).build_transfer(poisson_1d_large_csr)
+
+    assert len(calls) == 1

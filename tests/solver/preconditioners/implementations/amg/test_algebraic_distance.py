@@ -137,14 +137,17 @@ def test_algebraic_distance_t_none_matches_identity_t(
     poisson_1d_factory: Callable[[int], torch.Tensor],
     small_test_vectors: torch.Tensor,
 ) -> None:
-    """``algebraic_distance``'s own ``T`` pass-through has the same
-    default-preserving guarantee as ``test_vector_weights``'s."""
+    """``algebraic_distance``'s own weights default (``T = I``) equals passing the
+    weights of an explicit identity ``T``."""
     matrix = poisson_1d_factory(3)
     identity = torch.eye(3, dtype=small_test_vectors.dtype)
 
     r_default = algebraic_distance(small_test_vectors, matrix, depth=1)
     r_explicit_identity = algebraic_distance(
-        small_test_vectors, matrix, depth=1, composite=identity
+        small_test_vectors,
+        matrix,
+        depth=1,
+        weights=compute_test_vector_weights(small_test_vectors, matrix, composite=identity),
     )
 
     assert torch.equal(r_default, r_explicit_identity)

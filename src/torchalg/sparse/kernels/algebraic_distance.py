@@ -45,7 +45,7 @@ def sparse_algebraic_distance(
     test_vectors: torch.Tensor,
     matrix: torch.Tensor,
     depth: int = 1,
-    composite: torch.Tensor | None = None,
+    weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pairwise caliber-one algebraic distance ``r_ij`` ([AD11] eq. 4.3), sparse CSR.
 
@@ -55,9 +55,10 @@ def sparse_algebraic_distance(
             ``(n, n)``.
         depth (int): Search depth ``d`` defining the neighborhood ``V_i``
             (default ``1``).
-        composite (torch.Tensor | None): Composite interpolation ``C`` passed
-            through to ``test_vector_weights``; ``None`` for the ``T = I``
-            reduction (see that function's docstring).
+        weights (torch.Tensor | None): Per-test-vector weights ``omega_kappa``
+            (``test_vector_weights``), shape ``(k,)``; ``None`` computes the ``T = I``
+            reduction here. A caller that also fits interpolation to the same vectors
+            passes the weights it computed once for both.
 
     Returns:
         torch.Tensor: Sparse CSR algebraic-distance matrix ``r``, shape
@@ -70,7 +71,8 @@ def sparse_algebraic_distance(
     _require_csr(matrix, "sparse_algebraic_distance")
     n = matrix.shape[0]
     neighborhood = sparse_depth_neighborhood(matrix, depth)
-    weights = test_vector_weights(test_vectors, matrix, composite=composite)
+    if weights is None:
+        weights = test_vector_weights(test_vectors, matrix)
     corrected = sparse_lsr_correction(test_vectors, matrix, torch.arange(n, device=matrix.device))
 
     row = _expand_row_index(neighborhood)

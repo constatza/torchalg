@@ -112,7 +112,9 @@ def lsr_correction(
     diagonal_safe = torch.where(
         diagonal.abs() > _NEAR_ZERO_DIAGONAL_TOL, diagonal, torch.ones_like(diagonal)
     )
-    residual_at_targets = matrix[target_rows] @ test_vectors
+    # The full product rather than `matrix[target_rows] @ test_vectors`: the only caller
+    # corrects every row, where the row gather is an O(n^2) copy of the whole matrix.
+    residual_at_targets = (matrix @ test_vectors)[target_rows]
     corrected = test_vectors.clone()
     corrected[target_rows] = test_vectors[
         target_rows
