@@ -60,7 +60,13 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from torchalg.multigrid import AMGPreconditioner, MultigridHierarchy, assemble_hierarchy
+from torchalg.multigrid import (
+    AMGPreconditioner,
+    MultigridHierarchy,
+    PreparedFineLevel,
+    PreparedHierarchy,
+    assemble_hierarchy,
+)
 from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 from torchalg.sparse.kernels.galerkin import form_sparse_sparse
 from torchalg.utils.spectral import approximate_spectral_radius
@@ -258,11 +264,29 @@ def _hierarchy_of(levels: list[_Level], params: _Params) -> MultigridHierarchy:
     )
 
 
-def _solve(levels: list[_Level], x: torch.Tensor, iterations: int, params: _Params) -> torch.Tensor:
+def _prepared_fine(level: _Level, params: _Params) -> PreparedFineLevel:
+    """``level`` bound through the stage memos, as ``params.setup_cycle.prepare`` binds it.
+
+    Args:
+        level (_Level): Working level whose ``A`` and ``P`` are final for the next trial solve.
+        params (_Params): Setup parameters; supply the stage's memos.
+
+    Returns:
+        PreparedFineLevel: The prepared level.
+    """
+    return PreparedFineLevel(
+        level.A, params.transfers(_built(level.P)), params.gauss_seidel.prepare(level.A)
+    )
+
+
+def _solve(
+    hierarchy: PreparedHierarchy, x: torch.Tensor, iterations: int, params: _Params
+) -> torch.Tensor:
     """PyAMG's ``solve(b=0, x0=x, tol=1e-20, maxiter=iterations)`` with V-cycles, sparse CSR.
 
     Args:
-        levels (list[_Level]): Working levels, finest first.
+        hierarchy (PreparedHierarchy): Trial hierarchy prepared for ``params.setup_cycle``,
+            at least two levels.
         x (torch.Tensor): Initial guess.
         iterations (int): Maximum number of cycles.
         params (_Params): Setup parameters; supply the stage's setup cycle.
@@ -270,11 +294,8 @@ def _solve(levels: list[_Level], x: torch.Tensor, iterations: int, params: _Para
     Returns:
         torch.Tensor: Iterate after the cycles.
     """
-    if len(levels) == 1:
-        return torch.zeros_like(x)
     cycle = params.setup_cycle
-    hierarchy = cycle.prepare(_hierarchy_of(levels, params))
-    matrix = levels[0].A
+    matrix = hierarchy.levels[0].matrix
     residual = matrix @ x
     for _ in range(iterations):
         x = x - cycle.apply(hierarchy, residual)
@@ -394,7 +415,14 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
         torch.Tensor: The new fine-level candidate (not yet normalized).
     """
     fine = levels[0].A
-    x = _solve(levels, params.random_vector(fine, fine.shape[0]), params.candidate_iters, params)
+    x = params.random_vector(fine, fine.shape[0])
+    if len(levels) == 1:
+        return torch.zeros_like(x)
+    # One trial hierarchy per candidate: each sub-hierarchy solve below changes only the
+    # level it refits, so the other prepared levels and the coarsest inverse are reused.
+    prepared = params.setup_cycle.prepare(_hierarchy_of(levels, params))
+    prepared_fine = list(prepared.fine)
+    x = _solve(prepared, x, params.candidate_iters, params)
     for i in range(len(levels) - 2):
         candidates = torch.cat([levels[i].B, x.unsqueeze(1)], dim=1)
         tentative, coarse = fit_candidates_csr(_built(levels[i].aggregate), candidates)
@@ -405,7 +433,13 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
         levels[i + 1].A = form_sparse_sparse(prolongation, levels[i].A)
         bridge = sparse_make_bridge(_built(levels[i + 1].T), levels[i + 1].dofs)
         levels[i + 1].P = _jacobi_prolongation(levels[i + 1].A, bridge, params.omega, params)
-        x = _solve(levels[i + 1 :], x, params.candidate_iters, params)
+        prepared_fine[i + 1] = _prepared_fine(levels[i + 1], params)
+        x = _solve(
+            PreparedHierarchy(tuple(prepared_fine[i + 1 :]), prepared.coarsest),
+            x,
+            params.candidate_iters,
+            params,
+        )
         levels[i + 1].B = coarse[:, :-1].clone()
         levels[i + 1].T = bridge
         levels[i + 1].dofs = candidates.shape[1]
@@ -450,8 +484,8 @@ def adaptive_sa_hierarchy(
         nested sub-hierarchies, so its work is quadratic in ``L``:
         ``W = O(s L sum_l (9 z_l + 4 nnz(P_l)))`` for the cycles, plus one
         smoothed-aggregation rebuild of the hierarchy (per later candidate, and
-        a final one) and one coarsest-level inverse per trial hierarchy
-        prepared, each ``W ~ c^3`` for an SPD block or ``~ 24 c^3`` through
+        a final one) and one coarsest-level inverse per later candidate (the
+        nested sub-hierarchies share it), each ``W ~ c^3`` for an SPD block or ``~ 24 c^3`` through
         ``pinv`` (``pseudo_inverse_coarse_solver``). Smoothers are prepared once
         per level matrix and shared across the stage. ``D`` is the sum of the
         stage chains, dominated by the Gauss-Seidel triangular recurrences

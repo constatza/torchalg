@@ -213,7 +213,10 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   `BootstrapAMGPreconditioner.setup()`, so each distinct level matrix gets its
   Gauss-Seidel prepared once and each prolongation is transposed once.
   `_presets.gs_setup_cycle(stage)` builds the GS V(1,1) setup cycle over a
-  stage's smoother.
+  stage's smoother. Adaptive SA's general stage prepares its trial hierarchy once per
+  candidate and swaps in only the level each nested sub-hierarchy solve refits, so the
+  densified coarsest `pinv` is computed once per candidate instead of once per trial
+  solve.
 - `BootstrapAMGPreconditioner.setup()` also builds one `weak_memo` of
   `kernels.depth_neighborhood.sparse_depth_neighborhood` per setup run and hands
   it to every `BAMGCoarsening` as `neighborhood_of`. The finest matrix's

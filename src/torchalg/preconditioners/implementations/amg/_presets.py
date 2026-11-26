@@ -26,8 +26,11 @@ from .protocols import MultigridSmoother
 from .smoothers import GaussSeidelSmoother
 from .transfer import DenseTransferOperator
 
+GS_SETUP_SMOOTHER = GaussSeidelSmoother()
+"""Smoother of ``GS_SETUP_CYCLE``, for setup stages that prepare a replaced level themselves."""
+
 GS_SETUP_CYCLE = VCycle(
-    GaussSeidelSmoother(), n_pre=1, n_post=1, coarse_solver_factory=pseudo_inverse_coarse_solver
+    GS_SETUP_SMOOTHER, n_pre=1, n_post=1, coarse_solver_factory=pseudo_inverse_coarse_solver
 )
 """GS V(1,1) cycle used only inside adaptive/bootstrap hierarchy setup.
 

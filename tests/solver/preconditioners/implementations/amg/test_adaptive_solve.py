@@ -52,7 +52,7 @@ class TestSolveMatvecs:
             lambda: [adaptive.GS_SETUP_CYCLE.apply(hierarchy, start) for _ in range(_CYCLES)],
         )
 
-        total = _count_fine_matvecs(levels, lambda: _solve(levels, start, _CYCLES))
+        total = _count_fine_matvecs(levels, lambda: _solve(hierarchy, start, _CYCLES))
 
         # One residual for the first cycle, then one new residual per cycle (reused as the
         # next cycle's input and as the convergence test).

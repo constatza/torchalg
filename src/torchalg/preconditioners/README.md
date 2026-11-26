@@ -273,8 +273,10 @@ matrix many times prepare once per matrix and reuse it: compatible relaxation
 (`compatible_relaxation_coarsening` prepares its smoother once and passes the
 prepared object to `cr_rate`/`hcr_operator`), adaptive candidate relaxation
 (one preparation per level, reused going down and up; a `rows` subset gets its
-own preparation), and `BootstrapSetup._improve_levels` (the full hierarchy is
-prepared once and each level's sub-hierarchy is a slice of it). The injected
+own preparation), adaptive trial cycles (the general stage prepares its trial
+hierarchy once per candidate; each nested sub-hierarchy solve re-prepares only the
+level just refitted and shares the other levels and the coarsest inverse), and
+`BootstrapSetup._improve_levels` (the full hierarchy is prepared once and each level's sub-hierarchy is a slice of it). The injected
 `relaxation` of `BootstrapSetup`/`BAMGCoarsening`/`multigrid_eigensolver` is a
 `MultigridSmoother`, not a callable.
 

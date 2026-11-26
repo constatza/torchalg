@@ -234,6 +234,6 @@ class TestSolveMatvecs:
             for _ in range(cycles):
                 params.setup_cycle.apply(hierarchy, start)
         with MatvecCounter(levels[0].A) as total:
-            adaptive_module._solve(levels, start, cycles, params)
+            adaptive_module._solve(hierarchy, start, cycles, params)
 
         assert total.count - inside.count == cycles + 1

@@ -41,13 +41,20 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from torchalg.multigrid import PreparedFineLevel, PreparedHierarchy
 from torchalg.preconditioners.base import PreconditionerContext, PreconditionerNotReadyError
 from torchalg.utils.spectral import approximate_spectral_radius
 from torchalg.utils.tentative import fit_candidates
 
 from ._aggregation import standard_aggregation
 from ._node_strength import node_strength
-from ._presets import GS_SETUP_CYCLE, PrebuiltCoarsening, prebuilt_cycle, seeded_draw
+from ._presets import (
+    GS_SETUP_CYCLE,
+    GS_SETUP_SMOOTHER,
+    PrebuiltCoarsening,
+    prebuilt_cycle,
+    seeded_draw,
+)
 from ._prolongation import jacobi_prolongation, make_bridge
 from ._relaxation import prepare_symmetric_gauss_seidel
 from .amg import AMGPreconditioner
@@ -201,24 +208,36 @@ def _hierarchy_of(levels: list[_Level]) -> MultigridHierarchy:
     )
 
 
-def _solve(levels: list[_Level], x: torch.Tensor, iterations: int) -> torch.Tensor:
+def _prepared_fine(level: _Level) -> PreparedFineLevel:
+    """``level`` bound to the setup cycle's smoother, as ``GS_SETUP_CYCLE.prepare`` binds it.
+
+    Args:
+        level (_Level): Working level whose ``A`` and ``P`` are final for the next trial solve.
+
+    Returns:
+        PreparedFineLevel: The prepared level.
+    """
+    return PreparedFineLevel(
+        level.A, DenseTransferOperator(_built(level.P)), GS_SETUP_SMOOTHER.prepare(level.A)
+    )
+
+
+def _solve(hierarchy: PreparedHierarchy, x: torch.Tensor, iterations: int) -> torch.Tensor:
     """PyAMG's ``solve(b=0, x0=x, tol=1e-20, maxiter=iterations)`` with V-cycles.
 
     Uses linearity of the cycle: one cycle from ``x`` on ``A x = 0`` is
     ``x - B (A x)`` with ``B`` the zero-initial-guess cycle.
 
     Args:
-        levels (list[_Level]): Working levels, finest first.
+        hierarchy (PreparedHierarchy): Trial hierarchy prepared for ``GS_SETUP_CYCLE``,
+            at least two levels.
         x (torch.Tensor): Initial guess.
         iterations (int): Maximum number of cycles.
 
     Returns:
         torch.Tensor: Iterate after the cycles.
     """
-    if len(levels) == 1:
-        return torch.zeros_like(x)
-    hierarchy = GS_SETUP_CYCLE.prepare(_hierarchy_of(levels))
-    matrix = levels[0].A
+    matrix = hierarchy.levels[0].matrix
     residual = matrix @ x
     for _ in range(iterations):
         x = x - GS_SETUP_CYCLE.apply(hierarchy, residual)
@@ -344,7 +363,14 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
         torch.Tensor: The new fine-level candidate (not yet normalized).
     """
     fine = levels[0].A
-    x = _solve(levels, params.random_vector(fine, fine.shape[0]), params.candidate_iters)
+    x = params.random_vector(fine, fine.shape[0])
+    if len(levels) == 1:
+        return torch.zeros_like(x)
+    # One trial hierarchy per candidate: each sub-hierarchy solve below changes only the
+    # level it refits, so the other prepared levels and the coarsest inverse are reused.
+    prepared = GS_SETUP_CYCLE.prepare(_hierarchy_of(levels))
+    prepared_fine = list(prepared.fine)
+    x = _solve(prepared, x, params.candidate_iters)
     for i in range(len(levels) - 2):
         candidates = torch.cat([levels[i].B, x.unsqueeze(1)], dim=1)
         tentative, coarse = fit_candidates(_built(levels[i].aggregate), candidates)
@@ -359,7 +385,12 @@ def _general_setup_stage(levels: list[_Level], params: _Params) -> torch.Tensor:
         levels[i + 1].P = jacobi_prolongation(
             levels[i + 1].A, bridge, params.omega, params.spectral_radius
         )
-        x = _solve(levels[i + 1 :], x, params.candidate_iters)
+        prepared_fine[i + 1] = _prepared_fine(levels[i + 1])
+        x = _solve(
+            PreparedHierarchy(tuple(prepared_fine[i + 1 :]), prepared.coarsest),
+            x,
+            params.candidate_iters,
+        )
         levels[i + 1].B = coarse[:, :-1].clone()
         levels[i + 1].T = bridge
         levels[i + 1].dofs = candidates.shape[1]
