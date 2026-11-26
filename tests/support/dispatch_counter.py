@@ -7,8 +7,15 @@ from typing import Any
 
 from torch.utils._python_dispatch import TorchDispatchMode
 
-HOST_SYNC_OPS = frozenset({"aten.item.default", "aten.is_nonzero.default"})
-"""Dispatch names of the ops that block on a device value (``.item()``, ``bool(tensor)``)."""
+HOST_SYNC_OPS = frozenset(
+    {"aten.item.default", "aten.is_nonzero.default", "aten._local_scalar_dense.default"}
+)
+"""Dispatch names of the ops that block on a device value (``.item()``, ``bool(tensor)``).
+
+Under ``torch.inference_mode`` those calls dispatch as ``item`` and ``is_nonzero``; outside
+it both decompose to ``_local_scalar_dense`` before reaching the mode, so all three are
+needed. ``.tolist()`` dispatches no op in either mode and is not counted.
+"""
 
 
 class DispatchCounter(TorchDispatchMode):
