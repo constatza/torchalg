@@ -96,15 +96,21 @@ def _tentative_entries(
     device, dtype = vectors.device, vectors.dtype
     n_nodes, m = aggregate.shape[0], vectors.shape[1]
     dofs = vectors.shape[0] // n_nodes
-    n_aggregates = max(int(aggregate.max().item()) + 1, 1)
-    shape = (vectors.shape[0], n_aggregates * m)
-    empty_index = torch.empty(0, m, dtype=torch.long, device=device)
 
-    # dof-major aggregate id per row of `vectors`, in the same node-major
-    # row order `dof_of_node[aggregate == index]` would visit.
-    dof_aggregate = torch.repeat_interleave(aggregate, dofs)
-    valid_rows = torch.nonzero(dof_aggregate >= 0, as_tuple=False).flatten()
-    if valid_rows.numel() == 0:
+    # Nodes per aggregate, isolated nodes in slot 0; aggregate ids are below n_nodes, so
+    # the length is fixed and the count needs no host read (``bincount`` sizes its output
+    # from the data).
+    node_counts = torch.zeros(n_nodes + 1, dtype=torch.long, device=device).index_add_(
+        0, aggregate + 1, torch.ones_like(aggregate)
+    )
+    # The one host read: every output size of the fit follows from these three integers.
+    largest_id, largest_aggregate, isolated = torch.stack(
+        [aggregate.max(), node_counts[1:].max(), node_counts[0]]
+    ).tolist()
+    n_aggregates = max(largest_id + 1, 1)
+    shape = (vectors.shape[0], n_aggregates * m)
+    if isolated == n_nodes:
+        empty_index = torch.empty(0, m, dtype=torch.long, device=device)
         return _TentativeEntries(
             rows=empty_index,
             cols=empty_index,
@@ -112,18 +118,18 @@ def _tentative_entries(
             coarse=torch.zeros(n_aggregates * m, m, dtype=dtype, device=device),
             shape=shape,
         )
-    valid_agg = dof_aggregate[valid_rows]
 
-    # Group rows by aggregate while preserving each aggregate's original
-    # row order (stable sort), then scatter into a padded (n_aggregates,
-    # max_size) index grid - one sync for the whole matrix (`counts.max()`),
-    # not one per aggregate.
-    order = torch.argsort(valid_agg, stable=True)
-    sorted_rows, sorted_agg = valid_rows[order], valid_agg[order]
-    counts = torch.bincount(sorted_agg, minlength=n_aggregates)
+    # Group rows by aggregate while preserving each aggregate's original row order: a
+    # stable sort of the node-major dof aggregate ids puts the isolated rows (id -1)
+    # first, and the rest is the stable grouping of the valid rows. The padded
+    # (n_aggregates, max_size) index grid is then filled in that order.
+    dof_aggregate = torch.repeat_interleave(aggregate, dofs)
+    sorted_rows = torch.argsort(dof_aggregate, stable=True)[isolated * dofs :]
+    sorted_agg = dof_aggregate[sorted_rows]
+    counts = node_counts[1 : n_aggregates + 1] * dofs
     offsets = torch.cumsum(counts, 0) - counts
     pos_in_group = torch.arange(sorted_rows.numel(), device=device) - offsets[sorted_agg]
-    max_size = int(counts.max().item())
+    max_size = largest_aggregate * dofs
 
     padded_rows = torch.full((n_aggregates, max_size), -1, dtype=torch.long, device=device)
     padded_rows[sorted_agg, pos_in_group] = sorted_rows
@@ -132,13 +138,12 @@ def _tentative_entries(
     block = vectors[padded_rows.clamp(min=0)] * valid_pad.unsqueeze(-1).to(dtype)
     q_batched, r_batched = _fit_aggregates_batched(block, tol)
 
-    valid_a, valid_s = torch.nonzero(valid_pad, as_tuple=True)
-    rows_out = padded_rows[valid_a, valid_s]
-    col_idx = valid_a.unsqueeze(1) * m + torch.arange(m, device=device).unsqueeze(0)
+    # The filled grid slots in row-major order are exactly (sorted_agg, pos_in_group).
+    col_idx = sorted_agg.unsqueeze(1) * m + torch.arange(m, device=device).unsqueeze(0)
     return _TentativeEntries(
-        rows=rows_out.unsqueeze(1).expand(-1, m),
+        rows=sorted_rows.unsqueeze(1).expand(-1, m),
         cols=col_idx,
-        values=q_batched[valid_a, valid_s],
+        values=q_batched[sorted_agg, pos_in_group],
         coarse=r_batched.reshape(n_aggregates * m, m),
         shape=shape,
     )
@@ -191,12 +196,16 @@ def fit_candidates_csr(
         entries.cols.reshape(-1),
         entries.values.reshape(-1),
     )
+    # Dropping exact zeros is data-dependent in size, so on an accelerator this filter is
+    # the CSR build's one synchronization beyond the fit's sizing read.
     stored = values != 0
     rows, cols, values = rows[stored], cols[stored], values[stored]
     # Each row's columns are already ascending (aggregate * m + j), so a stable sort
     # by row yields CSR order.
     order = torch.argsort(rows, stable=True)
-    row_counts = torch.bincount(rows, minlength=entries.shape[0])
+    row_counts = torch.zeros(entries.shape[0], dtype=torch.long, device=rows.device).index_add_(
+        0, rows, torch.ones_like(rows)
+    )
     crow = torch.zeros(entries.shape[0] + 1, dtype=torch.long, device=rows.device)
     crow[1:] = torch.cumsum(row_counts, 0)
     # Sorted rows with ascending columns form a valid CSR; checking it would add O(nnz).

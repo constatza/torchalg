@@ -34,6 +34,8 @@ def sparse_piecewise_constant_prolongation(
         ValueError: If no node is assigned to an aggregate (every node isolated).
     """
     n = aggregate.shape[0]
+    # The level's one host read: it sizes the operator (the host-sequential aggregation
+    # that produced ``aggregate`` already synchronized this stage).
     n_coarse = int(aggregate.max().item()) + 1 if aggregate.numel() else 0
     if n_coarse == 0:
         raise ValueError(

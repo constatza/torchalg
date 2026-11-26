@@ -75,9 +75,10 @@ depends on `amg`, never the reverse) and are re-exported by `pod.weighting`.
 port of PyAMG 5.3.0's `adaptive_sa_solver` (`initial_setup_stage` =
 Algorithm 3 and `general_setup_stage` = Algorithm 4 of Brezina et al. 2005).
 Every kernel is a port of the PyAMG routine it calls and is tested against
-it on identical inputs (`tests/.../test_adaptive_sa_port.py`): `_tentative.py`
+it on identical inputs (`tests/.../test_adaptive_sa_port.py`): `utils/tentative.py`
 (`fit_candidates`: modified Gram-Schmidt per aggregate with PyAMG's
-`tol=1e-10` drop rule, always `m` columns per aggregate), `_node_strength.py`
+`tol=1e-10` drop rule, always `m` columns per aggregate; its output sizes come from
+one packed host read per call, no `bincount` or `nonzero`), `_node_strength.py`
 (symmetric strength on the node graph; coarse levels carry `k` dofs per node,
 strength uses block Frobenius norms), `_prolongation.py` (Jacobi prolongator
 smoothing with `omega / rho(D^-1 A)` and the bridging prolongator),
