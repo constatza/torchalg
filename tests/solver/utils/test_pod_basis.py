@@ -148,6 +148,18 @@ def _min_principal_cosine(a: torch.Tensor, b: torch.Tensor) -> float:
 SAME_SUBSPACE = 1.0 - 1e-12
 
 
+def _gram_route_subspace_error_bound(spectrum: list[float], selected: int) -> float:
+    """``eps / q`` with ``q = sigma_k^2 / sigma_1^2``: the Gram route's documented accuracy.
+
+    Eigenvalues of ``G = S S^T`` are only accurate to ``eps * sigma_1^2``, so the deviation
+    of the Gram basis from the SVD basis grows with the squared conditioning of the kept
+    modes and varies with the BLAS kernel and thread count; a fixed bound is either loose
+    for mild spectra or fails on another machine for steeper ones.
+    """
+    eps = torch.finfo(torch.float64).eps
+    return eps * (spectrum[0] / spectrum[selected - 1]) ** 2
+
+
 class TestGramRoute:
     """The unweighted fit works in the ``N x N`` Gram matrix and falls back to the SVD."""
 
@@ -164,7 +176,8 @@ class TestGramRoute:
         basis = compute_pod_basis(snapshots, rank)
         reference = _svd_reference(snapshots, rank, svd=forbid_svd)
         assert basis.shape == reference.shape
-        assert _min_principal_cosine(basis, reference) >= SAME_SUBSPACE
+        bound = _gram_route_subspace_error_bound(spectrum, basis.shape[1])
+        assert 1.0 - _min_principal_cosine(basis, reference) <= bound
         torch.testing.assert_close(
             basis.T @ basis, torch.eye(basis.shape[1], dtype=basis.dtype), atol=1e-10, rtol=0.0
         )
