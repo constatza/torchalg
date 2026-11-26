@@ -518,3 +518,55 @@ class TestLibraryTriangularSolveAutogradFallback:
             assert solver.solve(target).requires_grad
 
         assert len(prepared_solve_builds) == 2
+
+
+@pytest.fixture
+def identity_rows(poisson_2d_csr: torch.Tensor) -> torch.Tensor:
+    """Boolean mask of the ``poisson_2d_csr`` rows replaced by identity rows."""
+    frozen = torch.zeros(poisson_2d_csr.shape[0], dtype=torch.bool)
+    frozen[torch.tensor([1, 4, 8])] = True
+    return frozen
+
+
+class TestWithIdentityRows:
+    """``with_identity_rows`` solves the triangle whose masked rows are identity rows."""
+
+    @pytest.mark.parametrize("solver_class", [LibraryTriangularSolve, PreparedTriangularSolve])
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_matches_dense_identity_row_triangle(
+        self,
+        solver_class: type[LibraryTriangularSolve | PreparedTriangularSolve],
+        poisson_2d_csr: torch.Tensor,
+        poisson_2d_target: torch.Tensor,
+        identity_rows: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        dense = poisson_2d_csr.to_dense()
+        triangle = torch.tril(dense) if direction == "forward" else torch.triu(dense)
+        triangle[identity_rows] = torch.eye(dense.shape[0], dtype=dense.dtype)[identity_rows]
+        column = poisson_2d_target.reshape(dense.shape[0], -1)
+        expected = torch.linalg.solve_triangular(
+            triangle, column, upper=direction == "backward"
+        ).reshape(poisson_2d_target.shape)
+
+        solver = solver_class(poisson_2d_csr, direction).with_identity_rows(identity_rows)
+
+        torch.testing.assert_close(
+            solver.solve(poisson_2d_target), expected, rtol=1e-12, atol=1e-14
+        )
+
+    @pytest.mark.parametrize("direction", ["forward", "backward"])
+    def test_library_variant_shares_the_triangle_pattern_and_keeps_the_original(
+        self,
+        poisson_2d_csr: torch.Tensor,
+        identity_rows: torch.Tensor,
+        direction: Literal["forward", "backward"],
+    ) -> None:
+        solver = LibraryTriangularSolve(poisson_2d_csr, direction)
+        original_values = solver.triangle.values().clone()
+
+        masked = solver.with_identity_rows(identity_rows).triangle
+
+        assert masked.crow_indices().data_ptr() == solver.triangle.crow_indices().data_ptr()
+        assert masked.col_indices().data_ptr() == solver.triangle.col_indices().data_ptr()
+        assert torch.equal(solver.triangle.values(), original_values)

@@ -27,17 +27,20 @@ explicitly.
 
 A masked sweep (``rows=``, the adaptive smoothed-aggregation general stage) runs on
 triangles whose frozen rows are identity rows, solved for the target ``current`` on those
-rows - the same construction as the dense ``_relaxation._prepare_sweep``, so it also goes
-through the vendor solve. Callers that relax the same matrix many times (smoothers,
-compatible relaxation, adaptive setup stages) hold one prepared object per matrix
-instead of rebuilding per call.
+rows - the same construction as the dense ``_relaxation._prepare_sweep``. Its mask is
+drawn from the iterate (the nonzero rows of a prolongated candidate), so it differs on
+every call and a per-mask cache would never hit. Each call instead derives both
+identity-row solves from the prepared ones (``with_identity_rows``): the vendor triangles
+keep their pattern and only their values are masked, a level-scheduled solve only widens
+its freeze mask, so no triangle is sorted or rebuilt. Callers that relax the same matrix
+many times (smoothers, compatible relaxation, adaptive setup stages) hold one prepared
+object per matrix instead of rebuilding per call.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Literal
 
 import torch
 
@@ -77,45 +80,6 @@ def _strict_triangle(
         check_invariants=False,
     )
     return compact_csr_indices(triangle)
-
-
-def _frozen_row_solve(
-    matrix: torch.Tensor, direction: Literal["forward", "backward"], frozen: torch.Tensor
-) -> TriangularSolver:
-    """Vendor substitution of ``matrix``'s ``direction`` triangle with ``frozen`` identity rows.
-
-    A frozen row keeps only a unit diagonal, so the solve returns its target there and the
-    other rows read that value through their own entries - PyAMG's
-    ``gauss_seidel_indexed`` skip, expressed as one triangular system.
-
-    Cost: ``I = O(nnz log nnz)`` for the filtered triangle (one coalesce), plus the
-    library's analysis inside each solve; built once per masked call and reused by every
-    step of that call.
-
-    Args:
-        matrix (torch.Tensor): Sparse CSR matrix ``A``, shape ``(n, n)``.
-        direction (Literal["forward", "backward"]): Lower (forward) or upper (backward) half.
-        frozen (torch.Tensor): Boolean mask of rows replaced by identity rows, shape ``(n,)``.
-
-    Returns:
-        TriangularSolver: Substitution for the filtered triangle.
-    """
-    row = _expand_row_index(matrix)
-    col = matrix.col_indices().to(torch.int64)
-    in_triangle = col <= row if direction == "forward" else col >= row
-    keep = in_triangle & ~frozen[row]
-    frozen_rows = torch.nonzero(frozen).flatten()
-    values = matrix.values()
-    # The kept entries and the identity rows never share a row, so ``coalesce`` only sorts.
-    triangle = torch.sparse_coo_tensor(
-        torch.stack([torch.cat([row[keep], frozen_rows]), torch.cat([col[keep], frozen_rows])]),
-        torch.cat([values[keep], values.new_ones(frozen_rows.numel())]),
-        matrix.shape,
-        check_invariants=False,
-    )
-    return prepare_triangular_solve(
-        compact_csr_indices(triangle.coalesce().to_sparse_csr()), direction
-    )
 
 
 class SweepProducts(Enum):
@@ -188,8 +152,8 @@ class PreparedSymmetricGaussSeidel:
         Explicit products (setup stages, zero pivots) or ``rows=``: two
         strict-triangle products per iteration, ``W = (4z + 2n)k``,
         ``Q = 2z(V + w)`` per iteration, one product fewer for
-        ``smooth_from_zero``; a masked call also builds its two identity-row
-        triangles once (``O(z log z)`` index work).
+        ``smooth_from_zero``; a masked call also masks the values of its two
+        triangles once (``O(z)``, no sort).
         Roofline: ``W/Q`` is about 0.16 flop per byte (memory-bound).
         Work-depth: ``W/D = (2z + 6n)k / (lv_f + lv_b)``, about ``10^3`` at
         ``nnz/n`` near 37, far below SpMV and Jacobi: the depth, not the
@@ -346,8 +310,8 @@ class PreparedSymmetricGaussSeidel:
         frozen = inactive
         if isinstance(self.products, _ExplicitProducts):
             frozen = frozen | self.products.frozen
-        forward = _frozen_row_solve(self.matrix, "forward", frozen)
-        backward = _frozen_row_solve(self.matrix, "backward", frozen)
+        forward = self.forward.with_identity_rows(frozen)
+        backward = self.backward.with_identity_rows(frozen)
         keep = _as_column(inactive, x)
         for _ in range(steps):
             x_forward = forward.solve(torch.where(keep, x, rhs - self.upper @ x))

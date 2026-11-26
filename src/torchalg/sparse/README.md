@@ -45,6 +45,13 @@ it. Both implementations expose `solve(target)` with results equal to rounding:
   level). ROCm reports as `"cuda"` and is unsupported: its library solve faults
   on the second call (gfx1030, rocm7.2).
 
+Both also expose `with_identity_rows(frozen)`: the same substitution with the `frozen`
+rows replaced by identity rows (each solves to its target). The library triangle keeps
+its pattern, with explicit zeros on the frozen rows' off-diagonals and a unit diagonal,
+and shares its index arrays; the level-scheduled solve only widens its zero-pivot
+freeze, which is the same row. Neither sorts, rebuilds or analyses anything, so a
+caller whose mask changes every call pays one `O(nnz)` value pass.
+
 `PreparedTriangularPair` keeps the factor pair as its canonical state and
 re-resolves both halves through the registry when `.to()` moves it to another
 device type, so a preconditioner set up on the CPU and moved to a GPU uses the
@@ -166,10 +173,13 @@ matrix-dependent one-off computation and returns the object that sweeps, so
   target; the freeze breaks both identities, so its sweeps apply `L` and `U` explicitly
   whatever the caller chose. `smooth(..., rows=)` (PyAMG's indexed sweep, used
   only by adaptive SA's general setup stage; compatible relaxation sweeps unmasked) also
-  goes through the vendor solve: per call it builds both triangles with every inactive or
-  zero-pivot row replaced by an identity row, and solves for the target `current` on the
-  inactive rows, as the dense `_relaxation._prepare_sweep` does (149 us against 5 857 us
-  level-scheduled per solve at n = 10 000). Both `smooth` and `smooth_from_zero` accept a
+  sweeps triangles with every inactive or zero-pivot row replaced by an identity row, and
+  solves for the target `current` on the inactive rows, as the dense
+  `_relaxation._prepare_sweep` does. The mask comes from the iterate (the nonzero rows of
+  a prolongated candidate), so it changes every call and a per-mask cache would never
+  hit; each call derives both solves from the prepared ones with `with_identity_rows`
+  instead of building new triangles (a masked call on box3d n = 27 000 at 2 steps:
+  6.6 ms against 65 ms rebuilding the triangles and 35 ms level-scheduled). Both `smooth` and `smooth_from_zero` accept a
   vector `(n,)` or a block `(n, k)`. Adaptive SA, bootstrap AMG and BootCMatch build
   identical hierarchies with identical PCG iteration counts on the `benchmarks/cases.py`
   cases.

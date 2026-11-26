@@ -17,7 +17,9 @@ from torchalg.sparse.kernels.triangular import (
     LevelSchedule,
     LibraryTriangularSolve,
     PreparedTriangularSolve,
+    TriangularSolver,
 )
+from torchalg.sparse.preconditioners.amg import _gauss_seidel as gauss_seidel_module
 from torchalg.sparse.preconditioners.amg._gauss_seidel import (
     SweepProducts,
     prepare_csr_gauss_seidel,
@@ -77,7 +79,7 @@ class TestVendorSweeps:
         assert scheduled_directions == []
 
     @pytest.mark.parametrize("matrix_name", ["poisson_2d_csr", "zero_diagonal_csr"])
-    def test_masked_sweeps_use_the_library_solve_without_a_level_schedule(
+    def test_masked_sweeps_build_no_level_schedule(
         self,
         matrix_name: str,
         request: pytest.FixtureRequest,
@@ -89,6 +91,30 @@ class TestVendorSweeps:
         built_by_prepare = len(scheduled_directions)
         prepared.smooth(rhs, x, 2, rows=rows)
         assert len(scheduled_directions) == built_by_prepare
+
+    @pytest.mark.parametrize("matrix_name", ["poisson_2d_csr", "zero_diagonal_csr"])
+    def test_masked_sweeps_prepare_no_triangular_solve(
+        self,
+        matrix_name: str,
+        request: pytest.FixtureRequest,
+        gauss_seidel_block: tuple[torch.Tensor, ...],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A masked call derives its identity-row solves from the prepared ones."""
+        rhs, x, rows = gauss_seidel_block
+        prepared = prepare_csr_gauss_seidel(request.getfixturevalue(matrix_name), EXPLICIT)
+        builds: list[str] = []
+        real_prepare = gauss_seidel_module.prepare_triangular_solve
+
+        def spy(
+            matrix: torch.Tensor, direction: Literal["forward", "backward"] = "forward"
+        ) -> TriangularSolver:
+            builds.append(direction)
+            return real_prepare(matrix, direction)
+
+        monkeypatch.setattr(gauss_seidel_module, "prepare_triangular_solve", spy)
+        prepared.smooth(rhs, x, 2, rows=rows)
+        assert builds == []
 
     def test_triangles_carry_int32_indices(self, poisson_2d_csr: torch.Tensor) -> None:
         assert poisson_2d_csr.crow_indices().dtype == torch.int64

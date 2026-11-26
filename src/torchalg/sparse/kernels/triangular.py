@@ -11,6 +11,7 @@ forward schedule is not a valid backward schedule (see
 
 from __future__ import annotations
 
+import copy
 import itertools
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -461,6 +462,26 @@ class PreparedTriangularSolve(nn.Module):
             x[rows] = torch.where(is_frozen, freeze_value[rows], rhs / diag)
         return x
 
+    def with_identity_rows(self, frozen: torch.Tensor) -> PreparedTriangularSolve:
+        """This substitution with the ``frozen`` rows replaced by identity rows.
+
+        An identity row solves to its target, which is exactly the zero-pivot freeze, so
+        the new substitution only widens that freeze mask; the schedule and the
+        level-sorted entries are shared.
+
+        Cost: ``W = 0``, one ``O(n)`` mask, ``S = 0``.
+
+        Args:
+            frozen (torch.Tensor): Boolean mask of rows replaced by identity rows, ``(n,)``.
+
+        Returns:
+            PreparedTriangularSolve: A new substitution; this one is unchanged.
+        """
+        masked = copy.copy(self)
+        # ``copy.copy`` shares the buffer dict: give the copy its own before replacing one.
+        masked._buffers = {**self._buffers, "frozen_diagonal": self.frozen_diagonal | frozen}
+        return masked
+
 
 def _triangle(matrix: torch.Tensor, direction: Literal["forward", "backward"]) -> torch.Tensor:
     """CSR copy of ``matrix`` keeping only its lower (forward) or upper (backward) half."""
@@ -521,11 +542,51 @@ class LibraryTriangularSolve(nn.Module):
         """Extract and store the selected triangle."""
         super().__init__()
         _require_csr(matrix, "LibraryTriangularSolve")
+        self._hold(_triangle(matrix, direction), direction)
+
+    def _hold(self, triangle: torch.Tensor, direction: Literal["forward", "backward"]) -> None:
+        """Bind an already extracted ``direction`` triangle."""
         self.triangle: torch.Tensor
-        self.register_buffer("triangle", _triangle(matrix, direction), persistent=False)
+        self.register_buffer("triangle", triangle, persistent=False)
         self._direction: Literal["forward", "backward"] = direction
         # A submodule once built, so ``.to()`` moves it with the triangle.
         self._autograd_fallback: PreparedTriangularSolve | None = None
+
+    def with_identity_rows(self, frozen: torch.Tensor) -> LibraryTriangularSolve:
+        """This substitution with the ``frozen`` rows replaced by identity rows.
+
+        A frozen row solves to its target (PyAMG's ``gauss_seidel_indexed`` skip) and the
+        other rows read that value through their own entries. The stored pattern is kept:
+        a frozen row's off-diagonal entries become explicit zeros and its diagonal one, so
+        the index arrays are shared and nothing is sorted. ``prepare_triangular_solve``
+        builds this class only when every pivot is nonzero, so every row stores its
+        diagonal. For a finite iterate the frozen row computes ``(t - 0) / 1 = t`` exactly
+        and every other row keeps its entries, so the solve equals the one on the triangle
+        without those zeros.
+
+        Cost: ``W = 0``, ``Q = O(nnz(T)(V + w))`` (one pass over the stored entries),
+        ``L`` a few elementwise kernels, ``S = 0``.
+
+        Args:
+            frozen (torch.Tensor): Boolean mask of rows replaced by identity rows, ``(n,)``.
+
+        Returns:
+            LibraryTriangularSolve: A new substitution; this one is unchanged.
+        """
+        triangle = self.triangle
+        row = _expand_row_index(triangle)
+        col = triangle.col_indices()
+        values = torch.where(frozen[row], (col == row).to(triangle.dtype), triangle.values())
+        masked = LibraryTriangularSolve.__new__(LibraryTriangularSolve)
+        nn.Module.__init__(masked)
+        # Same pattern as ``triangle``, which is already valid.
+        masked._hold(
+            torch.sparse_csr_tensor(
+                triangle.crow_indices(), col, values, triangle.shape, check_invariants=False
+            ),
+            self._direction,
+        )
+        return masked
 
     def _fallback(self) -> PreparedTriangularSolve:
         """The level-scheduled solve on ``triangle`` that carries gradients."""
