@@ -18,9 +18,14 @@ Two permanent tiers, so a regression or win can be attributed to either level:
   solve, Galerkin product, neighborhoods, LS interpolation, spectral estimate, CG
   vector ops).
 - `algorithms/` — full preconditioners, each timed as separate `setup`,
-  `first_apply`, `apply` and `solve` phases. The gap between `first_apply` and
-  `apply` exposes lazy one-off work. `solve` runs PCG to a tolerance and asserts
-  convergence, so it doubles as an end-to-end correctness check.
+  `first_apply`, `apply`, `solve` and `solve_k` phases. The gap between `first_apply`
+  and `apply` exposes lazy one-off work. `solve` runs PCG to a tolerance and asserts
+  convergence, so it doubles as an end-to-end correctness check. `solve_k` is one fresh
+  setup plus PCG on `k` distinct right-hand sides, the amortized cost of a shared
+  matrix. `amg_gs` is aggregation AMG with a symmetric Gauss-Seidel smoother, the only
+  cell tracking solve-time Gauss-Seidel. Besides the default ladder, the CSR tree runs
+  the large cases of `cases.large_csr_cases` (box3d n = 27 000, lap2d n = 90 000); they
+  are marked `slow`, so `-m "benchmark and not slow"` skips them.
 
 `tmp/` (git-ignored) holds throwaway `compare_<topic>.py` scripts that put a
 baseline and a candidate variant side by side on identical inputs. When a candidate
@@ -33,6 +38,10 @@ uv run pytest benchmarks/primitives -m benchmark      # one tier
 TORCHALG_BENCH_OUT=before.json uv run pytest benchmarks -m benchmark
 python -m benchmarks.compare before.json after.json   # speed-up table
 ```
+
+`compare` also prints, per file, each cell's break-even count against Jacobi: the
+smallest `k` for which `setup + k * solve` is no more than Jacobi's on the same matrix,
+format, device and dtype (`inf` if its solve is not faster).
 
 The default `uv run pytest` excludes these (`-m "not benchmark"`). Suites record
 timings to `artifacts/benchmarks/<timestamp>.json` (device, torch version and

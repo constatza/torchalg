@@ -1,4 +1,8 @@
-"""Fixtures for the algorithm benchmarks: one parametrized cell per (preconditioner, matrix)."""
+"""Fixtures for the algorithm benchmarks: one parametrized cell per (preconditioner, matrix).
+
+The matrix cases are the default ladder plus the CSR-only large cases, which are marked
+``slow`` (select ``-m "benchmark and not slow"`` to skip them).
+"""
 
 from __future__ import annotations
 
@@ -10,9 +14,21 @@ from benchmarks.algorithms.registry import (
     PreconditionerSpec,
     Problem,
     Tree,
+    make_rhs_block,
     make_snapshots,
 )
-from benchmarks.cases import MatrixCase
+from benchmarks.cases import MatrixCase, default_cases, large_csr_cases
+
+CASES = (
+    *(pytest.param(case, id=case.id) for case in default_cases()),
+    *(pytest.param(case, id=case.id, marks=pytest.mark.slow) for case in large_csr_cases()),
+)
+
+
+@pytest.fixture(params=CASES)
+def case(request: pytest.FixtureRequest) -> MatrixCase:
+    """Overrides the shared ladder with the large CSR-only cases added."""
+    return request.param
 
 
 @pytest.fixture(params=REGISTRY, ids=lambda spec: spec.id)
@@ -41,4 +57,5 @@ def problem(
         matrix=request.getfixturevalue(fixture_name),
         rhs=request.getfixturevalue("rhs"),
         snapshots=make_snapshots(case, dtype, device),
+        rhs_block=make_rhs_block(case, dtype, device),
     )

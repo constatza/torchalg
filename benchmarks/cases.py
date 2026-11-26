@@ -97,3 +97,12 @@ SIZE_LADDER = (484, 2744, 10000)
 
 def default_cases() -> tuple[MatrixCase, ...]:
     return (lap2d_case(SIZE_LADDER[0]), box3d_case(PAPER_LIKE_N), lap2d_case(SIZE_LADDER[2]))
+
+
+LARGE_BOX3D_N = 27000
+LARGE_LAP2D_N = 90000
+"""CSR-only scale: dense float64 storage is 5.8 GB at n = 27 000 and 65 GB at n = 90 000."""
+
+
+def large_csr_cases() -> tuple[MatrixCase, ...]:
+    return (box3d_case(LARGE_BOX3D_N), lap2d_case(LARGE_LAP2D_N))

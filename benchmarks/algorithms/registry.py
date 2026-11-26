@@ -9,7 +9,9 @@ basis fit.
 
 Size caps keep the whole suite within minutes on a CPU: dense IC(0)/ILU are masked
 column sweeps and dense adaptive/bootstrap setups cost tens of seconds near n = 3000,
-so they skip the n = 10000 case. Sparse variants run every case.
+so they skip the n = 10000 case. Dense Jacobi stops at n = 10000 (dense storage), so the
+large cases (``benchmarks.cases.large_csr_cases``) are CSR-only. Sparse variants run every
+case except sparse bootstrap AMG, whose setup alone takes ~24 s at n = 27 000.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from torchalg.preconditioners.implementations import (
 from torchalg.preconditioners.implementations._masked_factorization import dense_ic0
 from torchalg.preconditioners.implementations.amg import vcycle_amg
 from torchalg.preconditioners.implementations.amg.bootcmatch import BootCMatchPreconditioner
+from torchalg.preconditioners.implementations.amg.smoothers import GaussSeidelSmoother
 from torchalg.preconditioners.implementations.pod import PODCoarseningStrategy, compute_pod_basis
 from torchalg.sparse.preconditioners.amg.adaptive import (
     AdaptiveSAPreconditioner as SparseAdaptiveSAPreconditioner,
@@ -48,6 +51,9 @@ from torchalg.sparse.preconditioners.amg.bootstrap import (
     BootstrapAMGPreconditioner as SparseBootstrapAMGPreconditioner,
 )
 from torchalg.sparse.preconditioners.amg.coarse_solve import dense_lu_coarse_solver
+from torchalg.sparse.preconditioners.amg.smoothers import (
+    GaussSeidelSmoother as SparseGaussSeidelSmoother,
+)
 from torchalg.sparse.preconditioners.amg.smoothers import resolve_jacobi_default
 from torchalg.sparse.preconditioners.amg.variants import vcycle_amg as sparse_vcycle_amg
 from torchalg.sparse.preconditioners.ic0 import IC0Preconditioner as SparseIC0Preconditioner
@@ -84,7 +90,10 @@ POD_SNAPSHOTS = 32
 truncated to ``POD_RANK`` modes (two grids, so a 16-dimensional coarse space)."""
 
 SOLVE_RTOL = 1e-8
-"""PCG tolerance of the ``solve`` phase."""
+"""PCG tolerance of the ``solve`` and ``solve_k`` phases."""
+
+SOLVE_K = 4
+"""Right-hand sides solved per setup in the amortized ``solve_k`` phase."""
 
 MAX_TRUE_RELATIVE_RESIDUAL = 1e-6
 """Bound on ``||b - A x|| / ||b||`` recomputed from the returned solution."""
@@ -107,6 +116,7 @@ class Problem:
     matrix: torch.Tensor
     rhs: torch.Tensor
     snapshots: torch.Tensor
+    rhs_block: torch.Tensor
 
 
 def make_snapshots(case: MatrixCase, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
@@ -115,6 +125,13 @@ def make_snapshots(case: MatrixCase, dtype: torch.dtype, device: torch.device) -
     right_hand_sides = torch.randn(POD_SNAPSHOTS, case.n, dtype=torch.float64, generator=generator)
     solutions = splu(case.scipy_matrix.tocsc()).solve(right_hand_sides.numpy().T).T
     return torch.from_numpy(solutions.copy()).to(dtype=dtype, device=device)
+
+
+def make_rhs_block(case: MatrixCase, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    """``SOLVE_K`` seeded right-hand sides (rows) for the ``solve_k`` phase."""
+    generator = torch.Generator().manual_seed(BENCHMARK_SEED + 2)
+    block = torch.randn(SOLVE_K, case.n, dtype=torch.float64, generator=generator)
+    return block.to(dtype=dtype, device=device)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +182,8 @@ def _pod_amg(problem: Problem) -> AMGPreconditioner:
     )
 
 
+DENSE_STORAGE_CAP = 10000
+DENSE_STORAGE_REASON = "dense n x n storage is 5.8 GB at n=27000; larger cases are CSR-only"
 DENSE_FACTOR_CAP = 2744
 DENSE_FACTOR_REASON = "dense masked factorization is O(n^3) work; capped below n=10000"
 DENSE_AMG_CAP = 2744
@@ -173,6 +192,8 @@ DENSE_AMG_REASON = (
 )
 DENSE_BOOTSTRAP_CAP = 2744
 DENSE_BOOTSTRAP_REASON = "dense bootstrap/adaptive setup takes tens of seconds at n~3000"
+SPARSE_BOOTSTRAP_CAP = 10000
+SPARSE_BOOTSTRAP_REASON = "sparse bootstrap setup takes ~24 s at n=27000"
 
 # Iteration caps are generous multiples of the counts first observed; a method needing
 # more than its cap has regressed, not merely slowed.
@@ -182,6 +203,8 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
         Tree.DENSE,
         lambda _p: JacobiPreconditioner(),
         _sqrt_cap(12),
+        max_n=DENSE_STORAGE_CAP,
+        cap_reason=DENSE_STORAGE_REASON,
         setup_repeats=5,
     ),
     PreconditionerSpec(
@@ -255,6 +278,23 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
         lambda _p: sparse_vcycle_amg(n_levels=AMG_LEVELS, theta=AMG_THETA),
         _fixed_cap(60),
     ),
+    # The only cells whose solve-time smoother is Gauss-Seidel, so its sweeps are tracked.
+    PreconditionerSpec(
+        "amg_gs",
+        Tree.DENSE,
+        lambda _p: vcycle_amg(n_levels=AMG_LEVELS, theta=AMG_THETA, smoother=GaussSeidelSmoother()),
+        _fixed_cap(60),
+        max_n=DENSE_AMG_CAP,
+        cap_reason=DENSE_AMG_REASON,
+    ),
+    PreconditionerSpec(
+        "amg_gs",
+        Tree.CSR,
+        lambda _p: sparse_vcycle_amg(
+            n_levels=AMG_LEVELS, theta=AMG_THETA, smoother=SparseGaussSeidelSmoother()
+        ),
+        _fixed_cap(60),
+    ),
     PreconditionerSpec(
         "adaptive_sa",
         Tree.DENSE,
@@ -288,6 +328,8 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
         Tree.CSR,
         lambda _p: SparseBootstrapAMGPreconditioner(seed=ALGORITHM_SEED),
         _fixed_cap(150),
+        max_n=SPARSE_BOOTSTRAP_CAP,
+        cap_reason=SPARSE_BOOTSTRAP_REASON,
         setup_repeats=1,
         setup_warmups=0,
     ),

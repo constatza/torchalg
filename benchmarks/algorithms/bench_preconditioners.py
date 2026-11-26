@@ -10,6 +10,9 @@ Per (preconditioner, matrix) cell, recorded as ``<name>.<phase>``:
 - ``solve``: ``pcg`` to ``SOLVE_RTOL`` with the set-up preconditioner. This is also the
   end-to-end correctness check: it must converge within the spec's iteration cap and the
   recomputed relative residual must be small. Time is never asserted.
+- ``solve_k``: one fresh ``setup()`` followed by ``pcg`` on each of ``SOLVE_K`` distinct
+  right-hand sides, the amortized cost of a matrix shared by ``k`` solves (``k`` is in the
+  params). Every solve must converge within the iteration cap.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import torch
 
 from benchmarks.algorithms.registry import (
     MAX_TRUE_RELATIVE_RESIDUAL,
+    SOLVE_K,
     SOLVE_RTOL,
     PreconditionerSpec,
     Problem,
@@ -141,6 +145,36 @@ def test_preconditioner(
         },
     )
 
+    def solve_k() -> list[SolverResult]:
+        preconditioner = spec.fresh(problem)
+        preconditioner.setup(operand)
+        return [
+            pcg(
+                problem.matrix,
+                b,
+                preconditioner=preconditioner,
+                rtol=SOLVE_RTOL,
+                maxiter=iteration_cap,
+            )[1]
+            for b in problem.rhs_block
+        ]
+
+    start = perf_counter()
+    k_results = solve_k()
+    first_solve_k_s = perf_counter() - start
+    # The setup repeat count already reflects what the cell's setup cost affords.
+    repeats = 1 if first_solve_k_s > SLOW_SOLVE_S else spec.setup_repeats
+    record(
+        Level.ALGORITHM,
+        f"{spec.name}.solve_k",
+        {**params, "k": SOLVE_K},
+        solve_k,
+        repeats=repeats,
+        warmups=0,
+        extra={"max_iterations": max(r.iterations for r in k_results)},
+    )
+
     assert result.converged, f"{spec.id} did not converge within {iteration_cap} iterations"
     assert result.iterations <= iteration_cap
     assert true_residual <= MAX_TRUE_RELATIVE_RESIDUAL
+    assert all(r.converged for r in k_results), f"{spec.id} solve_k exceeded {iteration_cap}"

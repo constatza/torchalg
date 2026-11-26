@@ -16,7 +16,7 @@ from collections.abc import Callable
 import torch
 
 from benchmarks.algorithms.registry import AMG_LEVELS, POD_RANK, make_snapshots
-from benchmarks.cases import MatrixCase, box3d_case, lap2d_case
+from benchmarks.cases import MatrixCase, lap2d_case, large_csr_cases
 from benchmarks.harness import time_callable
 from torchalg import pcg
 from torchalg.multigrid import AMGPreconditioner, VCycle
@@ -31,7 +31,7 @@ from torchalg.sparse.preconditioners.ic0 import IC0Preconditioner
 from torchalg.sparse.preconditioners.ilu import ILUPreconditioner
 from torchalg.sparse.preconditioners.jacobi import JacobiPreconditioner
 
-CASES = (lap2d_case(10000), box3d_case(27000), lap2d_case(90000))
+CASES = (lap2d_case(10000), *large_csr_cases())
 RTOL = 1e-8
 MAX_ITERATIONS = 5000
 REPEATS = 3
