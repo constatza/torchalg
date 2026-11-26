@@ -2,21 +2,26 @@
 
 Run: ``uv run python -m benchmarks.throughput.time_to_solution`` (CPU, CSR tree).
 For each case and method: setup seconds, one PCG solve to ``RTOL`` (median), iteration
-count, and the number of right-hand sides ``k*`` after which setup plus ``k`` solves beats
-``k`` Jacobi-PCG solves: ``k* = setup / (t_jacobi - t_method)`` (``inf`` if the method's
-solve is not faster).
+count, and the smallest number of right-hand sides ``k*`` for which setup plus ``k``
+solves costs no more than Jacobi's setup plus ``k`` Jacobi-PCG solves
+(``benchmarks.compare.break_even_k``; ``inf`` if no ``k`` qualifies).
 """
 
 from __future__ import annotations
 
-import math
 import time
 from collections.abc import Callable
 
 import torch
 
-from benchmarks.algorithms.registry import AMG_LEVELS, POD_RANK, make_snapshots
+from benchmarks.algorithms.registry import (
+    AMG_LEVELS,
+    POD_RANK,
+    SPARSE_BOOTSTRAP_CAP,
+    make_snapshots,
+)
 from benchmarks.cases import MatrixCase, lap2d_case, large_csr_cases
+from benchmarks.compare import break_even_k
 from benchmarks.harness import time_callable
 from torchalg import pcg
 from torchalg.multigrid import AMGPreconditioner, VCycle
@@ -37,7 +42,6 @@ MAX_ITERATIONS = 5000
 REPEATS = 3
 CPU = torch.device("cpu")
 AMG_THETA = 0.02
-SKIP_BOOTSTRAP_ABOVE_N = 30000
 
 
 def _pod(case: MatrixCase) -> MatrixSetupPreconditioner:
@@ -64,7 +68,7 @@ def _methods(case: MatrixCase) -> dict[str, Callable[[], MatrixSetupPrecondition
         "adaptive_sa": AdaptiveSAPreconditioner,
         "pod2g": lambda: _pod(case),
     }
-    if case.n <= SKIP_BOOTSTRAP_ABOVE_N:
+    if case.n <= SPARSE_BOOTSTRAP_CAP:
         methods["bootstrap"] = BootstrapAMGPreconditioner
     return methods
 
@@ -94,13 +98,12 @@ def _run_case(case: MatrixCase) -> None:
             warmups=0,
         )[0]
         rows.append((name, setup_s, solve_s, int(result.iterations)))
-    jacobi_solve = rows[0][2]
+    _, jacobi_setup, jacobi_solve, _ = rows[0]
     for name, setup_s, solve_s, iterations in rows:
-        gain = jacobi_solve - solve_s
-        k_star = setup_s / gain if gain > 0 else math.inf
+        k_star = break_even_k(setup_s, solve_s, jacobi_setup, jacobi_solve)
         print(
             f"{case.id:14} {name:12} {setup_s:8.3f} {solve_s * 1e3:9.1f} {iterations:6d} "
-            f"{k_star:7.1f}"
+            f"{k_star:>7}"
         )
 
 

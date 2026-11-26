@@ -80,9 +80,10 @@ aggregate (see the report on the empty-aggregate crash)."""
 BOOTCMATCH_MAX_LEVELS = 5
 """BootCMatch depth cap, as in ``benchmarks/sparse_dense/scaling.py``."""
 
-BOOTCMATCH_CAP = 400
-"""BootCMatch needs >80 PCG iterations on the n=10000 Laplacian (5 levels leave a large
-coarsest grid), far more than the other AMG variants."""
+BOOTCMATCH_CAP_FACTOR = 4
+"""BootCMatch's PCG cap is this multiple of ``sqrt(n)``: 5 levels leave a coarsest grid that
+grows with ``n``, so its count grows like ``sqrt(n)`` on the Laplacian (28 at n=484, 107 at
+n=10000, 305 at n=90000, about ``1.0-1.3 sqrt(n)``); a fixed cap would tighten with size."""
 
 POD_RANK = 16
 POD_SNAPSHOTS = 32
@@ -192,8 +193,8 @@ DENSE_AMG_REASON = (
 )
 DENSE_BOOTSTRAP_CAP = 2744
 DENSE_BOOTSTRAP_REASON = "dense bootstrap/adaptive setup takes tens of seconds at n~3000"
-SPARSE_BOOTSTRAP_CAP = 10000
-SPARSE_BOOTSTRAP_REASON = "sparse bootstrap setup takes ~24 s at n=27000"
+SPARSE_BOOTSTRAP_CAP = 30000
+SPARSE_BOOTSTRAP_REASON = "sparse bootstrap setup takes ~5 s at n=27000; larger is skipped"
 
 # Iteration caps are generous multiples of the counts first observed; a method needing
 # more than its cap has regressed, not merely slowed.
@@ -337,7 +338,7 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
         "bootcmatch",
         Tree.DENSE,
         lambda _p: BootCMatchPreconditioner(seed=ALGORITHM_SEED, max_levels=BOOTCMATCH_MAX_LEVELS),
-        _fixed_cap(BOOTCMATCH_CAP),
+        _sqrt_cap(BOOTCMATCH_CAP_FACTOR),
         max_n=DENSE_AMG_CAP,
         cap_reason=DENSE_AMG_REASON,
         setup_repeats=2,
@@ -349,7 +350,7 @@ REGISTRY: tuple[PreconditionerSpec, ...] = (
         lambda _p: SparseBootCMatchPreconditioner(
             seed=ALGORITHM_SEED, max_levels=BOOTCMATCH_MAX_LEVELS
         ),
-        _fixed_cap(BOOTCMATCH_CAP),
+        _sqrt_cap(BOOTCMATCH_CAP_FACTOR),
         setup_repeats=2,
         setup_warmups=0,
     ),
